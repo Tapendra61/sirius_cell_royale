@@ -35,6 +35,9 @@ inline Vec2 normalize(Vec2 v) {
     return {v.x / len, v.y / len};
 }
 
+inline float lerp(float a, float b, float t) { return a + (b - a) * t; }
+inline Vec2  lerp(Vec2 a, Vec2 b, float t) { return a + (b - a) * t; }
+
 // Cell radius derived from mass: at mass=100, radius=30 (matches tuning comment).
 inline float cellRadius(float mass) { return 3.0f * std::sqrt(mass); }
 

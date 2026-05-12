@@ -6,6 +6,7 @@
 #include "core/Snapshot.h"
 #include "core/Tuning.h"
 
+#include <utility>
 #include <vector>
 
 namespace cr {
@@ -32,6 +33,7 @@ public:
     const World& world() const { return world_; }
 
     const Tuning& tuning() const { return tuning_; }
+    void          setTuning(Tuning t) { tuning_ = std::move(t); }
 
     // Events produced during the most recent tick(). Cleared at the start of each tick().
     const std::vector<GameEvent>& events() const { return events_; }

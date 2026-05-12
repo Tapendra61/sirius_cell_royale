@@ -23,8 +23,11 @@ target_include_directories(cell_royale_core PUBLIC src)
 target_link_libraries(cell_royale_core PUBLIC mini)
 cr_apply_platform_settings(cell_royale_core)
 
-# --- cell_royale: main executable (links raylib + core)
-add_executable(cell_royale src/main.cpp)
+# --- cell_royale: main executable (links raylib + core, includes client/)
+file(GLOB_RECURSE CR_CLIENT_SOURCES CONFIGURE_DEPENDS
+    src/client/*.cpp
+    src/platform/*.cpp)
+add_executable(cell_royale src/main.cpp ${CR_CLIENT_SOURCES})
 target_link_libraries(cell_royale PRIVATE cell_royale_core raylib raygui)
 
 if(CR_ENABLE_DEV_TOOLS)
