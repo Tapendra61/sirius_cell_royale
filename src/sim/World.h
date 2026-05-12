@@ -69,9 +69,12 @@ public:
     EntityId spawnFood(Vec2 pos, float mass, Vec2 vel, PlayerId from_player);
     EntityId spawnVirus(Vec2 pos, float mass);
 
-    Cell*  findCell(EntityId id);
-    Food*  findFood(EntityId id);
-    Virus* findVirus(EntityId id);
+    Cell*        findCell(EntityId id);
+    Food*        findFood(EntityId id);
+    Virus*       findVirus(EntityId id);
+    const Cell*  findCell(EntityId id) const;
+    const Food*  findFood(EntityId id) const;
+    const Virus* findVirus(EntityId id) const;
 
     const std::vector<Cell>&  cells() const { return cells_; }
     const std::vector<Food>&  food() const { return food_; }

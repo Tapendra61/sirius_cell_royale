@@ -105,6 +105,27 @@ Virus* World::findVirus(EntityId id) {
     return nullptr;
 }
 
+const Cell* World::findCell(EntityId id) const {
+    for (const auto& c : cells_) {
+        if (c.id == id) return &c;
+    }
+    return nullptr;
+}
+
+const Food* World::findFood(EntityId id) const {
+    for (const auto& f : food_) {
+        if (f.id == id) return &f;
+    }
+    return nullptr;
+}
+
+const Virus* World::findVirus(EntityId id) const {
+    for (const auto& v : viruses_) {
+        if (v.id == id) return &v;
+    }
+    return nullptr;
+}
+
 int World::playerCellCount(PlayerId p) const {
     int n = 0;
     for (const auto& c : cells_) if (c.owner == p) ++n;

@@ -35,11 +35,13 @@ struct BotMind {
     Tick           flee_until       = 0;
 
     // Virus avoidance: when close to a virus, the bot orbits it (tangent direction picked at
-    // entry so the orbit takes it in the direction it wanted to go). A committed tangent
-    // sign avoids the "flip and re-flip" pinball that used to leave bots stuck jittering
-    // next to a virus.
+    // entry so the orbit takes it in the direction it wanted to go). avoid_intent is the
+    // bot's original destination at avoidance entry; the orbit only exits once the bot is
+    // on the same hemisphere of the virus as that intent (so the resumed straight-line path
+    // doesn't take it back through). virus_avoid_until is a hard fail-safe.
     EntityId       avoiding_virus_id  = INVALID_ENTITY;
     Tick           virus_avoid_until  = 0;
+    Vec2           avoid_intent{};
     int8_t         avoid_tangent_sign = 0; // +1 or -1; chosen at entry
 };
 

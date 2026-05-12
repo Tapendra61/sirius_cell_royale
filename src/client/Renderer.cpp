@@ -12,19 +12,6 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
-Color colorForPlayer(PlayerId p) {
-    static const Color palette[] = {
-        Color{ 64, 156, 255, 255},
-        Color{255, 120,  80, 255},
-        Color{120, 220, 120, 255},
-        Color{255, 200,  60, 255},
-        Color{200, 120, 255, 255},
-        Color{ 80, 220, 220, 255},
-    };
-    if (p == INVALID_PLAYER) return Color{180, 180, 180, 255};
-    return palette[(p - 1) % (sizeof(palette) / sizeof(palette[0]))];
-}
-
 Color outlineFor(Color c) {
     return Color{
         static_cast<unsigned char>(c.r * 0.5f),
@@ -148,21 +135,15 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec) {
 
 } // namespace
 
-void Renderer::drawWorld(const Interpolator&     interp,
-                         const CameraController& camera,
-                         const Tuning&           tuning,
-                         int                     screen_w,
-                         int                     screen_h,
-                         float                   alpha,
-                         EntityId                watched_cell) const {
+void Renderer::drawWorld(const Interpolator& interp,
+                         const Tuning&       tuning,
+                         float               alpha,
+                         EntityId            watched_cell) const {
     if (!interp.hasCurr()) return;
 
     const Snapshot& curr     = interp.curr();
     const bool      have_prev = interp.hasPrev();
     const Snapshot& prev     = interp.prev();
-
-    Camera2D cam = camera.toCamera2D(screen_w, screen_h);
-    BeginMode2D(cam);
 
     drawWorldGrid(tuning.world_width, tuning.world_height);
 
@@ -215,8 +196,6 @@ void Renderer::drawWorld(const Interpolator&     interp,
         }
         drawCell(pos, c, /*watched=*/c.id == watched_cell, now_sec);
     }
-
-    EndMode2D();
 }
 
 } // namespace cr

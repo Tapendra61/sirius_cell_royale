@@ -160,32 +160,37 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
 
     // ---------- Virus avoidance via tangent orbit (replaces, doesn't add to, target) ------
     //
-    // The previous "target += away * 4r" version made bots pin themselves next to viruses:
-    // away is small relative to (target - self), so the bot still mostly aimed at its
-    // original goal (across the virus) and EMA averaged the two into a stuck spot just
-    // outside the trigger ring. The fix is to orbit the virus -- pick a tangent direction
-    // toward the intent at entry, commit to that direction, and snap the target (no EMA)
-    // so the bot follows the orbit cleanly.
+    // Exit logic is the load-bearing piece. When the bot enters avoidance we snapshot its
+    // original intent (where it wanted to go). The orbit exits once the bot is past the
+    // virus relative to that intent -- i.e. its resumed straight-line path won't take it
+    // back through the danger zone. A 4s hard fail-safe ensures we never get stuck
+    // orbiting forever if the geometry conspires against us.
     const Virus* avoiding = nullptr;
     if (w.fears_viruses && self.mass > 200.0f) {
         const float enter_radius = my_r * 4.0f;
         const float exit_radius  = my_r * 6.0f;
 
-        // Sticky check: keep avoiding the same virus until we're past it (time AND distance).
+        // Sticky check: keep avoiding the same virus until we're past it on intent's side.
         if (mind.avoiding_virus_id != INVALID_ENTITY) {
             const Virus* old = nullptr;
             for (const auto& vv : world.viruses()) {
                 if (vv.id == mind.avoiding_virus_id) { old = &vv; break; }
             }
-            if (old) {
-                float dist = distance(self.pos, old->pos);
-                if (now < mind.virus_avoid_until || dist < exit_radius) {
-                    avoiding = old;
-                } else {
-                    mind.avoiding_virus_id = INVALID_ENTITY;
-                }
+            if (!old) {
+                // Virus disappeared (eaten by an explosion).
+                mind.avoiding_virus_id = INVALID_ENTITY;
             } else {
-                mind.avoiding_virus_id = INVALID_ENTITY; // virus disappeared (eaten)
+                Vec2  v2intent = mind.avoid_intent - old->pos;
+                Vec2  v2bot    = self.pos - old->pos;
+                bool  past     = dot(v2bot, v2intent) > 0.0f;
+                float dist     = distance(self.pos, old->pos);
+                bool  time_up  = now >= mind.virus_avoid_until;
+
+                if ((past && dist > exit_radius) || time_up) {
+                    mind.avoiding_virus_id = INVALID_ENTITY;
+                } else {
+                    avoiding = old;
+                }
             }
         }
 
@@ -194,7 +199,8 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
             if (const Virus* v = nearestVirus(self, world, enter_radius)) {
                 avoiding = v;
                 mind.avoiding_virus_id = v->id;
-                mind.virus_avoid_until = now + secondsToTicks(1.5f);
+                mind.virus_avoid_until = now + secondsToTicks(4.0f); // hard fail-safe
+                mind.avoid_intent      = d.move_target;              // snapshot intent
                 Vec2 radial = normalize(self.pos - v->pos);
                 if (lengthSq(radial) < 0.5f) radial = {1.0f, 0.0f};
                 Vec2 tangent_ccw{-radial.y, radial.x};
@@ -211,9 +217,9 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
             Vec2 tangent{-radial.y, radial.x};
             if (mind.avoid_tangent_sign < 0) tangent = tangent * -1.0f;
 
-            // Orbit point: 5r outward + 4r tangent => 6.4r from virus, safely past exit_radius
-            // so the bot can actually leave the avoidance state once it gets there.
-            const float safe_radial = my_r * 5.0f;
+            // Orbit point: 5r outward + 4r tangent => ~6.4r from virus, safely past
+            // exit_radius (6r) so the past-virus + distance exit can actually fire.
+            const float safe_radial  = my_r * 5.0f;
             const float tangent_step = my_r * 4.0f;
             d.move_target = avoiding->pos + radial * safe_radial + tangent * tangent_step;
         }

@@ -173,13 +173,13 @@ void processEating(World& world, const Tuning& t, std::vector<GameEvent>& events
         }
 
         // --- cells ---  bounded by initial count: new cells from explosions appear after.
+        // We compute geometry up-front so we can emit a NearMissEvent for the case where
+        // the bigger cell almost ate the smaller but was blocked by mass-ratio / god /
+        // invuln. Fires only from the larger cell so each encounter emits once.
         for (size_t j = 0; j < count; ++j) {
             if (i == j || cell_dead[j]) continue;
             Cell& prey = cells[j];
             if (prey.owner == cells[i].owner) continue;
-            if (prey.god) continue;
-            if (prey.invuln_until > now) continue;
-            if (cells[i].mass < prey.mass * t.mass_ratio_required) continue;
 
             float pr = cellRadius(cells[i].mass);
             float sr = cellRadius(prey.mass);
@@ -187,10 +187,19 @@ void processEating(World& world, const Tuning& t, std::vector<GameEvent>& events
             float overlap = (pr + sr) - d;
             if (overlap < sr * t.overlap_required) continue;
 
-            cells[i].mass += prey.mass;
-            events.push_back(AbsorbEvent{cells[i].id, prey.id, prey.pos, prey.mass});
-            events.push_back(DeathEvent{prey.owner, cells[i].id});
-            cell_dead[j] = 1;
+            const bool can_eat = !prey.god
+                              && prey.invuln_until <= now
+                              && cells[i].mass >= prey.mass * t.mass_ratio_required;
+
+            if (can_eat) {
+                cells[i].mass += prey.mass;
+                events.push_back(AbsorbEvent{cells[i].id, prey.id, prey.pos, prey.mass});
+                events.push_back(DeathEvent{prey.owner, cells[i].id});
+                cell_dead[j] = 1;
+            } else if (cells[i].mass > prey.mass
+                       && overlap >= sr * t.near_miss_threshold) {
+                events.push_back(NearMissEvent{cells[i].id, prey.id, prey.pos});
+            }
         }
 
         // --- viruses ---

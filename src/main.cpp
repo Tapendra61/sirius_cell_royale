@@ -282,62 +282,64 @@ int runWindow(uint64_t seed) {
             if (replay_recording) live_replay.recordCommand(c);
         }
 
-        accumulator += static_cast<double>(frame_dt) * client.effectiveDtMultiplier();
-        int safety = 0;
-        while (accumulator >= sim_dt && safety < 8) {
-            sim.tick(sim_dt);
-            client.onSnapshot(sim.buildSnapshot());
-            accumulator -= sim_dt;
-            ++safety;
-        }
-        if (accumulator >= sim_dt) {
-            // Long pause / breakpoint -- drop the backlog instead of spiraling.
-            accumulator = 0.0;
+        // Per-frame feel layer update (shake decay, particles, popups, HUD, death cam).
+        client.updateFrame(frame_dt, GetTime(), tuning);
+
+        // Sim ticks -- skipped entirely while hitstop is freezing time.
+        if (!client.isHitstopActive()) {
+            accumulator += static_cast<double>(frame_dt) * client.effectiveDtMultiplier();
+            int safety = 0;
+            while (accumulator >= sim_dt && safety < 8) {
+                sim.tick(sim_dt);
+                client.onSnapshot(sim.buildSnapshot());
+                client.onEvents(sim.takeEvents(), sim.world(), tuning);
+                accumulator -= sim_dt;
+                ++safety;
+            }
+            if (accumulator >= sim_dt) {
+                // Long pause / breakpoint -- drop the backlog instead of spiraling.
+                accumulator = 0.0;
+            }
         }
 
-        // Follow the watched cell. If it died, retarget to the player's largest remaining
-        // piece (e.g. one of the split halves). Camera holds last position when none exist.
-        cr::Cell* watched = sim.world().findCell(player_cell);
-        if (!watched) {
-            cr::EntityId best  = cr::INVALID_ENTITY;
-            float    best_mass = 0.0f;
-            for (const auto& c : sim.world().cells()) {
-                if (c.owner == player && c.mass > best_mass) {
-                    best_mass = c.mass;
-                    best      = c.id;
+        // Camera: death cam steals the camera target while it's active. Otherwise follow
+        // the watched cell, retargeting to the player's largest piece if it died.
+        if (client.deathCamActive()) {
+            if (auto* killer = sim.world().findCell(client.deathCamTarget())) {
+                client.camera().setTarget(killer->pos, killer->mass);
+            }
+        } else {
+            cr::Cell* watched = sim.world().findCell(player_cell);
+            if (!watched) {
+                cr::EntityId best  = cr::INVALID_ENTITY;
+                float    best_mass = 0.0f;
+                for (const auto& c : sim.world().cells()) {
+                    if (c.owner == player && c.mass > best_mass) {
+                        best_mass = c.mass;
+                        best      = c.id;
+                    }
+                }
+                if (best != cr::INVALID_ENTITY) {
+                    player_cell = best;
+                    client.setWatchedCell(best);
+                    watched = sim.world().findCell(player_cell);
                 }
             }
-            if (best != cr::INVALID_ENTITY) {
-                player_cell = best;
-                client.setWatchedCell(best);
-                watched = sim.world().findCell(player_cell);
+            if (watched) {
+                client.camera().setTarget(watched->pos, watched->mass);
             }
-        }
-        if (watched) {
-            client.camera().setTarget(watched->pos, watched->mass);
         }
         client.camera().update(frame_dt);
 
-        float alpha = static_cast<float>(accumulator / sim_dt);
+        // During hitstop we render the last interpolated frame at alpha=1 so the frozen
+        // state reads as "the impact is registering" rather than as choppy motion.
+        float alpha = client.isHitstopActive()
+                          ? 1.0f
+                          : static_cast<float>(accumulator / sim_dt);
 
         BeginDrawing();
         ClearBackground(Color{18, 22, 30, 255});
-        client.render(screen_w, screen_h, alpha, tuning);
-
-        // Minimal stats overlay. Phase 6 replaces this with the real HUD.
-        char buf[128];
-        std::snprintf(buf, sizeof(buf), "FPS %d  Tick %u",
-                      GetFPS(), static_cast<unsigned>(sim.currentTick()));
-        DrawText(buf, 12, screen_h - 22, 16, Color{200, 200, 200, 220});
-        if (auto* c = sim.world().findCell(player_cell)) {
-            const char* mode = cr::isUsingTouch() ? "touch" : "desktop";
-            std::snprintf(buf, sizeof(buf),
-                          "mass %.1f  pos (%.0f, %.0f)  zoom %.2f  dt_x%.2f  %s%s",
-                          c->mass, c->pos.x, c->pos.y, client.camera().zoom(),
-                          client.dtMultiplier(), mode,
-                          client.isPaused() ? "  [PAUSED]" : "");
-            DrawText(buf, 12, screen_h - 40, 16, Color{200, 200, 200, 220});
-        }
+        client.render(screen_w, screen_h, alpha, tuning, sim.world(), sim.currentTick());
         EndDrawing();
     }
 
