@@ -1,0 +1,51 @@
+# Build artifacts
+build/
+out/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+Makefile
+compile_commands.json
+_deps/
+
+# IDE / editor
+.vscode/
+.idea/
+.vs/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Compiled binaries
+*.o
+*.obj
+*.exe
+*.out
+*.app
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.pdb
+
+# Large source assets (originals not in repo)
+assets/raw/
+
+# Roadmap docs (excluded by request)
+docs/roadmap/
+
+# Save files
+save.bin
+save.bak
+save.tmp
+
+# Replay files
+*.rpl
