@@ -93,8 +93,34 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec) {
         outline = Color{255, 220, 60, 255};
     }
 
+    // Hunter dash windup: pre-strike yellow ring that grows + brightens as the dash nears.
+    // anticipation curve t² makes it slow-then-fast, so the threat reads as "winding up".
+    if (c.dash_telegraph_norm > 0.0f) {
+        float t   = c.dash_telegraph_norm;
+        float a   = t * t;
+        float bump = a * 70.0f;
+        fill.r = static_cast<unsigned char>(std::min(255, static_cast<int>(fill.r) + static_cast<int>(bump)));
+        fill.g = static_cast<unsigned char>(std::min(255, static_cast<int>(fill.g) + static_cast<int>(bump)));
+    }
+
     DrawCircleV(Vector2{pos.x, pos.y}, r, fill);
     DrawCircleLinesV(Vector2{pos.x, pos.y}, r, outline);
+
+    if (c.dash_telegraph_norm > 0.0f) {
+        float t   = c.dash_telegraph_norm;
+        float a   = t * t;
+        float outset_min = 8.0f;
+        float outset = std::max(outset_min, r * 0.15f);
+        float ring_r = r + outset + a * outset;
+        unsigned char alpha = static_cast<unsigned char>(80.0f + a * 170.0f);
+        DrawCircleLinesV(Vector2{pos.x, pos.y}, ring_r,
+                         Color{255, 230, 80, alpha});
+        DrawCircleLinesV(Vector2{pos.x, pos.y}, ring_r * 1.05f,
+                         Color{255, 180, 30, static_cast<unsigned char>(alpha * 0.70f)});
+        DrawCircleLinesV(Vector2{pos.x, pos.y}, ring_r * 1.10f,
+                         Color{255, 130, 0, static_cast<unsigned char>(alpha * 0.45f)});
+    }
+
     if (c.dashing) {
         DrawCircleLinesV(Vector2{pos.x, pos.y}, r + 4.0f,
                          Color{255, 255, 255, 200});

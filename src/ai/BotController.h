@@ -49,6 +49,12 @@ struct BotMind {
     // the player independently creates emergent pack hunting.
     EntityId       chasing_id          = INVALID_ENTITY;
     Tick           chase_committed_until = 0;
+
+    // Dash windup (Hunter only): queue a future dash instead of firing it instantly so
+    // the player gets a brief visual tell before the strike. Randomised window keeps
+    // it from being perfectly predictable.
+    Tick           dash_windup_started = 0;
+    Tick           dash_windup_until   = 0;
 };
 
 // What the bot decided to do this tick. Caller turns these into Commands.

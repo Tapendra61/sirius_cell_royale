@@ -9,6 +9,26 @@ namespace {
 
 constexpr float kBigNumber = 1e30f;
 
+// Hunter-only dash telegraph: instead of firing the dash this tick we queue a 0.18-0.40s
+// windup. The player sees a growing yellow ring around the bot and gets a chance to react.
+// All other personalities still dash instantly via d.dash = true.
+void queueDashOrFire(BotMind& mind, BotDecision& d, const Cell& self, Rng& rng, Tick now) {
+    if (self.dash_cooldown_until > now) return; // dash on cooldown anyway
+    if (mind.personality == BotPersonality::Hunter) {
+        if (mind.dash_windup_until == 0) {
+            Tick ticks = secondsToTicks(0.18f + rng.nextFloat() * 0.22f);
+            mind.dash_windup_started = now;
+            mind.dash_windup_until   = now + ticks;
+        }
+    } else {
+        d.dash = true;
+    }
+}
+
+bool dashCommitted(const BotMind& mind, const BotDecision& d) {
+    return d.dash || mind.dash_windup_until > 0;
+}
+
 const Virus* nearestVirus(const Cell& self, const World& world, float radius) {
     const Virus* best   = nullptr;
     float        best_d = radius * radius;
@@ -57,6 +77,15 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
 
     const float my_r    = cellRadius(self.mass);
     const float view_sq = w.view_radius * w.view_radius;
+
+    // Hunter dash windup: when the queued windup has elapsed, fire the actual dash.
+    if (mind.dash_windup_until > 0 && now >= mind.dash_windup_until) {
+        if (self.dash_cooldown_until <= now) {
+            d.dash = true;
+        }
+        mind.dash_windup_until   = 0;
+        mind.dash_windup_started = 0;
+    }
 
     // ---------- Single pass over cells: find threat (+sticky threat) and best prey ----------
     const Cell* threat          = nullptr;
@@ -158,14 +187,14 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
         Vec2 perp{-away.y, away.x};
         d.move_target  = self.pos + (away * 0.85f + perp * 0.15f) * 800.0f;
         d.chosen_state = BotState::FleePredator;
-        if (rng.nextFloat() < w.dash_eagerness * 0.10f) d.dash = true;
+        if (rng.nextFloat() < w.dash_eagerness * 0.10f) queueDashOrFire(mind, d, self, rng, now);
         // Smart dash: when a predator is right on top of us and dash is ready, almost
         // always burn it. Survival over efficiency.
-        if (!d.dash && self.dash_cooldown_until <= now
+        if (!dashCommitted(mind, d) && self.dash_cooldown_until <= now
             && threat_d < my_r * 3.0f
             && w.dash_eagerness > 0.0f
             && rng.nextFloat() < 0.85f) {
-            d.dash = true;
+            queueDashOrFire(mind, d, self, rng, now);
         }
         mind.fled_threat_id = threat->id;
         mind.flee_until     = now + secondsToTicks(0.5f);
@@ -187,13 +216,13 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
             d.split        = true;
             d.chosen_state = BotState::SplitToKill;
         }
-        if (rng.nextFloat() < w.dash_eagerness * 0.05f) d.dash = true;
+        if (rng.nextFloat() < w.dash_eagerness * 0.05f) queueDashOrFire(mind, d, self, rng, now);
         // Smart dash: prey just outside pounce range, dash ready -> close the gap.
-        if (!d.dash && self.dash_cooldown_until <= now
+        if (!dashCommitted(mind, d) && self.dash_cooldown_until <= now
             && prey_d > my_r * 1.5f && prey_d < my_r * 4.5f
             && w.dash_eagerness > 0.0f
             && rng.nextFloat() < 0.85f) {
-            d.dash = true;
+            queueDashOrFire(mind, d, self, rng, now);
         }
         mind.fled_threat_id = INVALID_ENTITY;
         mind.flee_until     = 0;
