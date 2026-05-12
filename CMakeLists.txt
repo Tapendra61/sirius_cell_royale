@@ -15,6 +15,7 @@ include(cmake/platforms.cmake)
 # --- cell_royale_core: sim/transport/core. No raylib, no I/O dependencies.
 #     Linked by both the game binary and the test binary.
 file(GLOB_RECURSE CR_CORE_SOURCES CONFIGURE_DEPENDS
+    src/ai/*.cpp
     src/core/*.cpp
     src/sim/*.cpp
     src/transport/*.cpp)

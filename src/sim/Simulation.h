@@ -1,6 +1,7 @@
 #pragma once
 
 #include "World.h"
+#include "ai/BotDirector.h"
 #include "core/Command.h"
 #include "core/Events.h"
 #include "core/Snapshot.h"
@@ -35,6 +36,9 @@ public:
     const Tuning& tuning() const { return tuning_; }
     void          setTuning(Tuning t) { tuning_ = std::move(t); }
 
+    ai::BotDirector&       director() { return director_; }
+    const ai::BotDirector& director() const { return director_; }
+
     // Events produced during the most recent tick(). Cleared at the start of each tick().
     const std::vector<GameEvent>& events() const { return events_; }
     std::vector<GameEvent>        takeEvents();
@@ -44,6 +48,7 @@ private:
 
     World                  world_;
     Tuning                 tuning_;
+    ai::BotDirector        director_;
     std::vector<Command>   pending_;
     std::vector<GameEvent> events_;
 };

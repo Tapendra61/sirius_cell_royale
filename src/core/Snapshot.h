@@ -18,6 +18,8 @@ struct CellSnap {
     bool     dashing             = false;
     bool     god                 = false;
     float    dash_cooldown_norm  = 1.0f; // 0 = just used, 1 = ready
+    // Phase 5: bot personality (0 = human/unknown; 1..5 = personality enum + 1).
+    uint8_t  personality_tag     = 0;
 
     bool operator==(const CellSnap&) const = default;
 };

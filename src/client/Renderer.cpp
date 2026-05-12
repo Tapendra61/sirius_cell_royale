@@ -112,8 +112,13 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec) {
                          Color{255, 255, 255, 200});
     }
 
+    // Phase 5: bot cells display a personality letter + id; the human player gets "P<id>".
+    static const char kPersonalityLetters[] = {'P', 'G', 'C', 'H', 'h', 'R'};
+    char letter = (c.personality_tag < sizeof(kPersonalityLetters))
+                      ? kPersonalityLetters[c.personality_tag]
+                      : '?';
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "P%u", static_cast<unsigned>(c.owner));
+    std::snprintf(buf, sizeof(buf), "%c%u", letter, static_cast<unsigned>(c.owner));
     int font_size = std::max(12, static_cast<int>(r * 0.5f));
     int text_w    = MeasureText(buf, font_size);
     DrawText(buf,

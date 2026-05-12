@@ -1,0 +1,60 @@
+#pragma once
+
+#include "BotPersonality.h"
+#include "core/Rng.h"
+#include "core/Tuning.h"
+#include "core/Types.h"
+#include "sim/World.h"
+
+namespace cr::ai {
+
+enum class BotState : uint8_t {
+    Wander       = 0,
+    SeekFood     = 1,
+    FleePredator = 2,
+    ChasePrey    = 3,
+    SplitToKill  = 4,
+};
+
+// Per-bot mind: persists between ticks. Stored by BotDirector.
+struct BotMind {
+    PlayerId       player           = INVALID_PLAYER;
+    BotPersonality personality      = BotPersonality::Greedy;
+    BotState       state            = BotState::Wander;
+    Vec2           wander_target{};
+    Tick           wander_set_at    = 0;
+
+    // EMA-smoothed move target so per-tick scan choices don't make the cell visibly jitter.
+    Vec2           smoothed_target{};
+    bool           smoothed_init    = false;
+
+    // Flee hysteresis: once we're fleeing a specific threat, commit to it for a short window
+    // and use a wider drop-off radius so a single tick of "threat barely out of range" doesn't
+    // flip us back into seeking food.
+    EntityId       fled_threat_id   = INVALID_ENTITY;
+    Tick           flee_until       = 0;
+
+    // Virus avoidance: when close to a virus, the bot orbits it (tangent direction picked at
+    // entry so the orbit takes it in the direction it wanted to go). A committed tangent
+    // sign avoids the "flip and re-flip" pinball that used to leave bots stuck jittering
+    // next to a virus.
+    EntityId       avoiding_virus_id  = INVALID_ENTITY;
+    Tick           virus_avoid_until  = 0;
+    int8_t         avoid_tangent_sign = 0; // +1 or -1; chosen at entry
+};
+
+// What the bot decided to do this tick. Caller turns these into Commands.
+struct BotDecision {
+    Vec2     move_target{};
+    bool     split        = false;
+    bool     eject        = false;
+    bool     dash         = false;
+    BotState chosen_state = BotState::Wander;
+};
+
+// Reads `self` and `world` (read-only); mutates `mind` (wander state, smoothing, flee
+// commitment); consumes from `rng` (deterministic). Pure on those inputs.
+BotDecision decide(BotMind& mind, const Cell& self, const World& world,
+                   const Tuning& t, Rng& rng, Tick now);
+
+} // namespace cr::ai

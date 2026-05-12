@@ -10,7 +10,8 @@ namespace cr {
 
 Simulation::Simulation(uint64_t seed, Tuning tuning)
     : world_(seed, tuning.world_width, tuning.world_height),
-      tuning_(std::move(tuning)) {
+      tuning_(std::move(tuning)),
+      director_(seed) {
     // Initial food.
     for (int i = 0; i < tuning_.food_target; ++i) {
         Vec2 pos{
@@ -47,6 +48,13 @@ void Simulation::tick(float dt) {
 
     const Tick now = world_.currentTick();
 
+    // 0. Bots read last tick's state and queue this tick's commands.
+    std::vector<Command> bot_commands;
+    director_.tick(world_, tuning_, bot_commands);
+    for (auto& c : bot_commands) {
+        pending_.push_back(std::move(c));
+    }
+
     // 1. Apply commands queued for this tick (and any earlier ticks not yet applied).
     std::vector<Command> still_pending;
     still_pending.reserve(pending_.size());
@@ -79,8 +87,18 @@ void Simulation::tick(float dt) {
 
 void Simulation::applyCommand(const Command& cmd) {
     if (auto* m = std::get_if<MoveCmd>(&cmd.payload)) {
+        // Clamp target into the playfield with a small inset so cells don't pile against
+        // the wall when the player aims outside the world (high-zoom mouse, bot flee target
+        // past the edge, etc.). Cheap, deterministic, applies uniformly to bot + player.
+        constexpr float kMargin = 32.0f;
+        Vec2 target{
+            std::clamp(m->target.x, kMargin,
+                       static_cast<float>(world_.width())  - kMargin),
+            std::clamp(m->target.y, kMargin,
+                       static_cast<float>(world_.height()) - kMargin),
+        };
         for (auto& c : world_.cellsMut()) {
-            if (c.owner == cmd.player) c.target = m->target;
+            if (c.owner == cmd.player) c.target = target;
         }
         return;
     }
@@ -107,6 +125,7 @@ Snapshot Simulation::buildSnapshot() const {
     const float cooldown_ticks  = std::max(1.0f, tuning_.cooldown_sec * kSimHz);
 
     s.cells.reserve(world_.cells().size());
+    const auto& bots = director_.bots();
     for (const auto& c : world_.cells()) {
         CellSnap cs;
         cs.id      = c.id;
@@ -122,6 +141,14 @@ Snapshot Simulation::buildSnapshot() const {
             cs.dash_cooldown_norm = std::clamp(1.0f - remaining / cooldown_ticks, 0.0f, 1.0f);
         } else {
             cs.dash_cooldown_norm = 1.0f;
+        }
+        // Tag with personality if this cell is bot-owned (small linear scan; bot count <= ~30).
+        cs.personality_tag = 0;
+        for (const auto& bot : bots) {
+            if (bot.player == c.owner) {
+                cs.personality_tag = static_cast<uint8_t>(bot.personality) + 1;
+                break;
+            }
         }
         s.cells.push_back(cs);
     }
