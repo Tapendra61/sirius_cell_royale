@@ -22,15 +22,16 @@ Color outlineFor(Color c) {
 }
 
 Color foodColor(const FoodSnap& f) {
-    if (lengthSq(f.vel) > 100.0f * 100.0f) {
-        // In-flight ejected pellet: brighter.
-        return Color{230, 230, 120, 255};
+    // In-flight ejected pellet: bright yellow so it reads as a thrown thing.
+    if (lengthSq(f.vel) > 50.0f * 50.0f) {
+        return Color{255, 220, 120, 255};
     }
-    if (f.mass > 5.0f) {
-        // Settled pellet (post-flight); slightly different from ambient food.
-        return Color{200, 200, 130, 255};
-    }
-    return Color{120, 220, 130, 255};
+    // Tier colors (higher mass first; ejected pellets settle at mass 18 -> dim yellow).
+    if (f.mass >= 15.0f) return Color{220, 200, 140, 255}; // settled pellet
+    if (f.mass >= 10.0f) return Color{255, 210,  90, 255}; // epic   (mass 12)
+    if (f.mass >= 5.0f)  return Color{120, 230, 220, 255}; // rare   (mass 6)
+    if (f.mass >= 2.0f)  return Color{180, 240, 110, 255}; // uncommon (mass 3)
+    return Color{120, 220, 130, 255};                       // common (mass 1)
 }
 
 void drawWorldGrid(int world_w, int world_h) {
@@ -148,6 +149,8 @@ void Renderer::drawWorld(const Interpolator& interp,
     drawWorldGrid(tuning.world_width, tuning.world_height);
 
     // Food (interpolate in-flight pellets so they don't visibly jitter at sim rate).
+    // High-tier ambient food gets a pulsing halo so rare drops stand out from far away.
+    const double now_t = GetTime();
     for (const auto& f : curr.food) {
         Vec2 pos = f.pos;
         if (have_prev && lengthSq(f.vel) > 1.0f) {
@@ -158,7 +161,23 @@ void Renderer::drawWorld(const Interpolator& interp,
                 }
             }
         }
-        DrawCircleV(Vector2{pos.x, pos.y}, foodRadius(f.mass), foodColor(f));
+        Color c = foodColor(f);
+        float r = foodRadius(f.mass);
+
+        // Halo only for rare/epic stationary food. id-based phase so the field doesn't
+        // pulse in lock-step.
+        const bool stationary = lengthSq(f.vel) < 50.0f * 50.0f;
+        if (stationary && f.mass >= 5.0f) {
+            float phase = static_cast<float>(f.id % 64) * 0.1f;
+            float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(now_t) * 4.0f + phase);
+            // Epic pulses stronger than rare.
+            float halo_strength = (f.mass >= 10.0f) ? 1.0f : 0.55f;
+            unsigned char glow_a = static_cast<unsigned char>(
+                (35.0f + pulse * 50.0f) * halo_strength);
+            DrawCircleV(Vector2{pos.x, pos.y}, r * 1.9f,
+                        Color{c.r, c.g, c.b, glow_a});
+        }
+        DrawCircleV(Vector2{pos.x, pos.y}, r, c);
     }
 
     // Viruses (drift if pushed; interpolate to smooth that motion).

@@ -304,11 +304,20 @@ void respawnFood(World& world, const Tuning& t) {
                 }
             }
             if (!too_close) {
-                world.spawnFood(pos);
+                world.spawnFood(pos, rollFoodMass(world.rng()),
+                                Vec2{0.0f, 0.0f}, INVALID_PLAYER);
                 break;
             }
         }
     }
+}
+
+float rollFoodMass(Rng& rng) {
+    float r = rng.nextFloat();
+    if (r < 0.02f) return 12.0f; //  2% epic   (gold, halo)
+    if (r < 0.10f) return  6.0f; //  8% rare   (cyan, halo)
+    if (r < 0.30f) return  3.0f; // 20% uncommon (lime)
+    return 1.0f;                 // 70% common (green)
 }
 
 void doSplit(World& world, PlayerId player, const Tuning& t,

@@ -49,10 +49,14 @@ inline Vec2  lerp(Vec2 a, Vec2 b, float t) { return a + (b - a) * t; }
 // Cell radius derived from mass: at mass=100, radius=30 (matches tuning comment).
 inline float cellRadius(float mass) { return 3.0f * std::sqrt(mass); }
 
-// Food radius for collision / rendering. Tiny but proportional so ejected pellets read big.
+// Food radius -- discrete tiers so common food is uniform while bigger drops stand out
+// without being so large they read as "tiny cell". Capped well below cell radius.
 inline float foodRadius(float mass) {
-    if (mass <= 1.0f) return 4.0f;
-    return 2.5f * std::sqrt(mass);
+    if (mass >= 15.0f) return 8.5f; // ejected pellets / settled pellets
+    if (mass >= 8.0f)  return 6.5f; // epic food
+    if (mass >= 4.0f)  return 5.5f; // rare food
+    if (mass >= 2.0f)  return 5.0f; // uncommon food
+    return 4.0f;                    // common food (mass 1)
 }
 
 } // namespace cr

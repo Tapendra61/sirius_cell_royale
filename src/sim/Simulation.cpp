@@ -12,13 +12,14 @@ Simulation::Simulation(uint64_t seed, Tuning tuning)
     : world_(seed, tuning.world_width, tuning.world_height),
       tuning_(std::move(tuning)),
       director_(seed) {
-    // Initial food.
+    // Initial food: tiered roll so the world spawns with a mix of common/uncommon/rare/epic.
     for (int i = 0; i < tuning_.food_target; ++i) {
         Vec2 pos{
             world_.rng().rangeFloat(0.0f, static_cast<float>(world_.width())),
             world_.rng().rangeFloat(0.0f, static_cast<float>(world_.height())),
         };
-        world_.spawnFood(pos);
+        world_.spawnFood(pos, rules::rollFoodMass(world_.rng()),
+                         Vec2{0.0f, 0.0f}, INVALID_PLAYER);
     }
     // Initial viruses, kept clear of the world edges.
     constexpr float kVirusMargin = 200.0f;

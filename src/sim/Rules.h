@@ -27,4 +27,8 @@ void doSplit(World& world, PlayerId player, const Tuning& t, std::vector<GameEve
 void doEject(World& world, PlayerId player, const Tuning& t);
 void doDash(World& world, PlayerId player, const Tuning& t);
 
+// Weighted food-tier roll. Used by both Simulation::ctor (initial pile) and respawnFood().
+// Returns one of {1, 3, 6, 12} -- common / uncommon / rare / epic. Consumes one rng.nextFloat().
+float rollFoodMass(Rng& rng);
+
 } // namespace cr::rules
