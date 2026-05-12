@@ -24,6 +24,12 @@ public:
 
     const std::vector<BotMind>& bots() const { return bots_; }
 
+    // Tracked peak mass of the human player. Used to scale bot caps and elite spawns so
+    // the world remains a credible threat at any player size.
+    float playerMaxMass() const { return player_max_mass_; }
+    Vec2  playerPos() const { return player_pos_; }
+    bool  hasPlayerLocation() const { return player_seen_; }
+
 private:
     void           respawnBots(World& world, const Tuning& t);
     BotPersonality pickPersonality();
@@ -32,6 +38,9 @@ private:
     std::vector<BotMind> bots_;
     PlayerId             next_player_id_ = kFirstBotPlayerId;
     float                player_skill_   = 500.0f;
+    float                player_max_mass_ = 100.0f; // smoothed
+    Vec2                 player_pos_{4000.0f, 4000.0f};
+    bool                 player_seen_    = false;
 };
 
 } // namespace cr::ai

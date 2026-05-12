@@ -3,9 +3,11 @@
 namespace cr::ai {
 
 PersonalityWeights weightsFor(BotPersonality p) {
+    // Field order matches the struct (top-to-bottom). Each row mirrors a one-line
+    // intent: "I am the ___ bot."
     switch (p) {
     case BotPersonality::Greedy:
-        // Long food vision, ignores threats until close. Easy to bait into walls of food.
+        // Long food vision, ignores threats until close, strong pull toward big food.
         return {/*view*/         3000.0f,
                 /*flee_mult*/       2.5f,
                 /*chase_mult*/      0.0f,
@@ -16,19 +18,23 @@ PersonalityWeights weightsFor(BotPersonality p) {
                 /*fears_viruses*/   true,
                 /*max_mass_factor*/ 0.9f,
                 /*human_bias*/      1.0f,
-                /*responsiveness*/  0.25f};
+                /*responsiveness*/  0.25f,
+                /*food_value_w*/    2.0f,  // mass 12 weighs 23x vs mass 1 at equal dist
+                /*prey_lead_sec*/   0.0f};
     case BotPersonality::Cautious:
-        // Sees threats from far, flees at long range, never splits. Very smooth movement.
-        return {2000.0f, 20.0f, 0.0f, 0.0f, 0.0f,  6.0f, 0.0f, true,  0.6f, 1.0f, 0.12f};
+        // Long flee range, never splits, neutral food preference, smooth movement, low cap.
+        return {2000.0f, 20.0f, 0.0f, 0.0f, 0.0f, 6.0f, 0.0f, true, 0.6f, 1.0f, 0.12f, 0.5f, 0.0f};
     case BotPersonality::Hunter:
-        // Aggressive, long chase range, strongly prefers the human player, splits often.
-        return {3500.0f,  5.0f, 25.0f, 0.8f, 0.30f, 2.0f, 0.0f, true,  1.2f, 3.5f, 0.32f};
+        // The apex predator. Long chase range, near-always-splits in pounce range,
+        // strongly prefers human cells, leads prey velocity, scales above the player.
+        return {4500.0f, 4.0f, 35.0f, 0.95f, 0.45f, 2.0f, 0.0f, true, 1.3f, 5.0f, 0.32f, 0.3f, 0.7f};
     case BotPersonality::Hoarder:
-        // Camps the corner: huge pull, slow re-roll, near-zero responsiveness. Hard to budge.
-        return {1100.0f,  6.0f,  0.0f, 0.0f, 0.0f,  8.0f, 0.92f, true, 1.0f, 1.0f, 0.10f};
+        // Camps a corner; opportunistically snaps at prey/food within bite range; loves
+        // valuable food above all else.
+        return {1100.0f, 6.0f, 4.0f, 0.0f, 0.0f, 8.0f, 0.92f, true, 1.0f, 1.0f, 0.10f, 4.0f, 0.0f};
     case BotPersonality::Reckless:
-        // Comic relief: snappy/jittery target, ignores viruses, splits constantly, dashes a lot.
-        return {2200.0f,  1.5f, 20.0f, 1.0f, 1.00f, 1.0f, 0.0f, false, 1.1f, 1.0f, 0.55f};
+        // Ignores viruses, dashes and splits constantly, scales just above the player.
+        return {2200.0f, 1.5f, 20.0f, 1.0f, 1.00f, 1.0f, 0.0f, false, 1.2f, 1.0f, 0.55f, 0.8f, 0.2f};
     case BotPersonality::Count:
         break;
     }

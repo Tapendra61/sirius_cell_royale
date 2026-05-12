@@ -31,11 +31,15 @@ struct PersonalityWeights {
     float wander_period_sec;    // how often to re-roll a wander target
     float corner_pull;          // 0..1; Hoarder bias toward the nearest world corner
     bool  fears_viruses;        // false = Reckless (drives near viruses)
-    float max_mass_factor;      // mass cap scales as player_skill * this
+    float max_mass_factor;      // mass cap = 500 * this; bots stop seeking food past it
     float human_target_bias;    // prey-score multiplier applied to cells owned by the human
                                 // (Hunter is the obvious user; everyone else stays at 1.0)
     float target_responsiveness; // EMA alpha for move target. Low = smooth/sleepy (Cautious,
                                 // Hoarder), high = snappy/jittery (Reckless).
+    float food_value_weight;    // (mass - 1) multiplier in food scoring. 0 = pick nearest,
+                                // higher = prefer epic/rare food over close common.
+    float prey_lead_seconds;    // when chasing, aim at prey.pos + prey.vel * this. Hunter
+                                // gets ~0.5 to intercept; others 0 (aim at current pos).
 };
 
 PersonalityWeights weightsFor(BotPersonality p);

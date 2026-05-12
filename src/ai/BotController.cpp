@@ -24,10 +24,33 @@ const Virus* nearestVirus(const Cell& self, const World& world, float radius) {
     return best;
 }
 
+// Value-weighted food scorer. score = mass_bonus / (1 + dist²/300²) so a 300px-distant
+// food is roughly half as attractive as one at 0px, and high-mass food multiplies the
+// bonus by personality food_value_weight. With weight=2 (Greedy), epic (mass 12) at
+// 300px outranks common (mass 1) at 50px -- the bot commits to the longer trip.
+const Food* findBestFood(const Cell& self, const World& world, const PersonalityWeights& w) {
+    const Food* best       = nullptr;
+    float       best_score = -1.0f;
+    const float view_sq    = w.view_radius * w.view_radius;
+    for (const auto& f : world.food()) {
+        float dx  = f.pos.x - self.pos.x;
+        float dy  = f.pos.y - self.pos.y;
+        float dsq = dx * dx + dy * dy;
+        if (dsq > view_sq) continue;
+        float mass_bonus = 1.0f + (f.mass - 1.0f) * w.food_value_weight;
+        float score = mass_bonus / (1.0f + dsq * 1.111e-5f); // 1.111e-5 ≈ 1/300²
+        if (score > best_score) {
+            best_score = score;
+            best       = &f;
+        }
+    }
+    return best;
+}
+
 } // namespace
 
 BotDecision decide(BotMind& mind, const Cell& self, const World& world,
-                   const Tuning& t, Rng& rng, Tick now) {
+                   const Tuning& t, Rng& rng, Tick now, float player_max_mass) {
     const PersonalityWeights w = weightsFor(mind.personality);
     BotDecision d;
     d.move_target = self.pos;
@@ -43,12 +66,27 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
     const Cell* prey            = nullptr;
     float       prey_d          = kBigNumber;
     float       prey_score      = 0.0f;
+    const Cell* sticky_prey     = nullptr;
+    float       sticky_prey_d   = kBigNumber;
+    const float sticky_view_sq  = (w.view_radius * 1.5f) * (w.view_radius * 1.5f);
 
     for (const auto& c : world.cells()) {
         if (c.id == self.id || c.owner == self.owner) continue;
         float dx  = c.pos.x - self.pos.x;
         float dy  = c.pos.y - self.pos.y;
         float dsq = dx * dx + dy * dy;
+
+        // Sticky chase target -- 1.5x view radius so a fleeing target stays locked briefly.
+        if (c.id == mind.chasing_id
+            && now < mind.chase_committed_until
+            && dsq < sticky_view_sq
+            && self.mass > c.mass * t.mass_ratio_required
+            && !c.god
+            && c.invuln_until <= now) {
+            sticky_prey   = &c;
+            sticky_prey_d = std::sqrt(dsq);
+        }
+
         if (dsq > view_sq) continue;
         float dist = std::sqrt(dsq);
 
@@ -81,6 +119,27 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
         }
     }
 
+    // Sticky prey overrides the score-based pick: once a Hunter locks onto a target they
+    // commit to it even if a "better" prey appears mid-chase. This is what makes them
+    // relentless.
+    if (sticky_prey) {
+        prey   = sticky_prey;
+        prey_d = sticky_prey_d;
+    } else if (mind.chasing_id != INVALID_ENTITY) {
+        // Lost sight (gone, eaten, escaped). Drop the lock.
+        mind.chasing_id           = INVALID_ENTITY;
+        mind.chase_committed_until = 0;
+    }
+
+    // Establish a new lock when we pick up a human prey (Hunter being the main user via
+    // its 5x human_target_bias).
+    if (prey
+        && prey->owner < kFirstBotPlayerId
+        && mind.personality == BotPersonality::Hunter) {
+        mind.chasing_id           = prey->id;
+        mind.chase_committed_until = now + secondsToTicks(4.0f);
+    }
+
     // Flee hysteresis: while committed, the sticky threat counts even at 1.5x normal range.
     if (now < mind.flee_until
         && sticky_threat
@@ -100,11 +159,25 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
         d.move_target  = self.pos + (away * 0.85f + perp * 0.15f) * 800.0f;
         d.chosen_state = BotState::FleePredator;
         if (rng.nextFloat() < w.dash_eagerness * 0.10f) d.dash = true;
+        // Smart dash: when a predator is right on top of us and dash is ready, almost
+        // always burn it. Survival over efficiency.
+        if (!d.dash && self.dash_cooldown_until <= now
+            && threat_d < my_r * 3.0f
+            && w.dash_eagerness > 0.0f
+            && rng.nextFloat() < 0.85f) {
+            d.dash = true;
+        }
         mind.fled_threat_id = threat->id;
         mind.flee_until     = now + secondsToTicks(0.5f);
     } else if (prey) {
         d.chosen_state = BotState::ChasePrey;
-        d.move_target  = prey->pos;
+        // Lead-aim: aim where prey will be in prey_lead_seconds, not where it is.
+        // Hunter's 0.5s lead turns half-decent chases into clean interceptions.
+        Vec2 prey_target = prey->pos;
+        if (w.prey_lead_seconds > 0.0f) {
+            prey_target = prey_target + prey->vel * w.prey_lead_seconds;
+        }
+        d.move_target = prey_target;
         const bool in_pounce_range = prey_d < my_r * 2.5f;
         const bool can_split = self.mass >= t.min_mass_to_split
                             && world.playerCellCount(self.owner) < t.max_cells_per_player
@@ -115,22 +188,24 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
             d.chosen_state = BotState::SplitToKill;
         }
         if (rng.nextFloat() < w.dash_eagerness * 0.05f) d.dash = true;
+        // Smart dash: prey just outside pounce range, dash ready -> close the gap.
+        if (!d.dash && self.dash_cooldown_until <= now
+            && prey_d > my_r * 1.5f && prey_d < my_r * 4.5f
+            && w.dash_eagerness > 0.0f
+            && rng.nextFloat() < 0.85f) {
+            d.dash = true;
+        }
         mind.fled_threat_id = INVALID_ENTITY;
         mind.flee_until     = 0;
     } else {
-        // No cell-target: look at food. Cheaper to scan food only when needed.
-        const Food* food   = nullptr;
-        float       food_d = kBigNumber;
-        for (const auto& f : world.food()) {
-            float dx  = f.pos.x - self.pos.x;
-            float dy  = f.pos.y - self.pos.y;
-            float dsq = dx * dx + dy * dy;
-            if (dsq > view_sq) continue;
-            if (dsq < food_d) {
-                food_d = dsq;
-                food   = &f;
-            }
-        }
+        // No cell-target. Score food by value × proximity, skip the search entirely once
+        // we've grown past the dynamic mass cap. Cap scales with the player's tracked peak
+        // mass so bots remain a credible threat at any player size (Hunter at 1.3 caps
+        // ~55% above the player; Cautious at 0.6 stays well below).
+        const float cap_base = std::max(500.0f, player_max_mass * 1.2f);
+        const float mass_cap = cap_base * w.max_mass_factor;
+        const Food* food = (self.mass >= mass_cap) ? nullptr : findBestFood(self, world, w);
+
         if (food) {
             d.chosen_state = BotState::SeekFood;
             d.move_target  = food->pos;
@@ -230,9 +305,20 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
         mind.virus_avoid_until = 0;
     }
 
-    // Reckless gets a small per-tick free-dash chance even when not fleeing or chasing.
-    if (mind.personality == BotPersonality::Reckless && !d.dash) {
-        if (rng.nextFloat() < 0.02f) d.dash = true;
+    // Reckless quirks: free dash, occasional direction flip, random eject. The combination
+    // gives them a visibly twitchy "what's wrong with that one" feel.
+    if (mind.personality == BotPersonality::Reckless) {
+        if (!d.dash && rng.nextFloat() < 0.02f) d.dash = true;
+        if (d.chosen_state == BotState::Wander && rng.nextFloat() < 0.015f) {
+            // Reflect the move target across self.pos -- bot abruptly reverses course.
+            d.move_target = Vec2{2.0f * self.pos.x - d.move_target.x,
+                                 2.0f * self.pos.y - d.move_target.y};
+        }
+        if (!d.eject
+            && self.mass >= t.min_mass_to_eject + 50.0f
+            && rng.nextFloat() < 0.005f) {
+            d.eject = true;
+        }
     }
 
     // ---------- EMA smoothing ----------

@@ -43,6 +43,12 @@ struct BotMind {
     Tick           virus_avoid_until  = 0;
     Vec2           avoid_intent{};
     int8_t         avoid_tangent_sign = 0; // +1 or -1; chosen at entry
+
+    // Sticky prey lock-on. Once a bot (typically Hunter) commits to a target it tracks
+    // them with view-range hysteresis for chase_until ticks. Multiple bots locking onto
+    // the player independently creates emergent pack hunting.
+    EntityId       chasing_id          = INVALID_ENTITY;
+    Tick           chase_committed_until = 0;
 };
 
 // What the bot decided to do this tick. Caller turns these into Commands.
@@ -56,7 +62,9 @@ struct BotDecision {
 
 // Reads `self` and `world` (read-only); mutates `mind` (wander state, smoothing, flee
 // commitment); consumes from `rng` (deterministic). Pure on those inputs.
+// player_max_mass: the human player's tracked peak mass (BotDirector provides it). Used
+// to scale this bot's mass cap so it remains a credible threat at any player size.
 BotDecision decide(BotMind& mind, const Cell& self, const World& world,
-                   const Tuning& t, Rng& rng, Tick now);
+                   const Tuning& t, Rng& rng, Tick now, float player_max_mass);
 
 } // namespace cr::ai
