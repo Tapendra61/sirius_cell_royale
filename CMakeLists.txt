@@ -12,10 +12,20 @@ option(CR_ENABLE_TELEMETRY  "Send anonymized metrics (opt-in)"    OFF)
 include(cmake/FetchDependencies.cmake)
 include(cmake/platforms.cmake)
 
-file(GLOB_RECURSE CR_SOURCES CONFIGURE_DEPENDS src/*.cpp)
-add_executable(cell_royale ${CR_SOURCES})
-target_include_directories(cell_royale PRIVATE src)
-target_link_libraries(cell_royale PRIVATE raylib raygui mini)
+# --- cell_royale_core: sim/transport/core. No raylib, no I/O dependencies.
+#     Linked by both the game binary and the test binary.
+file(GLOB_RECURSE CR_CORE_SOURCES CONFIGURE_DEPENDS
+    src/core/*.cpp
+    src/sim/*.cpp
+    src/transport/*.cpp)
+add_library(cell_royale_core STATIC ${CR_CORE_SOURCES})
+target_include_directories(cell_royale_core PUBLIC src)
+target_link_libraries(cell_royale_core PUBLIC mini)
+cr_apply_platform_settings(cell_royale_core)
+
+# --- cell_royale: main executable (links raylib + core)
+add_executable(cell_royale src/main.cpp)
+target_link_libraries(cell_royale PRIVATE cell_royale_core raylib raygui)
 
 if(CR_ENABLE_DEV_TOOLS)
     target_compile_definitions(cell_royale PRIVATE CR_DEV_TOOLS)
@@ -33,3 +43,11 @@ add_custom_command(TARGET cell_royale POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_SOURCE_DIR}/tuning.ini
         $<TARGET_FILE_DIR:cell_royale>/tuning.ini)
+
+# --- cell_royale_test: determinism check, no raylib.
+add_executable(cell_royale_test test/determinism_test.cpp)
+target_link_libraries(cell_royale_test PRIVATE cell_royale_core)
+cr_apply_platform_settings(cell_royale_test)
+
+enable_testing()
+add_test(NAME determinism COMMAND cell_royale_test)
