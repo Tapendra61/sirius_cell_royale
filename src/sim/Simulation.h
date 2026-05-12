@@ -41,7 +41,6 @@ public:
 
 private:
     void applyCommand(const Command& cmd);
-    void stepCells(float dt);
 
     World                  world_;
     Tuning                 tuning_;

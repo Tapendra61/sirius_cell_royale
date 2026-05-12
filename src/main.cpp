@@ -175,7 +175,12 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
             con.log("no player cell tracked");
         }
     } else if (cmd == "god") {
-        con.log("god mode: not implemented until Phase 4 (no death yet)");
+        if (auto* c = s.sim->world().findCell(*s.player_cell_id)) {
+            c->god = !c->god;
+            con.log(std::string("god mode = ") + (c->god ? "on" : "off"));
+        } else {
+            con.log("no player cell to bless");
+        }
     } else if (cmd == "slowmo" && needs(2)) {
         float m = static_cast<float>(std::atof(args[1].c_str()));
         if (m <= 0.0f) m = 0.001f;
@@ -290,8 +295,26 @@ int runWindow(uint64_t seed) {
             accumulator = 0.0;
         }
 
-        if (auto* c = sim.world().findCell(player_cell)) {
-            client.camera().setTarget(c->pos, c->mass);
+        // Follow the watched cell. If it died, retarget to the player's largest remaining
+        // piece (e.g. one of the split halves). Camera holds last position when none exist.
+        cr::Cell* watched = sim.world().findCell(player_cell);
+        if (!watched) {
+            cr::EntityId best  = cr::INVALID_ENTITY;
+            float    best_mass = 0.0f;
+            for (const auto& c : sim.world().cells()) {
+                if (c.owner == player && c.mass > best_mass) {
+                    best_mass = c.mass;
+                    best      = c.id;
+                }
+            }
+            if (best != cr::INVALID_ENTITY) {
+                player_cell = best;
+                client.setWatchedCell(best);
+                watched = sim.world().findCell(player_cell);
+            }
+        }
+        if (watched) {
+            client.camera().setTarget(watched->pos, watched->mass);
         }
         client.camera().update(frame_dt);
 

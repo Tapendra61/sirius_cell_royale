@@ -61,11 +61,27 @@ EntityId World::spawnCell(PlayerId owner, Vec2 pos, float mass) {
 }
 
 EntityId World::spawnFood(Vec2 pos) {
+    return spawnFood(pos, 1.0f, Vec2{0.0f, 0.0f}, INVALID_PLAYER);
+}
+
+EntityId World::spawnFood(Vec2 pos, float mass, Vec2 vel, PlayerId from_player) {
     Food f;
-    f.id  = next_id_++;
-    f.pos = pos;
+    f.id          = next_id_++;
+    f.pos         = pos;
+    f.vel         = vel;
+    f.mass        = mass;
+    f.from_player = from_player;
     food_.push_back(f);
     return f.id;
+}
+
+EntityId World::spawnVirus(Vec2 pos, float mass) {
+    Virus v;
+    v.id   = next_id_++;
+    v.pos  = pos;
+    v.mass = mass;
+    viruses_.push_back(v);
+    return v.id;
 }
 
 Cell* World::findCell(EntityId id) {
@@ -82,14 +98,29 @@ Food* World::findFood(EntityId id) {
     return nullptr;
 }
 
+Virus* World::findVirus(EntityId id) {
+    for (auto& v : viruses_) {
+        if (v.id == id) return &v;
+    }
+    return nullptr;
+}
+
+int World::playerCellCount(PlayerId p) const {
+    int n = 0;
+    for (const auto& c : cells_) if (c.owner == p) ++n;
+    return n;
+}
+
 void World::rebuildGrid() {
     grid_.clear();
-    // Insert cells first (larger radii, more buckets), then food (point-sized).
     for (const auto& c : cells_) {
         grid_.insert(c.id, c.pos, cellRadius(c.mass));
     }
     for (const auto& f : food_) {
-        grid_.insert(f.id, f.pos, 1.0f);
+        grid_.insert(f.id, f.pos, foodRadius(f.mass));
+    }
+    for (const auto& v : viruses_) {
+        grid_.insert(v.id, v.pos, cellRadius(v.mass));
     }
 }
 

@@ -15,7 +15,8 @@ public:
                    const Tuning&           tuning,
                    int                     screen_w,
                    int                     screen_h,
-                   float                   alpha) const;
+                   float                   alpha,
+                   EntityId                watched_cell = INVALID_ENTITY) const;
 };
 
 } // namespace cr

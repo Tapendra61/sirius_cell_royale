@@ -1,5 +1,7 @@
 #include "Simulation.h"
 
+#include "Rules.h"
+
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -9,14 +11,24 @@ namespace cr {
 Simulation::Simulation(uint64_t seed, Tuning tuning)
     : world_(seed, tuning.world_width, tuning.world_height),
       tuning_(std::move(tuning)) {
-    // Spawn initial food deterministically using the world RNG.
-    int target = tuning_.food_target;
-    for (int i = 0; i < target; ++i) {
+    // Initial food.
+    for (int i = 0; i < tuning_.food_target; ++i) {
         Vec2 pos{
             world_.rng().rangeFloat(0.0f, static_cast<float>(world_.width())),
             world_.rng().rangeFloat(0.0f, static_cast<float>(world_.height())),
         };
         world_.spawnFood(pos);
+    }
+    // Initial viruses, kept clear of the world edges.
+    constexpr float kVirusMargin = 200.0f;
+    for (int i = 0; i < tuning_.virus_count; ++i) {
+        Vec2 pos{
+            world_.rng().rangeFloat(kVirusMargin,
+                                    static_cast<float>(world_.width())  - kVirusMargin),
+            world_.rng().rangeFloat(kVirusMargin,
+                                    static_cast<float>(world_.height()) - kVirusMargin),
+        };
+        world_.spawnVirus(pos, 200.0f);
     }
 }
 
@@ -35,7 +47,7 @@ void Simulation::tick(float dt) {
 
     const Tick now = world_.currentTick();
 
-    // Apply commands whose scheduled tick has come; keep the rest for later.
+    // 1. Apply commands queued for this tick (and any earlier ticks not yet applied).
     std::vector<Command> still_pending;
     still_pending.reserve(pending_.size());
     for (auto& cmd : pending_) {
@@ -47,7 +59,20 @@ void Simulation::tick(float dt) {
     }
     pending_ = std::move(still_pending);
 
-    stepCells(dt);
+    // 2. Per-tick physics.
+    rules::stepCells(world_, tuning_, dt);
+    rules::stepFood(world_, tuning_, dt);
+    rules::applySoftBounds(world_, tuning_);
+
+    // 3. Interactions (collision-driven).
+    rules::processEating(world_, tuning_, events_);
+    rules::processVirusPushes(world_, tuning_);
+    rules::processRecombine(world_, tuning_);
+
+    // 4. World upkeep.
+    rules::respawnFood(world_, tuning_);
+
+    // 5. Spatial grid for whoever queries it next.
     world_.rebuildGrid();
     world_.advanceTick();
 }
@@ -55,33 +80,21 @@ void Simulation::tick(float dt) {
 void Simulation::applyCommand(const Command& cmd) {
     if (auto* m = std::get_if<MoveCmd>(&cmd.payload)) {
         for (auto& c : world_.cellsMut()) {
-            if (c.owner == cmd.player) {
-                c.target = m->target;
-            }
+            if (c.owner == cmd.player) c.target = m->target;
         }
         return;
     }
-    // SplitCmd, EjectCmd, DashCmd: stubs in Phase 1; implemented in Phase 4 (Core Mechanics).
-}
-
-void Simulation::stepCells(float dt) {
-    const float base    = tuning_.base_speed;
-    const float falloff = tuning_.speed_falloff;
-
-    for (auto& c : world_.cellsMut()) {
-        Vec2  to_target = c.target - c.pos;
-        float dist      = length(to_target);
-        if (dist < 1e-3f) {
-            c.vel = {0.0f, 0.0f};
-            continue;
-        }
-
-        float r     = std::max(1.0f, cellRadius(c.mass));
-        float speed = base * std::pow(30.0f / r, falloff);
-        Vec2  dir   = to_target * (1.0f / dist);
-        float step  = std::min(speed * dt, dist);
-        c.pos = c.pos + dir * step;
-        c.vel = dir * speed;
+    if (std::holds_alternative<SplitCmd>(cmd.payload)) {
+        rules::doSplit(world_, cmd.player, tuning_, events_);
+        return;
+    }
+    if (std::holds_alternative<EjectCmd>(cmd.payload)) {
+        rules::doEject(world_, cmd.player, tuning_);
+        return;
+    }
+    if (std::holds_alternative<DashCmd>(cmd.payload)) {
+        rules::doDash(world_, cmd.player, tuning_);
+        return;
     }
 }
 
@@ -89,13 +102,38 @@ Snapshot Simulation::buildSnapshot() const {
     Snapshot s;
     s.tick      = world_.currentTick();
     s.rng_state = world_.rng().state;
+
+    const Tick  now             = world_.currentTick();
+    const float cooldown_ticks  = std::max(1.0f, tuning_.cooldown_sec * kSimHz);
+
     s.cells.reserve(world_.cells().size());
     for (const auto& c : world_.cells()) {
-        s.cells.push_back(CellSnap{c.id, c.owner, c.pos, c.vel, c.mass});
+        CellSnap cs;
+        cs.id      = c.id;
+        cs.owner   = c.owner;
+        cs.pos     = c.pos;
+        cs.vel     = c.vel;
+        cs.mass    = c.mass;
+        cs.invuln  = (c.invuln_until > now);
+        cs.dashing = (c.dash_until > now);
+        cs.god     = c.god;
+        if (c.dash_cooldown_until > now) {
+            float remaining = static_cast<float>(c.dash_cooldown_until - now);
+            cs.dash_cooldown_norm = std::clamp(1.0f - remaining / cooldown_ticks, 0.0f, 1.0f);
+        } else {
+            cs.dash_cooldown_norm = 1.0f;
+        }
+        s.cells.push_back(cs);
     }
+
     s.food.reserve(world_.food().size());
     for (const auto& f : world_.food()) {
-        s.food.push_back(FoodSnap{f.id, f.pos});
+        s.food.push_back(FoodSnap{f.id, f.pos, f.vel, f.mass});
+    }
+
+    s.viruses.reserve(world_.viruses().size());
+    for (const auto& v : world_.viruses()) {
+        s.viruses.push_back(VirusSnap{v.id, v.pos, v.mass});
     }
     return s;
 }

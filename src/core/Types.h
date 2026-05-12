@@ -12,6 +12,14 @@ using Tick     = uint32_t;
 constexpr EntityId INVALID_ENTITY = 0;
 constexpr PlayerId INVALID_PLAYER = 0;
 
+// Sim runs at this fixed rate. Used everywhere that converts between seconds and ticks.
+constexpr float kSimHz = 30.0f;
+
+inline Tick secondsToTicks(float seconds) {
+    if (seconds <= 0.0f) return 0;
+    return static_cast<Tick>(seconds * kSimHz + 0.5f);
+}
+
 struct Vec2 {
     float x = 0.0f;
     float y = 0.0f;
@@ -40,5 +48,11 @@ inline Vec2  lerp(Vec2 a, Vec2 b, float t) { return a + (b - a) * t; }
 
 // Cell radius derived from mass: at mass=100, radius=30 (matches tuning comment).
 inline float cellRadius(float mass) { return 3.0f * std::sqrt(mass); }
+
+// Food radius for collision / rendering. Tiny but proportional so ejected pellets read big.
+inline float foodRadius(float mass) {
+    if (mass <= 1.0f) return 4.0f;
+    return 2.5f * std::sqrt(mass);
+}
 
 } // namespace cr

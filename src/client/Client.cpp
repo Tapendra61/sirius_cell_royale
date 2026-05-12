@@ -47,7 +47,7 @@ std::vector<Command> Client::takeCommands() {
 }
 
 void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tuning) const {
-    renderer_.drawWorld(interp_, camera_, tuning, screen_w, screen_h, alpha);
+    renderer_.drawWorld(interp_, camera_, tuning, screen_w, screen_h, alpha, watched_cell_);
     renderTouchOverlay(screen_w, screen_h, input_config_);
     console_.render(screen_w, screen_h);
 }
