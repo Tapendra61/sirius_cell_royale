@@ -22,6 +22,8 @@ struct CellSnap {
     uint8_t  personality_tag     = 0;
     // Phase 6: Hunter dash-windup intensity (0 = not winding up, 1 = dash imminent).
     float    dash_telegraph_norm = 0.0f;
+    // Phase 6: bot was scaled-up at spawn ("elite"); renderer draws a pulsing halo.
+    bool     is_elite            = false;
 
     bool operator==(const CellSnap&) const = default;
 };

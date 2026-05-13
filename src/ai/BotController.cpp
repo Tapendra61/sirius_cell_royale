@@ -160,13 +160,17 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
         mind.chase_committed_until = 0;
     }
 
-    // Establish a new lock when we pick up a human prey (Hunter being the main user via
-    // its 5x human_target_bias).
-    if (prey
-        && prey->owner < kFirstBotPlayerId
-        && mind.personality == BotPersonality::Hunter) {
-        mind.chasing_id           = prey->id;
-        mind.chase_committed_until = now + secondsToTicks(4.0f);
+    // Establish a new lock when we pick up a human prey. Hunter commits for 4s (the
+    // relentless tracker); Reckless commits for 2s (the wild card who'll eventually
+    // wander off but bites hard while engaged).
+    if (prey && prey->owner < kFirstBotPlayerId) {
+        if (mind.personality == BotPersonality::Hunter) {
+            mind.chasing_id           = prey->id;
+            mind.chase_committed_until = now + secondsToTicks(4.0f);
+        } else if (mind.personality == BotPersonality::Reckless) {
+            mind.chasing_id           = prey->id;
+            mind.chase_committed_until = now + secondsToTicks(2.0f);
+        }
     }
 
     // Flee hysteresis: while committed, the sticky threat counts even at 1.5x normal range.

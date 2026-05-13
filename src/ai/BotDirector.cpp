@@ -86,18 +86,24 @@ void BotDirector::respawnBots(World& world, const Tuning& t) {
                 float frac = 0.70f + rng_.nextFloat() * 0.60f;
                 spawn_mass = std::max(t.start_mass,
                                       std::min(8000.0f, player_max_mass_ * frac));
-                // Strongly skewed toward Hunter; Reckless is the spice; rest uniform.
+                // Elite distribution rebalanced so Hunter no longer dominates the field:
+                // 35% Hunter, 25% Reckless, 22% Hoarder, 18% Greedy. Cautious never
+                // elite-spawns -- they're survival specialists, not aggressors.
                 float pick = rng_.nextFloat();
-                if (pick < 0.65f)      personality = BotPersonality::Hunter;
-                else if (pick < 0.85f) personality = BotPersonality::Reckless;
+                if (pick < 0.35f)      personality = BotPersonality::Hunter;
+                else if (pick < 0.60f) personality = BotPersonality::Reckless;
+                else if (pick < 0.82f) personality = BotPersonality::Hoarder;
+                else                   personality = BotPersonality::Greedy;
             }
         }
 
-        // Spawn location. Elite Hunters drop near the player so they can engage fast;
-        // everyone else spawns elsewhere with a clear zone from existing big cells.
+        // Spawn location. Elite Hunters AND Reckless drop near the player so they engage
+        // fast; everyone else (Hoarder, Greedy, non-elites) spawns elsewhere with a clear
+        // zone from existing big cells. Hoarder picks its own corner; Greedy roams.
         Vec2 pos{};
         const bool spawn_near_player = is_elite
-                                    && personality == BotPersonality::Hunter
+                                    && (personality == BotPersonality::Hunter
+                                        || personality == BotPersonality::Reckless)
                                     && player_seen_;
         if (spawn_near_player) {
             float angle = rng_.rangeFloat(0.0f, 2.0f * kPi);
@@ -133,6 +139,7 @@ void BotDirector::respawnBots(World& world, const Tuning& t) {
         mind.personality   = personality;
         mind.wander_target = pos;
         mind.wander_set_at = world.currentTick();
+        mind.is_elite      = is_elite;
         bots_.push_back(mind);
     }
 }

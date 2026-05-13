@@ -23,6 +23,7 @@ struct BotMind {
     BotState       state            = BotState::Wander;
     Vec2           wander_target{};
     Tick           wander_set_at    = 0;
+    bool           is_elite         = false; // spawned scaled to player mass; gets a halo
 
     // EMA-smoothed move target so per-tick scan choices don't make the cell visibly jitter.
     Vec2           smoothed_target{};

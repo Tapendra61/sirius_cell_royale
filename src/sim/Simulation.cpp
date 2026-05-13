@@ -144,12 +144,15 @@ Snapshot Simulation::buildSnapshot() const {
             cs.dash_cooldown_norm = 1.0f;
         }
         // Tag with personality if this cell is bot-owned (small linear scan; bot count <= ~30).
-        // Also surface Hunter dash-windup progress so the renderer can flash a tell.
+        // Also surface Hunter dash-windup progress + elite flag so the renderer can draw
+        // both tells.
         cs.personality_tag     = 0;
         cs.dash_telegraph_norm = 0.0f;
+        cs.is_elite            = false;
         for (const auto& bot : bots) {
             if (bot.player == c.owner) {
                 cs.personality_tag = static_cast<uint8_t>(bot.personality) + 1;
+                cs.is_elite        = bot.is_elite;
                 if (bot.dash_windup_until > now
                     && bot.dash_windup_until > bot.dash_windup_started) {
                     float dur = static_cast<float>(bot.dash_windup_until - bot.dash_windup_started);

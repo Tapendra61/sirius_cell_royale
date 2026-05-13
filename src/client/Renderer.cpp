@@ -106,6 +106,27 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec) {
     DrawCircleV(Vector2{pos.x, pos.y}, r, fill);
     DrawCircleLinesV(Vector2{pos.x, pos.y}, r, outline);
 
+    // Elite halo: a slow lilac pulse that breathes in/out around the cell. Four concentric
+    // rings give it thickness; the alpha range and breathing radius make it impossible to
+    // miss. Phase-shifted by id so a pack of elites doesn't strobe in lock-step.
+    if (c.is_elite) {
+        float phase  = static_cast<float>(c.id % 64) * 0.1f;
+        float pulse  = 0.5f + 0.5f * std::sin(static_cast<float>(now_sec) * 2.4f + phase); // 0..1
+        float outset = std::max(10.0f, r * 0.22f);
+        float halo_r = r + outset + pulse * outset * 0.55f; // breathing in/out
+        unsigned char a_bright = static_cast<unsigned char>(70.0f + pulse * 185.0f); // 70-255
+        unsigned char a_dim    = static_cast<unsigned char>(a_bright * 0.55f);
+        DrawCircleLinesV(Vector2{pos.x, pos.y}, halo_r,
+                         Color{240, 220, 255, a_bright});
+        DrawCircleLinesV(Vector2{pos.x, pos.y}, halo_r + 1.5f,
+                         Color{220, 195, 255, a_bright});
+        DrawCircleLinesV(Vector2{pos.x, pos.y}, halo_r + 3.0f,
+                         Color{195, 165, 250, a_dim});
+        DrawCircleLinesV(Vector2{pos.x, pos.y}, halo_r + 5.0f,
+                         Color{170, 140, 240,
+                               static_cast<unsigned char>(a_dim * 0.5f)});
+    }
+
     if (c.dash_telegraph_norm > 0.0f) {
         float t   = c.dash_telegraph_norm;
         float a   = t * t;

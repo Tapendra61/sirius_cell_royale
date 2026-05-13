@@ -4,37 +4,43 @@ namespace cr::ai {
 
 PersonalityWeights weightsFor(BotPersonality p) {
     // Field order matches the struct (top-to-bottom). Each row mirrors a one-line
-    // intent: "I am the ___ bot."
+    // intent: "I am the ___ bot." Phase 6 tuning aims to give each personality a
+    // visible niche; Hunter remains the apex predator but isn't the only threat.
     switch (p) {
     case BotPersonality::Greedy:
-        // Long food vision, ignores threats until close, strong pull toward big food.
-        return {/*view*/         3000.0f,
+        // The food monarch: huge food vision, strongest value weighting, will snap at
+        // anything that wanders very close. Caps slightly above player so they end up
+        // as roaming fat targets that occasionally eat you back.
+        return {/*view*/         3500.0f,
                 /*flee_mult*/       2.5f,
-                /*chase_mult*/      0.0f,
-                /*split_aggro*/     0.0f,
-                /*dash_eager*/      0.05f,
+                /*chase_mult*/      3.0f,  // tiny opportunistic chase (was 0)
+                /*split_aggro*/     0.2f,  // occasional split at close prey (was 0)
+                /*dash_eager*/      0.10f,
                 /*wander_period*/   4.0f,
                 /*corner_pull*/     0.0f,
                 /*fears_viruses*/   true,
-                /*max_mass_factor*/ 0.9f,
+                /*max_mass_factor*/ 1.1f,  // can exceed player (was 0.9)
                 /*human_bias*/      1.0f,
                 /*responsiveness*/  0.25f,
-                /*food_value_w*/    2.0f,  // mass 12 weighs 23x vs mass 1 at equal dist
+                /*food_value_w*/    3.0f,  // even more value-focused (was 2.0)
                 /*prey_lead_sec*/   0.0f};
     case BotPersonality::Cautious:
-        // Long flee range, never splits, neutral food preference, smooth movement, low cap.
-        return {2000.0f, 20.0f, 0.0f, 0.0f, 0.0f, 6.0f, 0.0f, true, 0.6f, 1.0f, 0.12f, 0.5f, 0.0f};
+        // The unkillable survivor: longer vision, panicked flee range, panic dashes.
+        // Mass cap raised so a Cautious that's been hiding all match is actually big.
+        return {2500.0f, 25.0f, 0.0f, 0.0f, 0.20f, 6.0f, 0.0f, true, 0.85f, 1.0f, 0.12f, 1.0f, 0.0f};
     case BotPersonality::Hunter:
-        // The apex predator. Long chase range, near-always-splits in pounce range,
-        // strongly prefers human cells, leads prey velocity, scales above the player.
-        return {4500.0f, 4.0f, 35.0f, 0.95f, 0.45f, 2.0f, 0.0f, true, 1.3f, 5.0f, 0.32f, 0.3f, 0.7f};
+        // Still the apex predator -- lead-aim, sticky lock-on, dash telegraph. Mass cap
+        // and chase range nudged down to make room for the rest of the cast.
+        return {4500.0f, 4.0f, 32.0f, 0.95f, 0.45f, 2.0f, 0.0f, true, 1.25f, 5.0f, 0.32f, 0.3f, 0.7f};
     case BotPersonality::Hoarder:
-        // Camps a corner; opportunistically snaps at prey/food within bite range; loves
-        // valuable food above all else.
-        return {1100.0f, 6.0f, 4.0f, 0.0f, 0.0f, 8.0f, 0.92f, true, 1.0f, 1.0f, 0.10f, 4.0f, 0.0f};
+        // The fortress: enormous mass cap, wide bite radius from its corner, will now
+        // *split-launch* at close prey -- approaching their corner is a real trap.
+        return {1500.0f, 6.0f, 10.0f, 0.5f, 0.20f, 8.0f, 0.92f, true, 1.4f, 1.0f, 0.10f, 5.0f, 0.0f};
     case BotPersonality::Reckless:
-        // Ignores viruses, dashes and splits constantly, scales just above the player.
-        return {2200.0f, 1.5f, 20.0f, 1.0f, 1.00f, 1.0f, 0.0f, false, 1.2f, 1.0f, 0.55f, 0.8f, 0.2f};
+        // The chaos lord: now also targets the player (2x bias), gets sticky lock-on
+        // (2s), longer chase, better prey-lead. Still no dash telegraph -- their dashes
+        // are random by design.
+        return {2800.0f, 1.5f, 28.0f, 1.0f, 1.0f, 1.0f, 0.0f, false, 1.35f, 2.0f, 0.55f, 0.8f, 0.4f};
     case BotPersonality::Count:
         break;
     }
