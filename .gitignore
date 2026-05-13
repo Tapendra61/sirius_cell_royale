@@ -42,10 +42,8 @@ assets/raw/
 # Roadmap docs (excluded by request)
 docs/roadmap/
 
-# Save files
-save.bin
-save.bak
-save.tmp
+# Save files (atomic write flow produces save.bin, save.bin.tmp, save.bin.bak)
+save.bin*
 
 # Replay files
 *.rpl
