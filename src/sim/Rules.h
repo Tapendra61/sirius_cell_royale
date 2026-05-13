@@ -21,6 +21,7 @@ void processEating(World& world, const Tuning& t, std::vector<GameEvent>& events
 void processVirusPushes(World& world, const Tuning& t);
 void processRecombine(World& world, const Tuning& t);
 void respawnFood(World& world, const Tuning& t);
+void respawnViruses(World& world, const Tuning& t);
 
 // Triggered by commands
 void doSplit(World& world, PlayerId player, const Tuning& t, std::vector<GameEvent>& events);

@@ -8,10 +8,13 @@
 #include "core/Command.h"
 #include "core/Events.h"
 #include "core/Snapshot.h"
+#include "feel/Audio.h"
+#include "feel/ChromaShift.h"
 #include "feel/Hitstop.h"
 #include "feel/Particles.h"
 #include "feel/Popups.h"
 #include "feel/ScreenShake.h"
+#include "meta/SaveFile.h"
 #include "platform/Input.h"
 #include "sim/World.h"
 
@@ -24,6 +27,9 @@ namespace cr {
 class Client {
 public:
     Client(EntityId watched_cell, PlayerId watched_player);
+    ~Client();
+    Client(const Client&)            = delete;
+    Client& operator=(const Client&) = delete;
 
     // Input poll -> queue of Commands. Drained each frame by main with takeCommands().
     void pollFrame(int screen_w, int screen_h, Tick current_tick);
@@ -40,8 +46,10 @@ public:
     // hitstop, HUD, death cam). Called before render.
     void updateFrame(float frame_dt, double now_sec, const Tuning& tuning);
 
+    // Non-const because Summary screen buttons read mouse state and feed it back into
+    // the phase state machine (consumed via consumeRespawnRequest / consumeReturnToMenuRequest).
     void render(int screen_w, int screen_h, float alpha, const Tuning& tuning,
-                const World& world, Tick tick) const;
+                const World& world, Tick tick);
 
     // Time scaling.
     float dtMultiplier() const { return dt_mult_; }
@@ -57,6 +65,27 @@ public:
     bool     deathCamActive() const { return death_cam_.active; }
     EntityId deathCamTarget() const { return death_cam_.target; }
 
+    // Phase 8 restart loop. main consumes the respawn request once Summary expires
+    // (or the player clicks PLAY AGAIN on the summary panel). ReturnToMenu is consumed
+    // by main's outer Menu<->Match loop -- the player clicked MAIN MENU on summary.
+    GamePhase phase() const { return phase_; }
+    bool      consumeRespawnRequest();
+    bool      consumeReturnToMenuRequest();
+    void      onPlayerRespawned(double now_sec);
+    int       totalXp() const { return total_xp_; }
+    int       level() const { return level_; }
+
+    // Phase 9 persistence. main loads at startup, applies once; saves at shutdown using
+    // a fresh snapshot. Settings changes mid-session (volume, input config) are reflected
+    // directly on the live objects so snapshotForSave reads current state.
+    void     applyLoadedSave(const SaveData& s);
+    SaveData snapshotForSave() const;
+
+    // Phase 9 lifecycle: auto-pause while the window is unfocused so we don't burn CPU
+    // (and don't try to play SFX into a backgrounded audio context).
+    void  setAutoPaused(bool v) { auto_paused_ = v; }
+    bool  isAutoPaused() const { return auto_paused_; }
+
     InputConfig&       inputConfig() { return input_config_; }
     const InputConfig& inputConfig() const { return input_config_; }
 
@@ -67,10 +96,16 @@ public:
     CameraController&       camera() { return camera_; }
     const CameraController& camera() const { return camera_; }
 
-    DevConsole& console() { return console_; }
-    Hud&        hud() { return hud_; }
+    DevConsole&  console() { return console_; }
+    Hud&         hud() { return hud_; }
+    AudioSystem& audio() { return audio_; }
 
 private:
+    // Bumps the matching mission's progress to at least new_progress, marks it complete
+    // and awards XP if the target is reached. Caller passes the value the mission cares
+    // about (food eaten count, peak mass, crit count, seconds alive).
+    void bumpMissionProgress(MissionKind kind, int new_progress);
+
     struct DeathCam {
         bool     active   = false;
         EntityId target   = INVALID_ENTITY;
@@ -93,10 +128,44 @@ private:
     Hitstop              hitstop_;
     PopupSystem          popups_;
     Hud                  hud_;
+    AudioSystem          audio_;
+    ChromaShift          chroma_;
     DeathCam             death_cam_;
 
-    float                dt_mult_ = 1.0f;
-    bool                 paused_  = false;
+    // Off-screen target used only when chroma_ is active, lazily allocated on first
+    // render (raylib needs an open window for LoadRenderTexture).
+    mutable RenderTexture2D world_rt_{};
+    mutable int             world_rt_w_ = 0;
+    mutable int             world_rt_h_ = 0;
+
+    // Phase 8 -- match state
+    GamePhase            phase_              = GamePhase::Playing;
+    MatchSummary         summary_{};
+    float                summary_remaining_  = 0.0f;
+    bool                 respawn_pending_    = false;
+    bool                 return_to_menu_pending_ = false;
+    double               run_start_sec_      = 0.0;
+    int                  total_xp_           = 0;
+    int                  level_              = 1;
+
+    // Phase 9 -- persistent lifetime stats
+    int                  games_played_       = 0;
+    float                best_mass_ever_     = 0.0f;
+    int                  best_combo_ever_    = 0;
+
+    // Phase 8 -- daily missions (copied from SaveData; progress reset per match)
+    Mission              missions_[kMissionCount]{};
+    uint32_t             last_mission_reset_day_ = 0;
+    int                  match_food_eaten_       = 0;
+    int                  match_crits_landed_     = 0;
+    float                match_peak_mass_        = 0.0f;
+    int                  match_mission_xp_       = 0; // XP earned via mission completion
+                                                      // this run; folded into xp_earned at
+                                                      // Summary entry so the player sees it
+
+    float                dt_mult_     = 1.0f;
+    bool                 paused_      = false;
+    bool                 auto_paused_ = false; // window unfocused
 };
 
 } // namespace cr

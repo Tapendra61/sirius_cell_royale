@@ -12,6 +12,78 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
+// Globally-shared accessibility state. setPaletteMode/setHighContrast write; the
+// drawing helpers read. Process-lifetime; not thread-safe (drawing is single-threaded).
+PaletteMode s_palette_mode  = PaletteMode::Default;
+bool        s_high_contrast = false;
+
+// Default vibrant palette (used everywhere outside cell-color identification).
+const Color kPaletteDefault[] = {
+    Color{ 64, 156, 255, 255}, // blue
+    Color{255, 120,  80, 255}, // orange
+    Color{120, 220, 120, 255}, // green
+    Color{255, 200,  60, 255}, // yellow
+    Color{200, 120, 255, 255}, // purple
+    Color{ 80, 220, 220, 255}, // cyan
+};
+
+// Deuteranopia: green-deficient. Replace conflicting green/red pairs with blue/yellow.
+// Aim for distinguishable luminance + hue along the blue/yellow axis.
+const Color kPaletteDeut[] = {
+    Color{ 64, 156, 255, 255}, // bright blue
+    Color{255, 180,  40, 255}, // gold (replaces orange/red)
+    Color{200, 200, 230, 255}, // pale blue (replaces green)
+    Color{255, 235, 130, 255}, // pale yellow
+    Color{120,  80, 200, 255}, // indigo
+    Color{120, 200, 255, 255}, // sky
+};
+
+// Protanopia: red-deficient. Similar mapping to Deut but shifted slightly cooler.
+const Color kPaletteProt[] = {
+    Color{ 80, 170, 255, 255},
+    Color{240, 200,  80, 255},
+    Color{210, 215, 230, 255},
+    Color{255, 230, 110, 255},
+    Color{100,  90, 200, 255},
+    Color{ 90, 200, 230, 255},
+};
+
+// Tritanopia: blue-deficient. Use the red/green axis for distinction instead.
+const Color kPaletteTrit[] = {
+    Color{220,  90,  90, 255},
+    Color{255, 150,  60, 255},
+    Color{120, 200, 120, 255},
+    Color{220, 200, 100, 255},
+    Color{210, 110, 160, 255},
+    Color{170, 220,  90, 255},
+};
+
+const Color* selectPalette(PaletteMode m) {
+    switch (m) {
+        case PaletteMode::Deuteranopia: return kPaletteDeut;
+        case PaletteMode::Protanopia:   return kPaletteProt;
+        case PaletteMode::Tritanopia:   return kPaletteTrit;
+        case PaletteMode::Default:
+        default:                        return kPaletteDefault;
+    }
+}
+
+} // namespace (anonymous) -- pop briefly to define public color helpers
+
+void setPaletteMode(PaletteMode m)  { s_palette_mode  = m; }
+PaletteMode currentPaletteMode()    { return s_palette_mode; }
+void setHighContrast(bool on)       { s_high_contrast = on; }
+bool currentHighContrast()          { return s_high_contrast; }
+
+Color colorForPlayer(PlayerId p) {
+    if (p == INVALID_PLAYER) return Color{180, 180, 180, 255};
+    const Color* pal = selectPalette(s_palette_mode);
+    constexpr int kPaletteSize = 6;
+    return pal[(p - 1) % kPaletteSize];
+}
+
+namespace { // re-open anonymous namespace for the remaining helpers
+
 Color outlineFor(Color c) {
     return Color{
         static_cast<unsigned char>(c.r * 0.5f),
@@ -34,14 +106,33 @@ Color foodColor(const FoodSnap& f) {
     return Color{120, 220, 130, 255};                       // common (mass 1)
 }
 
-void drawWorldGrid(int world_w, int world_h) {
+// Background grid clamped to the visible AABB. Saves drawing thousands of pixels of line
+// that the GPU would clip anyway, and shortens the world border to just the visible edges
+// where applicable.
+void drawWorldGrid(int world_w, int world_h, Vec2 view_min, Vec2 view_max) {
     const int step = 400;
     const Color line = {40, 44, 52, 255};
-    for (int x = 0; x <= world_w; x += step) {
-        DrawLine(x, 0, x, world_h, line);
-    }
-    for (int y = 0; y <= world_h; y += step) {
-        DrawLine(0, y, world_w, y, line);
+    const float xmin = std::max(view_min.x, 0.0f);
+    const float xmax = std::min(view_max.x, static_cast<float>(world_w));
+    const float ymin = std::max(view_min.y, 0.0f);
+    const float ymax = std::min(view_max.y, static_cast<float>(world_h));
+    if (xmin > xmax || ymin > ymax) {
+        // View is entirely outside the world; still draw the border below.
+    } else {
+        int xs = static_cast<int>(std::floor(xmin / step)) * step;
+        int xe = static_cast<int>(std::ceil(xmax  / step)) * step;
+        int ys = static_cast<int>(std::floor(ymin / step)) * step;
+        int ye = static_cast<int>(std::ceil(ymax  / step)) * step;
+        for (int x = xs; x <= xe; x += step) {
+            if (x < 0 || x > world_w) continue;
+            DrawLine(x, static_cast<int>(ymin),
+                     x, static_cast<int>(ymax), line);
+        }
+        for (int y = ys; y <= ye; y += step) {
+            if (y < 0 || y > world_h) continue;
+            DrawLine(static_cast<int>(xmin), y,
+                     static_cast<int>(xmax), y, line);
+        }
     }
     DrawRectangleLinesEx(Rectangle{0.0f, 0.0f,
                                    static_cast<float>(world_w),
@@ -56,7 +147,6 @@ void drawVirus(const VirusSnap& v) {
     const Color spike   = Color{30, 120, 50, 255};
 
     DrawCircleV(Vector2{v.pos.x, v.pos.y}, r, fill);
-    // Spikes: 14 thin triangles around the rim.
     const int spikes = 14;
     for (int i = 0; i < spikes; ++i) {
         float a0 = (i        ) * (2.0f * kPi / spikes);
@@ -68,19 +158,17 @@ void drawVirus(const VirusSnap& v) {
                    v.pos.y + std::sin(a1) * (r * 1.15f)};
         Vector2 p2{v.pos.x + std::cos(a2) * inner_r,
                    v.pos.y + std::sin(a2) * inner_r};
-        // raylib's DrawTriangle expects CCW winding; flip if necessary.
         DrawTriangle(p0, p2, p1, spike);
     }
     DrawCircleLinesV(Vector2{v.pos.x, v.pos.y}, r, Color{20, 80, 30, 255});
 }
 
-void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec) {
+void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec, bool flair_star) {
     float r       = cellRadius(c.mass);
     Color fill    = colorForPlayer(c.owner);
     Color outline = outlineFor(fill);
 
     if (c.invuln) {
-        // White flash overlay; pulse alpha so it reads as "right now."
         float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(now_sec * 18.0));
         fill = Color{
             static_cast<unsigned char>(std::min(255.0f, fill.r + 120.0f * pulse)),
@@ -93,8 +181,6 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec) {
         outline = Color{255, 220, 60, 255};
     }
 
-    // Hunter dash windup: pre-strike yellow ring that grows + brightens as the dash nears.
-    // anticipation curve t² makes it slow-then-fast, so the threat reads as "winding up".
     if (c.dash_telegraph_norm > 0.0f) {
         float t   = c.dash_telegraph_norm;
         float a   = t * t;
@@ -104,17 +190,21 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec) {
     }
 
     DrawCircleV(Vector2{pos.x, pos.y}, r, fill);
-    DrawCircleLinesV(Vector2{pos.x, pos.y}, r, outline);
+    if (s_high_contrast) {
+        // 3-pass thick white outline. Reads as a hard border against busy backgrounds.
+        DrawCircleLinesV(Vector2{pos.x, pos.y}, r,        Color{255, 255, 255, 255});
+        DrawCircleLinesV(Vector2{pos.x, pos.y}, r + 1.0f, Color{255, 255, 255, 220});
+        DrawCircleLinesV(Vector2{pos.x, pos.y}, r - 1.0f, Color{255, 255, 255, 180});
+    } else {
+        DrawCircleLinesV(Vector2{pos.x, pos.y}, r, outline);
+    }
 
-    // Elite halo: a slow lilac pulse that breathes in/out around the cell. Four concentric
-    // rings give it thickness; the alpha range and breathing radius make it impossible to
-    // miss. Phase-shifted by id so a pack of elites doesn't strobe in lock-step.
     if (c.is_elite) {
         float phase  = static_cast<float>(c.id % 64) * 0.1f;
-        float pulse  = 0.5f + 0.5f * std::sin(static_cast<float>(now_sec) * 2.4f + phase); // 0..1
+        float pulse  = 0.5f + 0.5f * std::sin(static_cast<float>(now_sec) * 2.4f + phase);
         float outset = std::max(10.0f, r * 0.22f);
-        float halo_r = r + outset + pulse * outset * 0.55f; // breathing in/out
-        unsigned char a_bright = static_cast<unsigned char>(70.0f + pulse * 185.0f); // 70-255
+        float halo_r = r + outset + pulse * outset * 0.55f;
+        unsigned char a_bright = static_cast<unsigned char>(70.0f + pulse * 185.0f);
         unsigned char a_dim    = static_cast<unsigned char>(a_bright * 0.55f);
         DrawCircleLinesV(Vector2{pos.x, pos.y}, halo_r,
                          Color{240, 220, 255, a_bright});
@@ -147,25 +237,29 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec) {
                          Color{255, 255, 255, 200});
     }
 
-    // Phase 5: bot cells display a personality letter + id; the human player gets "P<id>".
     static const char kPersonalityLetters[] = {'P', 'G', 'C', 'H', 'h', 'R'};
     char letter = (c.personality_tag < sizeof(kPersonalityLetters))
                       ? kPersonalityLetters[c.personality_tag]
                       : '?';
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "%c%u", letter, static_cast<unsigned>(c.owner));
+    // Phase 8 cosmetic unlock: a star prefix on the watched player's name at L20+.
+    // (Other cosmetic tiers -- trail colors, skins -- deferred to a focused pass.)
+    if (flair_star) {
+        std::snprintf(buf, sizeof(buf), "*%c%u", letter, static_cast<unsigned>(c.owner));
+    } else {
+        std::snprintf(buf, sizeof(buf), "%c%u", letter, static_cast<unsigned>(c.owner));
+    }
     int font_size = std::max(12, static_cast<int>(r * 0.5f));
     int text_w    = MeasureText(buf, font_size);
+    Color text_color = flair_star ? Color{255, 230, 130, 255} : WHITE;
     DrawText(buf,
              static_cast<int>(pos.x) - text_w / 2,
              static_cast<int>(pos.y) - font_size / 2,
-             font_size, WHITE);
+             font_size, text_color);
 
-    // Dash cooldown ring (watched cell only -- keeps the scene quiet for bots).
     if (watched) {
         float ring_r = r + 8.0f;
         DrawCircleLinesV(Vector2{pos.x, pos.y}, ring_r, Color{255, 255, 255, 60});
-        // Filled arc from 0 to cooldown_norm * 2*pi by sampling segments.
         const int seg = 32;
         float a_end   = c.dash_cooldown_norm * 2.0f * kPi - kPi * 0.5f;
         float a_start = -kPi * 0.5f;
@@ -181,24 +275,40 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec) {
     }
 }
 
+// Cull-test helpers. AABB-vs-point with margin embedded in caller-side bounds.
+inline bool pointInView(Vec2 p, Vec2 vmin, Vec2 vmax) {
+    return p.x >= vmin.x && p.x <= vmax.x && p.y >= vmin.y && p.y <= vmax.y;
+}
+inline bool circleInView(Vec2 p, float r, Vec2 vmin, Vec2 vmax) {
+    return p.x + r >= vmin.x && p.x - r <= vmax.x
+        && p.y + r >= vmin.y && p.y - r <= vmax.y;
+}
+
 } // namespace
 
 void Renderer::drawWorld(const Interpolator& interp,
                          const Tuning&       tuning,
                          float               alpha,
-                         EntityId            watched_cell) const {
+                         Vec2                view_min,
+                         Vec2                view_max,
+                         EntityId            watched_cell,
+                         PlayerId            watched_player,
+                         int                 watched_player_level) const {
     if (!interp.hasCurr()) return;
 
     const Snapshot& curr     = interp.curr();
     const bool      have_prev = interp.hasPrev();
     const Snapshot& prev     = interp.prev();
 
-    drawWorldGrid(tuning.world_width, tuning.world_height);
+    drawWorldGrid(tuning.world_width, tuning.world_height, view_min, view_max);
 
-    // Food (interpolate in-flight pellets so they don't visibly jitter at sim rate).
+    // Single GetTime() call for the whole frame; used by halo pulses, invuln flashes, etc.
+    const double now_sec = GetTime();
+
+    // Food: frustum-cull first (3600 entries × 16k² world means typically <1% on-screen).
     // High-tier ambient food gets a pulsing halo so rare drops stand out from far away.
-    const double now_t = GetTime();
     for (const auto& f : curr.food) {
+        if (!pointInView(f.pos, view_min, view_max)) continue;
         Vec2 pos = f.pos;
         if (have_prev && lengthSq(f.vel) > 1.0f) {
             for (const auto& fp : prev.food) {
@@ -210,14 +320,10 @@ void Renderer::drawWorld(const Interpolator& interp,
         }
         Color c = foodColor(f);
         float r = foodRadius(f.mass);
-
-        // Halo only for rare/epic stationary food. id-based phase so the field doesn't
-        // pulse in lock-step.
         const bool stationary = lengthSq(f.vel) < 50.0f * 50.0f;
         if (stationary && f.mass >= 5.0f) {
             float phase = static_cast<float>(f.id % 64) * 0.1f;
-            float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(now_t) * 4.0f + phase);
-            // Epic pulses stronger than rare.
+            float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(now_sec) * 4.0f + phase);
             float halo_strength = (f.mass >= 10.0f) ? 1.0f : 0.55f;
             unsigned char glow_a = static_cast<unsigned char>(
                 (35.0f + pulse * 50.0f) * halo_strength);
@@ -229,6 +335,8 @@ void Renderer::drawWorld(const Interpolator& interp,
 
     // Viruses (drift if pushed; interpolate to smooth that motion).
     for (const auto& v : curr.viruses) {
+        float vr = cellRadius(v.mass);
+        if (!circleInView(v.pos, vr * 1.2f, view_min, view_max)) continue;
         VirusSnap drawn = v;
         if (have_prev) {
             for (const auto& vp : prev.viruses) {
@@ -241,16 +349,20 @@ void Renderer::drawWorld(const Interpolator& interp,
         drawVirus(drawn);
     }
 
-    // Cells with interpolation. Largest first so smaller pieces overlap on top.
-    std::vector<const CellSnap*> order;
-    order.reserve(curr.cells.size());
-    for (const auto& c : curr.cells) order.push_back(&c);
-    std::sort(order.begin(), order.end(),
+    // Cells with interpolation. Largest first so smaller pieces overlap on top. The sort
+    // vector is a renderer member so we don't allocate per frame.
+    sort_order_.clear();
+    sort_order_.reserve(curr.cells.size());
+    for (const auto& c : curr.cells) sort_order_.push_back(&c);
+    std::sort(sort_order_.begin(), sort_order_.end(),
               [](const CellSnap* a, const CellSnap* b) { return a->mass > b->mass; });
 
-    double now_sec = GetTime();
-    for (const CellSnap* cp : order) {
+    for (const CellSnap* cp : sort_order_) {
         const CellSnap& c = *cp;
+        float r = cellRadius(c.mass);
+        // Cull by interpolated position (use curr; close enough -- entity won't move more
+        // than a few px during interp). Generous radius margin because of halos.
+        if (!circleInView(c.pos, r + 24.0f, view_min, view_max)) continue;
         Vec2 pos = c.pos;
         if (have_prev) {
             for (const auto& prev_c : prev.cells) {
@@ -260,7 +372,10 @@ void Renderer::drawWorld(const Interpolator& interp,
                 }
             }
         }
-        drawCell(pos, c, /*watched=*/c.id == watched_cell, now_sec);
+        const bool flair = (watched_player != INVALID_PLAYER)
+                          && (c.owner == watched_player)
+                          && (watched_player_level >= 20);
+        drawCell(pos, c, /*watched=*/c.id == watched_cell, now_sec, flair);
     }
 }
 

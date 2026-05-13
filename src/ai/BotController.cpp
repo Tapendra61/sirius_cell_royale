@@ -48,11 +48,26 @@ const Virus* nearestVirus(const Cell& self, const World& world, float radius) {
 // food is roughly half as attractive as one at 0px, and high-mass food multiplies the
 // bonus by personality food_value_weight. With weight=2 (Greedy), epic (mass 12) at
 // 300px outranks common (mass 1) at 50px -- the bot commits to the longer trip.
+//
+// Uses the foods spatial grid (rebuilt at the end of the previous tick) so we only score
+// food in the bot's view AABB instead of all 3600 entries. Scratch vector is thread_local
+// so we don't allocate per call.
 const Food* findBestFood(const Cell& self, const World& world, const PersonalityWeights& w) {
-    const Food* best       = nullptr;
-    float       best_score = -1.0f;
-    const float view_sq    = w.view_radius * w.view_radius;
-    for (const auto& f : world.food()) {
+    static thread_local std::vector<uint32_t> nearby;
+    nearby.clear();
+
+    Vec2 lo{self.pos.x - w.view_radius, self.pos.y - w.view_radius};
+    Vec2 hi{self.pos.x + w.view_radius, self.pos.y + w.view_radius};
+    world.foodsGrid().query(lo, hi, nearby);
+
+    const Food*  best       = nullptr;
+    float        best_score = -1.0f;
+    const float  view_sq    = w.view_radius * w.view_radius;
+    const auto&  foods      = world.food();
+
+    for (uint32_t fi : nearby) {
+        if (fi >= foods.size()) continue;
+        const Food& f = foods[fi];
         float dx  = f.pos.x - self.pos.x;
         float dy  = f.pos.y - self.pos.y;
         float dsq = dx * dx + dy * dy;

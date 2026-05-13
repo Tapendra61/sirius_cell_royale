@@ -3,6 +3,7 @@
 #include "core/Rng.h"
 #include "core/Types.h"
 
+#include <cstdint>
 #include <vector>
 
 namespace cr {
@@ -38,16 +39,20 @@ struct Virus {
 };
 
 // Uniform-grid spatial index. Bucket size = 2 * max expected entity radius (~400px default).
-// Entities are inserted into every bucket their AABB overlaps; queries scan only buckets
-// touched by the query AABB. Result IDs come back in deterministic order (bucket-major,
-// then insertion order within each bucket).
+// Stores VECTOR INDICES (not entity ids) so callers can dereference directly without an
+// id-to-index lookup. World owns three separate grids (one per type) so queries return
+// only entities of the type you want.
+//
+// Results come back in deterministic order (bucket-major, then insertion order within
+// each bucket). An entity that straddles bucket boundaries can appear multiple times in
+// the query output; callers should be idempotent (e.g. use a dead-flag guard).
 class SpatialGrid {
 public:
     SpatialGrid(int world_w, int world_h, int bucket_size);
 
     void clear();
-    void insert(EntityId id, Vec2 pos, float radius);
-    void query(Vec2 min, Vec2 max, std::vector<EntityId>& out) const;
+    void insert(uint32_t index, Vec2 pos, float radius);
+    void query(Vec2 min, Vec2 max, std::vector<uint32_t>& out) const;
 
     int bucketSize() const { return bucket_size_; }
     int cols() const { return cols_; }
@@ -57,7 +62,7 @@ private:
     int                                bucket_size_;
     int                                cols_;
     int                                rows_;
-    std::vector<std::vector<EntityId>> buckets_;
+    std::vector<std::vector<uint32_t>> buckets_;
 };
 
 class World {
@@ -95,8 +100,14 @@ public:
     int width() const { return width_; }
     int height() const { return height_; }
 
-    void               rebuildGrid();
-    const SpatialGrid& grid() const { return grid_; }
+    // Rebuild all three typed spatial grids from the current cell/food/virus arrays.
+    // Callers should invoke this AFTER motion has settled but BEFORE collision-driven
+    // interactions that need spatial queries. Grids store vector indices, so they're
+    // invalidated by any subsequent push_back / compactDead -- don't query after those.
+    void               rebuildGrids();
+    const SpatialGrid& cellsGrid()   const { return cells_grid_; }
+    const SpatialGrid& foodsGrid()   const { return foods_grid_; }
+    const SpatialGrid& virusesGrid() const { return viruses_grid_; }
 
 private:
     int                width_;
@@ -107,7 +118,9 @@ private:
     std::vector<Cell>  cells_;
     std::vector<Food>  food_;
     std::vector<Virus> viruses_;
-    SpatialGrid        grid_;
+    SpatialGrid        cells_grid_;
+    SpatialGrid        foods_grid_;
+    SpatialGrid        viruses_grid_;
 };
 
 } // namespace cr

@@ -22,6 +22,10 @@ public:
     // Optional skill input from the client when the player dies. Used to scale bot caps.
     void recordPlayerFinishingMass(float mass);
 
+    // Wipe the tracked player peak so a freshly-respawned player at start_mass doesn't
+    // face a wave of elite bots that scaled to their previous peak.
+    void resetPlayerTracking();
+
     const std::vector<BotMind>& bots() const { return bots_; }
 
     // Tracked peak mass of the human player. Used to scale bot caps and elite spawns so

@@ -153,4 +153,8 @@ void BotDirector::recordPlayerFinishingMass(float mass) {
     player_skill_ = player_skill_ + 0.2f * (mass - player_skill_);
 }
 
+void BotDirector::resetPlayerTracking() {
+    player_max_mass_ = 100.0f;
+}
+
 } // namespace cr::ai

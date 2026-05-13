@@ -1,9 +1,13 @@
 #include "raylib.h"
 
 #include "client/Client.h"
+#include "client/MainMenu.h"
+#include "client/SettingsScreen.h"
 #include "core/Rng.h"
 #include "core/Tuning.h"
+#include "meta/SaveFile.h"
 #include "platform/Input.h"
+#include "platform/Paths.h"
 #include "sim/Replay.h"
 #include "sim/Simulation.h"
 
@@ -153,6 +157,7 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
         con.log("commands: spawn_food N, set_mass N, god, slowmo F, pause,");
         con.log("          reload_tuning, replay_save FILE, replay_load FILE,");
         con.log("          set_hold_to_move 0|1, set_invert_thumbs 0|1, force_touch 0|1,");
+        con.log("          vol_master F, vol_sfx F, vol_music F, music_on, music_off, mute,");
         con.log("          clear, help");
     } else if (cmd == "clear") {
         con.clearOutput();
@@ -219,22 +224,47 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
     } else if (cmd == "pause") {
         s.client->togglePause();
         con.log(s.client->isPaused() ? "paused" : "unpaused");
+    } else if (cmd == "vol_master" && needs(2)) {
+        float v = static_cast<float>(std::atof(args[1].c_str()));
+        s.client->audio().setMasterVolume(v);
+        con.log("vol_master = " + args[1]);
+    } else if (cmd == "vol_sfx" && needs(2)) {
+        float v = static_cast<float>(std::atof(args[1].c_str()));
+        s.client->audio().setSfxVolume(v);
+        con.log("vol_sfx = " + args[1]);
+    } else if (cmd == "vol_music" && needs(2)) {
+        float v = static_cast<float>(std::atof(args[1].c_str()));
+        s.client->audio().setMusicVolume(v);
+        con.log("vol_music = " + args[1]);
+    } else if (cmd == "music_off") {
+        s.client->audio().setMusicEnabled(false);
+        con.log("music disabled");
+    } else if (cmd == "music_on") {
+        // Music is off by default in this build (procedural pad sounds buzzy).
+        // music_on un-gates the toggle AND explicitly starts playback so console
+        // users can audition the pad / a future real track.
+        s.client->audio().setMusicEnabled(true);
+        s.client->audio().playMusic();
+        con.log("music enabled (procedural pad -- buzzy by design)");
+    } else if (cmd == "mute") {
+        s.client->audio().setMasterVolume(0.0f);
+        con.log("muted (use vol_master 1 to restore)");
     } else {
         con.log("unknown command: " + cmd);
     }
 }
 
-int runWindow(uint64_t seed) {
-    cr::Tuning tuning;
-    if (!cr::LoadTuningFromFile(tuning, "tuning.ini")) {
-        std::printf("[cell_royale] tuning.ini not found -- using defaults\n");
-    }
-    cr::PrintTuning(tuning);
+// Outcome of a single match -- determines whether the outer Menu<->Match loop in
+// runWindow goes back to the menu or exits the app.
+enum class MatchOutcome {
+    ReturnToMenu,   // player clicked MAIN MENU on Summary, or hit a future "leave" button
+    WindowClosed,   // user closed the OS window during the match
+};
 
-    InitWindow(1280, 720, "Cell Royale v0.2.0");
-    SetTargetFPS(60);
-    SetExitKey(KEY_NULL); // don't quit on ESC (console uses it)
-
+// Runs one match start-to-finish. Builds a fresh sim + client, applies persistent state,
+// runs the play loop, and writes updated persistent state back into `save` before
+// returning. Designed to be called repeatedly from the menu loop with different seeds.
+MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save) {
     cr::Simulation     sim(seed, tuning);
     const cr::PlayerId player = 1;
     cr::EntityId       player_cell = sim.world().spawnCell(
@@ -250,7 +280,11 @@ int runWindow(uint64_t seed) {
         tuning.start_mass);
     client.onSnapshot(sim.buildSnapshot());
 
-    // Live replay recording starts at session begin and accumulates every queued command.
+    // Push lifetime stats + settings into the new client so volume/input prefs and
+    // best-ever counters are visible from frame 1.
+    client.applyLoadedSave(save);
+
+    // Live replay recording starts at match begin.
     cr::Replay                live_replay;
     std::vector<cr::CellSnap> initial;
     for (const auto& c : sim.world().cells()) {
@@ -267,11 +301,22 @@ int runWindow(uint64_t seed) {
 
     const float    sim_dt        = 1.0f / 30.0f;
     double         accumulator   = 0.0;
+    MatchOutcome   outcome       = MatchOutcome::WindowClosed;
 
     while (!WindowShouldClose()) {
+        // Player clicked MAIN MENU on the Summary panel -- end this match cleanly.
+        if (client.consumeReturnToMenuRequest()) {
+            outcome = MatchOutcome::ReturnToMenu;
+            break;
+        }
+
         int   screen_w  = GetScreenWidth();
         int   screen_h  = GetScreenHeight();
         float frame_dt  = GetFrameTime();
+
+        // Auto-pause when window loses focus -- keeps CPU/GPU/audio quiet in the
+        // background and stops the sim from accumulating real time the player can't see.
+        client.setAutoPaused(!IsWindowFocused());
 
         client.pollFrame(screen_w, screen_h, sim.currentTick());
 
@@ -300,6 +345,36 @@ int runWindow(uint64_t seed) {
                 // Long pause / breakpoint -- drop the backlog instead of spiraling.
                 accumulator = 0.0;
             }
+        }
+
+        // Phase 8 respawn: when Client signals the player should come back, pick a clear
+        // spot and spawn a fresh cell. Bots forget the player's previous peak mass so the
+        // world doesn't keep dropping elite scaled threats while the player is at start_mass.
+        if (client.consumeRespawnRequest()) {
+            cr::Vec2 spawn{0.0f, 0.0f};
+            const float margin = 500.0f;
+            for (int attempt = 0; attempt < 8; ++attempt) {
+                cr::Vec2 candidate{
+                    sim.world().rng().rangeFloat(margin,
+                                                 static_cast<float>(sim.world().width())  - margin),
+                    sim.world().rng().rangeFloat(margin,
+                                                 static_cast<float>(sim.world().height()) - margin),
+                };
+                bool clear = true;
+                for (const auto& c : sim.world().cells()) {
+                    if (cr::distance(c.pos, candidate)
+                        < cr::cellRadius(c.mass) + 400.0f) {
+                        clear = false; break;
+                    }
+                }
+                if (clear) { spawn = candidate; break; }
+                spawn = candidate; // fallback to last attempt
+            }
+            player_cell = sim.world().spawnCell(player, spawn, tuning.start_mass);
+            client.setWatchedCell(player_cell);
+            client.camera().snapTo(spawn, tuning.start_mass);
+            client.onPlayerRespawned(GetTime());
+            sim.director().resetPlayerTracking();
         }
 
         // Camera: death cam steals the camera target while it's active. Otherwise follow
@@ -341,6 +416,121 @@ int runWindow(uint64_t seed) {
         ClearBackground(Color{18, 22, 30, 255});
         client.render(screen_w, screen_h, alpha, tuning, sim.world(), sim.currentTick());
         EndDrawing();
+    }
+
+    // Pull updated progression + lifetime stats + settings out of the client so the
+    // outer loop has fresh data for the menu display and the on-disk save.
+    save = client.snapshotForSave();
+    return outcome;
+}
+
+// Top-level desktop loop: open the window once, then alternate between Main Menu and
+// matches until the player quits. Save state lives at this level and is written once on
+// exit (with a fresh snapshot from the most recently completed match).
+int runWindow(uint64_t initial_seed) {
+    cr::Tuning tuning;
+    if (!cr::LoadTuningFromFile(tuning, "tuning.ini")) {
+        std::printf("[cell_royale] tuning.ini not found -- using defaults\n");
+    }
+    cr::PrintTuning(tuning);
+
+    InitWindow(1280, 720, "Cell Royale v0.2.0");
+    SetTargetFPS(60);
+    SetExitKey(KEY_NULL); // don't quit on ESC (menu / console handle it)
+
+    // Save lives in the platform-correct user data dir so we don't pollute the install
+    // directory and so it persists across reinstalls. macOS: ~/Library/Application Support/
+    // CellRoyale; Linux: $XDG_DATA_HOME/cell_royale; Windows: %APPDATA%/CellRoyale.
+    const std::string kSavePath = cr::userDataPath("save.bin");
+    cr::SaveData save{};
+    if (cr::loadFromFile(save, kSavePath)) {
+        std::printf("[cell_royale] loaded save (%s): lvl %u, %u xp, %u games\n",
+                    kSavePath.c_str(),
+                    save.level, save.total_xp, save.games_played);
+    } else {
+        std::printf("[cell_royale] no save found at %s -- starting fresh\n",
+                    kSavePath.c_str());
+    }
+
+    // Apply persisted FPS cap. SetTargetFPS(0) means uncapped per raylib.
+    if (save.fps_cap == 0) {
+        SetTargetFPS(0);
+    } else {
+        SetTargetFPS(static_cast<int>(save.fps_cap));
+    }
+
+    // Daily missions: roll a fresh set if we've crossed midnight (or this is a brand
+    // new save with no missions yet). Completed flags clear with the new roll.
+    const uint32_t today = cr::currentDay();
+    if (save.last_mission_reset_day != today
+        || save.daily_missions[0].kind == cr::MissionKind::None) {
+        cr::rollDailyMissions(today, save.daily_missions);
+        save.last_mission_reset_day = today;
+        std::printf("[cell_royale] daily missions rolled for day %u\n",
+                    static_cast<unsigned>(today));
+    }
+
+    cr::MainMenu       menu;
+    cr::SettingsScreen settings;
+    // Push the loaded accessibility state into the renderer-side globals so the
+    // menu's bg cells (and the first match before applyLoadedSave runs) use them.
+    cr::setPaletteMode(static_cast<cr::PaletteMode>(
+        save.colorblind_mode <= 3 ? save.colorblind_mode : 0));
+    cr::setHighContrast(save.high_contrast);
+
+    enum class AppPhase { Menu, Settings, Match, Quit };
+    AppPhase  phase           = AppPhase::Menu;
+    uint64_t  next_match_seed = initial_seed;
+
+    while (phase != AppPhase::Quit && !WindowShouldClose()) {
+        if (phase == AppPhase::Menu) {
+            float dt = GetFrameTime();
+            int   sw = GetScreenWidth();
+            int   sh = GetScreenHeight();
+            menu.update(dt, sw, sh);
+
+            BeginDrawing();
+            ClearBackground(Color{18, 22, 30, 255});
+            cr::MenuAction action = menu.render(sw, sh, save);
+            EndDrawing();
+
+            if (action == cr::MenuAction::Quit) {
+                phase = AppPhase::Quit;
+            } else if (action == cr::MenuAction::StartVsAI) {
+                phase = AppPhase::Match;
+            } else if (action == cr::MenuAction::ShowSettings) {
+                phase = AppPhase::Settings;
+            }
+            // StartRoyalePlaceholder: menu itself shows the toast, we stay in Menu.
+        } else if (phase == AppPhase::Settings) {
+            int sw = GetScreenWidth();
+            int sh = GetScreenHeight();
+
+            BeginDrawing();
+            cr::SettingsAction sa = settings.render(sw, sh, save);
+            EndDrawing();
+
+            if (sa == cr::SettingsAction::Quit) {
+                phase = AppPhase::Quit;
+            } else if (sa == cr::SettingsAction::BackToMenu) {
+                phase = AppPhase::Menu;
+            }
+        } else { // Match
+            MatchOutcome outcome = runMatch(next_match_seed, tuning, save);
+            ++next_match_seed; // new seed per match for variety across the session
+            phase = (outcome == MatchOutcome::ReturnToMenu)
+                        ? AppPhase::Menu
+                        : AppPhase::Quit;
+        }
+    }
+
+    // Persist progression + settings on exit. Best-effort: if it fails we log and
+    // continue; the previous .bak is still on disk.
+    if (cr::saveToFile(save, kSavePath)) {
+        std::printf("[cell_royale] save written to %s\n", kSavePath.c_str());
+    } else {
+        std::printf("[cell_royale] WARNING: failed to write save to %s\n",
+                    kSavePath.c_str());
     }
 
     CloseWindow();

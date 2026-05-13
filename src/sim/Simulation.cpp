@@ -73,16 +73,26 @@ void Simulation::tick(float dt) {
     rules::stepFood(world_, tuning_, dt);
     rules::applySoftBounds(world_, tuning_);
 
-    // 3. Interactions (collision-driven).
+    // 3. Rebuild spatial grids once positions have settled, so the eating step can use
+    //    them. Grids store vector indices; valid until the first push_back / compactDead
+    //    in this tick (i.e. through processEating's queries but stale after).
+    world_.rebuildGrids();
+
+    // 4. Interactions (collision-driven).
     rules::processEating(world_, tuning_, events_);
     rules::processVirusPushes(world_, tuning_);
     rules::processRecombine(world_, tuning_);
 
-    // 4. World upkeep.
+    // 5. World upkeep.
     rules::respawnFood(world_, tuning_);
+    rules::respawnViruses(world_, tuning_);
 
-    // 5. Spatial grid for whoever queries it next.
-    world_.rebuildGrid();
+    // 6. Rebuild grids one more time so the NEXT tick's bot AI (which runs before motion
+    // and therefore before the intermediate rebuild) has fresh indices reflecting all
+    // post-compaction + respawn changes. Cheap (~0.1ms) and removes a class of bugs
+    // where bots would dereference stale indices into the food vector.
+    world_.rebuildGrids();
+
     world_.advanceTick();
 }
 

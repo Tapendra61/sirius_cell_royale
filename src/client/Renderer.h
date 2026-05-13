@@ -5,30 +5,51 @@
 #include "core/Tuning.h"
 #include "raylib.h"
 
+#include <vector>
+
 namespace cr {
 
-// Per-player palette. Exposed so the feel layer (particles, popups) can match cell colors.
-inline Color colorForPlayer(PlayerId p) {
-    static const Color palette[] = {
-        Color{ 64, 156, 255, 255},
-        Color{255, 120,  80, 255},
-        Color{120, 220, 120, 255},
-        Color{255, 200,  60, 255},
-        Color{200, 120, 255, 255},
-        Color{ 80, 220, 220, 255},
-    };
-    if (p == INVALID_PLAYER) return Color{180, 180, 180, 255};
-    return palette[(p - 1) % (sizeof(palette) / sizeof(palette[0]))];
-}
+// Accessibility: which color palette to use for cells. 0 = default, 1..3 are
+// colorblind-friendly variants tuned for Deuteranopia / Protanopia / Tritanopia.
+// Globally read by colorForPlayer; set from Client::applyLoadedSave at match start.
+enum class PaletteMode : uint8_t {
+    Default       = 0,
+    Deuteranopia  = 1, // green-red weakness (most common)
+    Protanopia    = 2, // red weakness
+    Tritanopia    = 3, // blue-yellow weakness
+};
 
-// Stateless renderer. Caller wraps drawWorld() in BeginMode2D/EndMode2D so it can
-// share the camera with the feel layer (particles, popups) and apply screen shake.
+// Set globally (process-wide). Cheap; intended to be called rarely (settings change).
+void setPaletteMode(PaletteMode m);
+PaletteMode currentPaletteMode();
+
+// High-contrast cell outlines (accessibility). When on, cell outlines are drawn with
+// a multi-pass thicker white stroke so cell boundaries pop against busy backgrounds.
+void setHighContrast(bool on);
+bool currentHighContrast();
+
+// Per-player palette. Exposed so the feel layer (particles, popups) can match cell colors.
+// The actual table is selected by the current PaletteMode.
+Color colorForPlayer(PlayerId p);
+
+// Renderer. Caller wraps drawWorld() in BeginMode2D/EndMode2D so it can share the camera
+// with the feel layer (particles, popups) and apply screen shake. Takes a view AABB so it
+// can frustum-cull entities; with a 16k x 16k world and a typical 1280 x 720 viewport at
+// zoom 1, only ~0.4% of the food is on-screen.
 class Renderer {
 public:
     void drawWorld(const Interpolator&     interp,
                    const Tuning&           tuning,
                    float                   alpha,
-                   EntityId                watched_cell = INVALID_ENTITY) const;
+                   Vec2                    view_min,
+                   Vec2                    view_max,
+                   EntityId                watched_cell = INVALID_ENTITY,
+                   PlayerId                watched_player = INVALID_PLAYER,
+                   int                     watched_player_level = 1) const;
+
+private:
+    // Scratch vectors reused across frames so drawWorld doesn't allocate per call.
+    mutable std::vector<const CellSnap*> sort_order_;
 };
 
 } // namespace cr

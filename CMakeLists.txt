@@ -17,6 +17,7 @@ include(cmake/platforms.cmake)
 file(GLOB_RECURSE CR_CORE_SOURCES CONFIGURE_DEPENDS
     src/ai/*.cpp
     src/core/*.cpp
+    src/meta/*.cpp
     src/sim/*.cpp
     src/transport/*.cpp)
 add_library(cell_royale_core STATIC ${CR_CORE_SOURCES})

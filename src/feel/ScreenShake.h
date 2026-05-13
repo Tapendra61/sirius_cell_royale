@@ -14,9 +14,15 @@ public:
     Vec2  sampleOffset(float max_offset) const;
     float trauma() const { return trauma_; }
 
+    // Accessibility setting -- user-tunable multiplier applied to the sampled offset.
+    // 0 = no shake at all, 1 = roadmap default, up to 1.5 for shake-fans.
+    void  setScale(float s);
+    float scale() const { return scale_; }
+
 private:
     float trauma_ = 0.0f;
     float time_   = 0.0f;
+    float scale_  = 1.0f;
 };
 
 } // namespace cr

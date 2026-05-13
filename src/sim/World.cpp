@@ -1,6 +1,7 @@
 #include "World.h"
 
 #include <algorithm>
+#include <cstdint>
 
 namespace cr {
 
@@ -16,19 +17,19 @@ void SpatialGrid::clear() {
     for (auto& b : buckets_) b.clear();
 }
 
-void SpatialGrid::insert(EntityId id, Vec2 pos, float radius) {
+void SpatialGrid::insert(uint32_t index, Vec2 pos, float radius) {
     int cx0 = std::max(0, static_cast<int>((pos.x - radius) / bucket_size_));
     int cy0 = std::max(0, static_cast<int>((pos.y - radius) / bucket_size_));
     int cx1 = std::min(cols_ - 1, static_cast<int>((pos.x + radius) / bucket_size_));
     int cy1 = std::min(rows_ - 1, static_cast<int>((pos.y + radius) / bucket_size_));
     for (int y = cy0; y <= cy1; ++y) {
         for (int x = cx0; x <= cx1; ++x) {
-            buckets_[static_cast<size_t>(y) * cols_ + x].push_back(id);
+            buckets_[static_cast<size_t>(y) * cols_ + x].push_back(index);
         }
     }
 }
 
-void SpatialGrid::query(Vec2 min, Vec2 max, std::vector<EntityId>& out) const {
+void SpatialGrid::query(Vec2 min, Vec2 max, std::vector<uint32_t>& out) const {
     int cx0 = std::max(0, static_cast<int>(min.x / bucket_size_));
     int cy0 = std::max(0, static_cast<int>(min.y / bucket_size_));
     int cx1 = std::min(cols_ - 1, static_cast<int>(max.x / bucket_size_));
@@ -47,7 +48,9 @@ World::World(uint64_t seed, int width, int height, int bucket_size)
     : width_(width),
       height_(height),
       rng_(seed),
-      grid_(width, height, bucket_size) {}
+      cells_grid_(width, height, bucket_size),
+      foods_grid_(width, height, bucket_size),
+      viruses_grid_(width, height, bucket_size) {}
 
 EntityId World::spawnCell(PlayerId owner, Vec2 pos, float mass) {
     Cell c;
@@ -132,16 +135,21 @@ int World::playerCellCount(PlayerId p) const {
     return n;
 }
 
-void World::rebuildGrid() {
-    grid_.clear();
-    for (const auto& c : cells_) {
-        grid_.insert(c.id, c.pos, cellRadius(c.mass));
+void World::rebuildGrids() {
+    cells_grid_.clear();
+    foods_grid_.clear();
+    viruses_grid_.clear();
+    for (size_t i = 0; i < cells_.size(); ++i) {
+        cells_grid_.insert(static_cast<uint32_t>(i),
+                           cells_[i].pos, cellRadius(cells_[i].mass));
     }
-    for (const auto& f : food_) {
-        grid_.insert(f.id, f.pos, foodRadius(f.mass));
+    for (size_t i = 0; i < food_.size(); ++i) {
+        foods_grid_.insert(static_cast<uint32_t>(i),
+                           food_[i].pos, foodRadius(food_[i].mass));
     }
-    for (const auto& v : viruses_) {
-        grid_.insert(v.id, v.pos, cellRadius(v.mass));
+    for (size_t i = 0; i < viruses_.size(); ++i) {
+        viruses_grid_.insert(static_cast<uint32_t>(i),
+                             viruses_[i].pos, cellRadius(viruses_[i].mass));
     }
 }
 

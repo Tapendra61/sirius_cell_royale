@@ -156,35 +156,63 @@ void processEating(World& world, const Tuning& t, std::vector<GameEvent>& events
     const Tick   now   = world.currentTick();
     const size_t count = cells.size();
 
+    // Reused across the inner queries to avoid per-cell allocations.
+    std::vector<uint32_t> nearby;
+
     for (size_t i = 0; i < count; ++i) {
         if (cell_dead[i]) continue;
 
+        // Precompute the cell's reach + AABB once. pr may grow slightly as we eat food
+        // in this iteration; we accept that as a slight conservatism (a tiny piece of
+        // food just outside pr will be picked up next tick).
+        const float pr = cellRadius(cells[i].mass);
+        // AABB slack -- the food/virus grid was built before this loop, and an in-flight
+        // pellet may have crept a few px since. 12 px is well beyond max sim-tick travel.
+        const float slack  = 12.0f;
+        const Vec2  q_lo{cells[i].pos.x - (pr + slack), cells[i].pos.y - (pr + slack)};
+        const Vec2  q_hi{cells[i].pos.x + (pr + slack), cells[i].pos.y + (pr + slack)};
+
         // --- food ---
-        for (size_t fi = 0; fi < foods.size(); ++fi) {
-            if (food_dead[fi]) continue;
+        nearby.clear();
+        world.foodsGrid().query(q_lo, q_hi, nearby);
+        for (uint32_t fi : nearby) {
+            if (fi >= food_dead.size() || food_dead[fi]) continue;
             const Food& f = foods[fi];
-            float pr = cellRadius(cells[i].mass);
+            float dx = cells[i].pos.x - f.pos.x;
+            float dy = cells[i].pos.y - f.pos.y;
+            float dsq = dx * dx + dy * dy;
             float fr = foodRadius(f.mass);
-            float d  = distance(cells[i].pos, f.pos);
-            if (d > pr + fr) continue;
-            cells[i].mass += f.mass;
-            events.push_back(AbsorbEvent{cells[i].id, f.id, f.pos, f.mass});
+            float reach = pr + fr;
+            if (dsq > reach * reach) continue;
+            // Crit roll: rare bonus (5% by default). Crit mass adds on top of base.
+            float gained  = f.mass;
+            bool  is_crit = world.rng().nextFloat() < t.chance_per_absorb;
+            if (is_crit) gained *= t.bonus_multiplier;
+            cells[i].mass += gained;
+            events.push_back(AbsorbEvent{cells[i].id, f.id, f.pos, gained});
+            if (is_crit) events.push_back(CritEvent{cells[i].id, f.pos, gained});
             food_dead[fi] = 1;
         }
 
-        // --- cells ---  bounded by initial count: new cells from explosions appear after.
-        // We compute geometry up-front so we can emit a NearMissEvent for the case where
-        // the bigger cell almost ate the smaller but was blocked by mass-ratio / god /
-        // invuln. Fires only from the larger cell so each encounter emits once.
-        for (size_t j = 0; j < count; ++j) {
-            if (i == j || cell_dead[j]) continue;
+        // --- cells ---  bounded by initial count via the cell_dead size guard. The
+        // grid contains pre-eating indices and never produces > count (rebuildGrids was
+        // called before processEating with cells.size() == count).
+        nearby.clear();
+        world.cellsGrid().query(q_lo, q_hi, nearby);
+        for (uint32_t j_u : nearby) {
+            size_t j = j_u;
+            if (j == i || j >= count || cell_dead[j]) continue;
             Cell& prey = cells[j];
             if (prey.owner == cells[i].owner) continue;
 
-            float pr = cellRadius(cells[i].mass);
+            float dx = cells[i].pos.x - prey.pos.x;
+            float dy = cells[i].pos.y - prey.pos.y;
+            float dsq = dx * dx + dy * dy;
             float sr = cellRadius(prey.mass);
-            float d  = distance(cells[i].pos, prey.pos);
-            float overlap = (pr + sr) - d;
+            float reach = pr + sr;
+            if (dsq > reach * reach) continue;
+            float d = std::sqrt(dsq);
+            float overlap = reach - d;
             if (overlap < sr * t.overlap_required) continue;
 
             const bool can_eat = !prey.god
@@ -192,8 +220,12 @@ void processEating(World& world, const Tuning& t, std::vector<GameEvent>& events
                               && cells[i].mass >= prey.mass * t.mass_ratio_required;
 
             if (can_eat) {
-                cells[i].mass += prey.mass;
-                events.push_back(AbsorbEvent{cells[i].id, prey.id, prey.pos, prey.mass});
+                float gained  = prey.mass;
+                bool  is_crit = world.rng().nextFloat() < t.chance_per_absorb;
+                if (is_crit) gained *= t.bonus_multiplier;
+                cells[i].mass += gained;
+                events.push_back(AbsorbEvent{cells[i].id, prey.id, prey.pos, gained});
+                if (is_crit) events.push_back(CritEvent{cells[i].id, prey.pos, gained});
                 events.push_back(DeathEvent{prey.owner, cells[i].id});
                 cell_dead[j] = 1;
             } else if (cells[i].mass > prey.mass
@@ -203,13 +235,17 @@ void processEating(World& world, const Tuning& t, std::vector<GameEvent>& events
         }
 
         // --- viruses ---
-        for (size_t vi = 0; vi < viruses.size(); ++vi) {
-            if (virus_dead[vi]) continue;
+        nearby.clear();
+        world.virusesGrid().query(q_lo, q_hi, nearby);
+        for (uint32_t vi : nearby) {
+            if (vi >= virus_dead.size() || virus_dead[vi]) continue;
             const Virus& v = viruses[vi];
-            float pr = cellRadius(cells[i].mass);
+            float dx = cells[i].pos.x - v.pos.x;
+            float dy = cells[i].pos.y - v.pos.y;
+            float dsq = dx * dx + dy * dy;
             float vr = cellRadius(v.mass);
-            float d  = distance(cells[i].pos, v.pos);
-            if (d > pr + vr) continue;
+            float reach = pr + vr;
+            if (dsq > reach * reach) continue;
             if (cells[i].mass > v.mass) {
                 pending_explosions.push_back(PendingExplosion{
                     cells[i].owner, cells[i].pos, cells[i].mass, cells[i].id});
@@ -308,6 +344,43 @@ void respawnFood(World& world, const Tuning& t) {
                                 Vec2{0.0f, 0.0f}, INVALID_PLAYER);
                 break;
             }
+        }
+    }
+}
+
+void respawnViruses(World& world, const Tuning& t) {
+    const int current = static_cast<int>(world.viruses().size());
+    if (current >= t.virus_count) return;
+
+    // One per tick at most -- keeps respawn from being instant. With 16k² world and a
+    // deficit of e.g. 5 viruses, the field repopulates in <0.2s.
+    const float w = static_cast<float>(world.width());
+    const float h = static_cast<float>(world.height());
+    constexpr float kEdgeMargin   = 300.0f;
+    constexpr float kCellClearance = 250.0f;
+    constexpr float kVirusClearance = 600.0f;
+
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        Vec2 pos{
+            world.rng().rangeFloat(kEdgeMargin, w - kEdgeMargin),
+            world.rng().rangeFloat(kEdgeMargin, h - kEdgeMargin),
+        };
+        bool too_close = false;
+        for (const auto& c : world.cells()) {
+            if (distance(c.pos, pos) < cellRadius(c.mass) + kCellClearance) {
+                too_close = true; break;
+            }
+        }
+        if (!too_close) {
+            for (const auto& v : world.viruses()) {
+                if (distance(v.pos, pos) < kVirusClearance) {
+                    too_close = true; break;
+                }
+            }
+        }
+        if (!too_close) {
+            world.spawnVirus(pos, 200.0f);
+            return;
         }
     }
 }

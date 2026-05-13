@@ -15,13 +15,17 @@ void ScreenShake::update(float frame_dt) {
 }
 
 Vec2 ScreenShake::sampleOffset(float max_offset) const {
-    if (trauma_ <= 0.0f) return {0.0f, 0.0f};
-    const float shake = trauma_ * trauma_;
+    if (trauma_ <= 0.0f || scale_ <= 0.0f) return {0.0f, 0.0f};
+    const float shake = trauma_ * trauma_ * scale_;
     // Pseudo-perlin: a couple of incommensurate sinusoids give a Perlin-ish wobble cheaply.
     const float t = time_;
     const float nx = std::sin(t * 41.3f) * 0.6f + std::sin(t * 17.7f) * 0.4f;
     const float ny = std::cos(t * 37.9f) * 0.6f + std::cos(t * 23.1f) * 0.4f;
     return {nx * max_offset * shake, ny * max_offset * shake};
+}
+
+void ScreenShake::setScale(float s) {
+    scale_ = std::clamp(s, 0.0f, 1.5f);
 }
 
 } // namespace cr
