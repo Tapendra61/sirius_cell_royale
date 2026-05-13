@@ -4,6 +4,7 @@
 #include "UiWidgets.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 namespace cr {
@@ -22,6 +23,23 @@ int fpsCapIndex(uint16_t v) {
         if (kFpsCapValues[i] == v) return i;
     }
     return 0;
+}
+
+// HUD text size choices. Capped at 1.20 -- the summary panel layout was designed for
+// 1.0 and gets uncomfortably tight past that. The slider's underlying clamp in
+// UiWidgets allows up to 1.30 for power users via direct save edit.
+const char* kHudTextOptions[]    = {"Small", "Normal", "Large", "X-Large"};
+constexpr float kHudTextValues[] = {0.90f,  1.00f,    1.10f,   1.20f};
+constexpr int   kHudTextCount    = 4;
+
+int hudTextIndex(float v) {
+    int best = 1; // default to Normal
+    float best_diff = 1e9f;
+    for (int i = 0; i < kHudTextCount; ++i) {
+        float d = std::fabs(v - kHudTextValues[i]);
+        if (d < best_diff) { best_diff = d; best = i; }
+    }
+    return best;
 }
 
 // ---- Layout primitives ----
@@ -127,6 +145,30 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
     sliderRow(L, "Screen shake",
               TextFormat("%d%%", (int)(save.screen_shake_scale * 100.0f + 0.5f)),
               &save.screen_shake_scale, 0.0f, 1.5f);
+
+    int hud_idx = hudTextIndex(save.hud_text_scale);
+    if (choiceRow(L, "HUD text size",
+                  kHudTextOptions, kHudTextCount, &hud_idx)) {
+        save.hud_text_scale = kHudTextValues[hud_idx];
+        // Live preview also takes effect on the inline sample below.
+        setHudTextScale(save.hud_text_scale);
+    }
+    // Inline preview row: an "x5 COMBO" sample drawn at the current scale so the user
+    // can actually see the change without leaving settings. Base size 24 is chosen so
+    // even at 1.20x the preview stays small enough to keep the BACK button on-screen
+    // on a 720-tall window.
+    {
+        const int preview_size = static_cast<int>(24 * save.hud_text_scale + 0.5f);
+        const int preview_h    = preview_size + 12;
+        const char* sample = "PREVIEW   x5 COMBO";
+        int tw = MeasureText(sample, preview_size);
+        int tx = L.x + (col_w - tw) / 2;
+        int ty = L.y;
+        DrawText(sample, tx + 2, ty + 2, preview_size, Color{0, 0, 0, 160});
+        DrawText(sample, tx,     ty,     preview_size,
+                 Color{255, 215, 130, 240});
+        L.y += preview_h + 4;
+    }
 
     // ===== Right column =====
     sectionHeader(R, "ACCESSIBILITY");

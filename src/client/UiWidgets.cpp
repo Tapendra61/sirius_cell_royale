@@ -8,6 +8,25 @@ namespace cr {
 
 namespace {
 
+// Global HUD text scale. Hud.cpp reads this through currentHudTextScale().
+float g_hud_text_scale = 1.0f;
+
+// "Swallow the next click" gate. Set by phase transitions (see swallowNextClick());
+// drawButton-family widgets read it and suppress clicks until the mouse has had a
+// chance to come fully up with no pending release event.
+bool g_swallow_click = false;
+
+// Forwarded by drawButton / drawSlider / drawButtonWithSub. Returns whether the
+// click should be honored. Clears the gate once there's no in-flight release.
+bool consumeClick(bool raw_click) {
+    if (!g_swallow_click) return raw_click;
+    if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)
+        && !IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+        g_swallow_click = false;
+    }
+    return false; // swallowed
+}
+
 bool pointInRect(Vector2 p, Rectangle r) {
     return p.x >= r.x && p.x <= r.x + r.width
         && p.y >= r.y && p.y <= r.y + r.height;
@@ -73,7 +92,7 @@ bool drawButton(Rectangle r, const char* label, int fs,
     Vector2 mp    = GetMousePosition();
     bool    hover = enabled && pointInRect(mp, r);
     bool    down  = hover && IsMouseButtonDown(MOUSE_BUTTON_LEFT);
-    bool    click = hover && IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
+    bool    click = consumeClick(hover && IsMouseButtonReleased(MOUSE_BUTTON_LEFT));
 
     drawButtonBase(r, fill, hover, down, enabled);
 
@@ -197,7 +216,7 @@ bool drawButtonWithSub(Rectangle r, const char* label, int fs,
     Vector2 mp    = GetMousePosition();
     bool    hover = enabled && pointInRect(mp, r);
     bool    down  = hover && IsMouseButtonDown(MOUSE_BUTTON_LEFT);
-    bool    click = hover && IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
+    bool    click = consumeClick(hover && IsMouseButtonReleased(MOUSE_BUTTON_LEFT));
 
     drawButtonBase(r, fill, hover, down, enabled);
 
@@ -220,5 +239,9 @@ bool drawButtonWithSub(Rectangle r, const char* label, int fs,
 
     return click;
 }
+
+void  setHudTextScale(float s) { g_hud_text_scale = std::clamp(s, 0.85f, 1.30f); }
+float currentHudTextScale()    { return g_hud_text_scale; }
+void  swallowNextClick()       { g_swallow_click = true; }
 
 } // namespace cr

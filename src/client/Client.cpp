@@ -1,5 +1,6 @@
 #include "Client.h"
 
+#include "UiWidgets.h"
 #include "raylib.h"
 
 #include <algorithm>
@@ -56,9 +57,12 @@ void Client::pollFrame(int screen_w, int screen_h, Tick current_tick) {
         return;
     }
     if (phase_ == GamePhase::Summary) {
-        bool skip = s.splitPressed || s.dashPressed || s.ejectPressed || s.pausePressed
-                 || IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
-        if (skip) summary_remaining_ = 0.0f; // cuts to Respawning next updateFrame
+        // SPACE is the keyboard shortcut for "play again now" (documented in the
+        // Hud hint). We deliberately DON'T trip on mouse-press here -- the player
+        // is clicking a button (PLAY AGAIN or MAIN MENU); the button's own click
+        // handler will fire on release. Tripping on press would cannibalise the
+        // MAIN MENU click and respawn before they ever release.
+        if (s.splitPressed) summary_remaining_ = 0.0f;
         return;
     }
     if (phase_ == GamePhase::Respawning) {
@@ -131,11 +135,17 @@ void Client::applyLoadedSave(const SaveData& s) {
     setPaletteMode(static_cast<PaletteMode>(
         s.colorblind_mode <= 3 ? s.colorblind_mode : 0));
     setHighContrast(s.high_contrast);
-    // FPS cap is applied by main.cpp at startup / in the Settings live-preview path.
+    // FPS cap is applied by main.cpp at startup / the Settings live preview; we just
+    // remember the current value so snapshotForSave() can round-trip it.
+    fps_cap_ = s.fps_cap;
+    // v4 -- HUD text size accessibility multiplier + first-run flag passthrough.
+    setHudTextScale(s.hud_text_scale);
+    first_run_complete_ = s.first_run_complete;
 }
 
 SaveData Client::snapshotForSave() const {
     SaveData s;
+    // v1 fields
     s.total_xp      = static_cast<uint32_t>(std::max(0, total_xp_));
     s.level         = static_cast<uint32_t>(std::max(1, level_));
     s.games_played  = static_cast<uint32_t>(std::max(0, games_played_));
@@ -144,14 +154,27 @@ SaveData Client::snapshotForSave() const {
     s.master_volume = audio_.masterVolume();
     s.sfx_volume    = audio_.sfxVolume();
     s.music_volume  = audio_.musicVolume();
-    s.music_enabled = audio_.isMusicEnabled();
     s.hold_to_move  = input_config_.hold_to_move;
     s.invert_thumbs = input_config_.invert_thumbs;
+    // v2 fields
+    s.music_enabled = audio_.isMusicEnabled();
     s.last_mission_reset_day = last_mission_reset_day_;
     for (int i = 0; i < kMissionCount; ++i) {
         s.daily_missions[i]          = missions_[i];
         s.daily_missions[i].progress = 0; // progress is per-match -- never persisted
     }
+    // v3 fields. These were silently dropped before this fix: snapshotForSave was
+    // returning struct-default zeros for them, so accessibility settings appeared to
+    // "revert to default" after every match.
+    s.screen_shake_scale = shake_.scale();
+    s.colorblind_mode    = static_cast<uint8_t>(currentPaletteMode());
+    s.high_contrast      = currentHighContrast();
+    s.fps_cap            = fps_cap_;
+    // v4 fields. hud_text_scale is read from the UiWidgets global where it lives;
+    // first_run_complete is owned by main.cpp's outer save and only touched there
+    // (we round-trip it through Client by storing/returning the same value).
+    s.hud_text_scale     = currentHudTextScale();
+    s.first_run_complete = first_run_complete_;
     return s;
 }
 
@@ -228,29 +251,51 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                     bumpMissionProgress(MissionKind::EatFood, match_food_eaten_);
                 }
             } else if constexpr (std::is_same_v<T, DeathEvent>) {
-                // e.player is the OWNER of the cell that just died; e.by is the predator's cell id.
-                if (e.player == watched_player_) {
-                    // Snapshot the dead cell's pos before main retargets watched_cell_.
-                    Vec2  pos{0.0f, 0.0f};
-                    float mass = 100.0f;
-                    if (auto* dead = world.findCell(watched_cell_)) {
-                        pos  = dead->pos;
-                        mass = dead->mass;
-                    }
-                    particles_.spawnDeathBurst(pos, mass, colorForPlayer(watched_player_));
-                    shake_.addTrauma(0.9f);
-                    hud_.onPlayerDeath();
-                    audio_.playPlayerDeath();
-                    death_cam_.active    = true;
-                    death_cam_.target    = e.by;
-                    death_cam_.remaining = DeathCam::kDuration;
+                // e.player is the OWNER of the cell that just died. DeathEvent fires
+                // PER CELL, not per player -- with multi-cell splits the player can
+                // lose one piece and still be in the match. Only treat it as a real
+                // death when no player cells remain in the world.
+                if (e.player != watched_player_) return;
 
-                    // Capture run stats at moment of death (XP computed at summary entry).
-                    phase_                   = GamePhase::DeathCam;
-                    summary_.final_mass      = static_cast<int>(mass);
-                    summary_.best_combo      = hud_.bestCombo();
-                    summary_.time_alive_sec  = static_cast<float>(now_sec - run_start_sec_);
+                bool any_player_alive = false;
+                for (const auto& c : world.cells()) {
+                    if (c.owner == watched_player_) {
+                        any_player_alive = true;
+                        break;
+                    }
                 }
+                if (any_player_alive) {
+                    // Lost a piece but the run continues. Lightweight feedback.
+                    if (auto* killed = world.findCell(e.by)) {
+                        particles_.spawnDeathBurst(killed->pos, 60.0f,
+                                                   colorForPlayer(watched_player_));
+                    }
+                    shake_.addTrauma(0.35f);
+                    return;
+                }
+
+                // Full death: all player cells are gone. Phase 8 run-end sequence.
+                Vec2  pos{0.0f, 0.0f};
+                float mass = 100.0f;
+                if (auto* dead = world.findCell(watched_cell_)) {
+                    pos  = dead->pos;
+                    mass = dead->mass;
+                }
+                particles_.spawnDeathBurst(pos, mass, colorForPlayer(watched_player_));
+                shake_.addTrauma(0.9f);
+                hud_.onPlayerDeath();
+                audio_.playPlayerDeath();
+                death_cam_.active    = true;
+                death_cam_.target    = e.by;
+                death_cam_.remaining = DeathCam::kDuration;
+
+                // Summary uses PEAK mass during the run (already tracked for the
+                // ReachMass mission) rather than the mass of the last piece to die,
+                // which would always understate how big the player got.
+                phase_                   = GamePhase::DeathCam;
+                summary_.final_mass      = static_cast<int>(match_peak_mass_);
+                summary_.best_combo      = hud_.bestCombo();
+                summary_.time_alive_sec  = static_cast<float>(now_sec - run_start_sec_);
             } else if constexpr (std::is_same_v<T, SplitEvent>) {
                 Cell* from = world.findCell(e.from);
                 if (from) {
@@ -367,7 +412,10 @@ void Client::updateFrame(float frame_dt, double now_sec, const Tuning& tuning) {
         }
         ++games_played_;
     } else if (phase_ == GamePhase::Summary) {
-        summary_remaining_     = std::max(0.0f, summary_remaining_ - frame_dt);
+        // Summary phase no longer auto-transitions. The player took the time to die;
+        // give them time to read the stats. The transition to Respawning only fires
+        // when something explicitly sets summary_remaining_ to 0 -- the PLAY AGAIN
+        // button (Hud.cpp) or the SPACE / mouse-click shortcut (pollFrame).
         summary_.remaining_sec = summary_remaining_;
         if (summary_remaining_ <= 0.0f) {
             phase_           = GamePhase::Respawning;
@@ -422,6 +470,9 @@ void Client::onPlayerRespawned(double now_sec) {
 void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tuning,
                     const World& world, Tick tick) {
     // Camera + screen shake (shake is added to target so the whole scene jiggles).
+    // screen_w/h come from GetScreenWidth/GetScreenHeight which return logical points
+    // (raylib's macOS HighDPI handling auto-maps logical coords to the pixel framebuffer
+    // via its ortho projection, so we don't need to scale here ourselves).
     Camera2D cam = camera_.toCamera2D(screen_w, screen_h);
     Vec2 shake = shake_.sampleOffset(tuning.screen_shake_max);
     cam.target.x += shake.x;

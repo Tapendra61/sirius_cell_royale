@@ -156,6 +156,12 @@ private:
     // Phase 8 -- daily missions (copied from SaveData; progress reset per match)
     Mission              missions_[kMissionCount]{};
     uint32_t             last_mission_reset_day_ = 0;
+
+    // Phase 9 -- settings that pass through Client unchanged. Client doesn't act on
+    // these directly but rounds them through applyLoadedSave -> snapshotForSave so
+    // they survive the match.
+    uint16_t             fps_cap_                = 60;
+    bool                 first_run_complete_     = true; // assume true once a match starts
     int                  match_food_eaten_       = 0;
     int                  match_crits_landed_     = 0;
     float                match_peak_mass_        = 0.0f;

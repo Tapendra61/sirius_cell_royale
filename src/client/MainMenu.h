@@ -13,6 +13,7 @@ enum class MenuAction {
     StartVsAI,
     StartRoyalePlaceholder,  // shows a "coming soon" toast; outer loop does nothing
     ShowSettings,
+    ReplayIntro,             // replay the first-run intro for users who want a refresher
     Quit,
 };
 

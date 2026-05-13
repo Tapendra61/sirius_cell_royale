@@ -99,6 +99,8 @@ Color foodColor(const FoodSnap& f) {
         return Color{255, 220, 120, 255};
     }
     // Tier colors (higher mass first; ejected pellets settle at mass 18 -> dim yellow).
+    if (f.mass >= 30.0f) return Color{220,  60, 140, 255}; // legendary base
+                                                            // (renderer pulses this)
     if (f.mass >= 15.0f) return Color{220, 200, 140, 255}; // settled pellet
     if (f.mass >= 10.0f) return Color{255, 210,  90, 255}; // epic   (mass 12)
     if (f.mass >= 5.0f)  return Color{120, 230, 220, 255}; // rare   (mass 6)
@@ -321,13 +323,33 @@ void Renderer::drawWorld(const Interpolator& interp,
         Color c = foodColor(f);
         float r = foodRadius(f.mass);
         const bool stationary = lengthSq(f.vel) < 50.0f * 50.0f;
+
+        // Legendary food (mass 36): pulse the body colour between deep purple and
+        // bright red so it visibly throbs in the world. A faster phase than the
+        // regular halo pulse separates it from the gold-tier "halo only" pulse.
+        const bool legendary = stationary && f.mass >= 30.0f;
+        if (legendary) {
+            float phase = static_cast<float>(f.id % 64) * 0.13f;
+            float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(now_sec) * 5.5f + phase);
+            // cool = deep magenta-purple, hot = saturated red
+            const Color cool{170,  50, 200, 255};
+            const Color hot {255,  80,  90, 255};
+            c.r = static_cast<unsigned char>(cool.r + (hot.r - cool.r) * pulse);
+            c.g = static_cast<unsigned char>(cool.g + (hot.g - cool.g) * pulse);
+            c.b = static_cast<unsigned char>(cool.b + (hot.b - cool.b) * pulse);
+        }
+
         if (stationary && f.mass >= 5.0f) {
             float phase = static_cast<float>(f.id % 64) * 0.1f;
             float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(now_sec) * 4.0f + phase);
-            float halo_strength = (f.mass >= 10.0f) ? 1.0f : 0.55f;
+            // Legendary halo is brighter and bigger so the drop reads as "rare" from
+            // far across the world.
+            float halo_strength = legendary ? 1.9f
+                                : (f.mass >= 10.0f ? 1.0f : 0.55f);
+            float halo_r_mult   = legendary ? 2.5f : 1.9f;
             unsigned char glow_a = static_cast<unsigned char>(
-                (35.0f + pulse * 50.0f) * halo_strength);
-            DrawCircleV(Vector2{pos.x, pos.y}, r * 1.9f,
+                std::min(255.0f, (35.0f + pulse * 50.0f) * halo_strength));
+            DrawCircleV(Vector2{pos.x, pos.y}, r * halo_r_mult,
                         Color{c.r, c.g, c.b, glow_a});
         }
         DrawCircleV(Vector2{pos.x, pos.y}, r, c);

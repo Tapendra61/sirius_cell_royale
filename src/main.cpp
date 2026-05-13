@@ -1,8 +1,11 @@
 #include "raylib.h"
 
 #include "client/Client.h"
+#include "client/IntroScreen.h"
 #include "client/MainMenu.h"
+#include "client/Renderer.h"   // setPaletteMode / setHighContrast
 #include "client/SettingsScreen.h"
+#include "client/UiWidgets.h"  // setHudTextScale
 #include "core/Rng.h"
 #include "core/Tuning.h"
 #include "meta/SaveFile.h"
@@ -13,6 +16,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -434,6 +438,13 @@ int runWindow(uint64_t initial_seed) {
     }
     cr::PrintTuning(tuning);
 
+    // Ask raylib for a real-pixel framebuffer (Retina / HiDPI). On macOS raylib's
+    // Apple branch handles everything transparently: GetScreenWidth/GetMousePosition
+    // still return logical coords (1280-point space), but raylib's ortho projection
+    // is set up so drawing in those logical coords rasterises into the native pixel
+    // framebuffer (2560x1440 on 2x Retina). Result: crisp text/UI with zero extra
+    // code. Non-Apple HiDPI may need explicit scaling -- revisit when we ship there.
+    SetConfigFlags(FLAG_WINDOW_HIGHDPI);
     InitWindow(1280, 720, "Cell Royale v0.2.0");
     SetTargetFPS(60);
     SetExitKey(KEY_NULL); // don't quit on ESC (menu / console handle it)
@@ -477,13 +488,37 @@ int runWindow(uint64_t initial_seed) {
     cr::setPaletteMode(static_cast<cr::PaletteMode>(
         save.colorblind_mode <= 3 ? save.colorblind_mode : 0));
     cr::setHighContrast(save.high_contrast);
+    cr::setHudTextScale(save.hud_text_scale);
 
-    enum class AppPhase { Menu, Settings, Match, Quit };
-    AppPhase  phase           = AppPhase::Menu;
-    uint64_t  next_match_seed = initial_seed;
+    enum class AppPhase { Intro, Menu, Settings, Match, Quit };
+    // First-run intro plays before the menu if this is a brand-new save (or a v1/v2/v3
+    // save being migrated to v4 -- they all default first_run_complete to false on load
+    // since the field didn't exist in their format).
+    AppPhase phase = save.first_run_complete ? AppPhase::Menu : AppPhase::Intro;
+    // The intro is constructed lazily (only if we actually need it) so non-first-run
+    // launches don't pay the InitWindow-time sim spin-up cost.
+    std::unique_ptr<cr::IntroScreen> intro;
+    if (phase == AppPhase::Intro) {
+        intro = std::make_unique<cr::IntroScreen>(tuning);
+        std::printf("[cell_royale] first-run intro -- press any key to skip\n");
+    }
+
+    uint64_t next_match_seed = initial_seed;
 
     while (phase != AppPhase::Quit && !WindowShouldClose()) {
-        if (phase == AppPhase::Menu) {
+        if (phase == AppPhase::Intro) {
+            float dt = GetFrameTime();
+            bool  intro_done = intro->update(dt);
+            BeginDrawing();
+            intro->render(GetScreenWidth(), GetScreenHeight());
+            EndDrawing();
+            if (intro_done) {
+                phase = AppPhase::Menu;
+                save.first_run_complete = true;
+                intro.reset();
+                cr::swallowNextClick(); // mouse may have released over a menu button rect
+            }
+        } else if (phase == AppPhase::Menu) {
             float dt = GetFrameTime();
             int   sw = GetScreenWidth();
             int   sh = GetScreenHeight();
@@ -498,8 +533,16 @@ int runWindow(uint64_t initial_seed) {
                 phase = AppPhase::Quit;
             } else if (action == cr::MenuAction::StartVsAI) {
                 phase = AppPhase::Match;
+                cr::swallowNextClick();
             } else if (action == cr::MenuAction::ShowSettings) {
                 phase = AppPhase::Settings;
+                cr::swallowNextClick();
+            } else if (action == cr::MenuAction::ReplayIntro) {
+                // User asked to rewatch the tutorial. Spin up a fresh IntroScreen and
+                // bounce back to Menu when it ends -- don't touch first_run_complete.
+                intro = std::make_unique<cr::IntroScreen>(tuning);
+                phase = AppPhase::Intro;
+                cr::swallowNextClick();
             }
             // StartRoyalePlaceholder: menu itself shows the toast, we stay in Menu.
         } else if (phase == AppPhase::Settings) {
@@ -514,6 +557,7 @@ int runWindow(uint64_t initial_seed) {
                 phase = AppPhase::Quit;
             } else if (sa == cr::SettingsAction::BackToMenu) {
                 phase = AppPhase::Menu;
+                cr::swallowNextClick();
             }
         } else { // Match
             MatchOutcome outcome = runMatch(next_match_seed, tuning, save);
@@ -521,6 +565,12 @@ int runWindow(uint64_t initial_seed) {
             phase = (outcome == MatchOutcome::ReturnToMenu)
                         ? AppPhase::Menu
                         : AppPhase::Quit;
+            if (phase == AppPhase::Menu) {
+                // The exit from match was triggered by a MAIN MENU button click. The
+                // mouse-release event is still "fresh" for raylib this frame; swallow
+                // it so it doesn't leak into the menu's button under the cursor.
+                cr::swallowNextClick();
+            }
         }
     }
 

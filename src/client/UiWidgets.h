@@ -34,4 +34,22 @@ bool drawChoice(Rectangle r, const char* label,
 // On/Off toggle pill. Returns true if state flipped.
 bool drawToggle(Rectangle r, const char* label, bool* value);
 
+// Accessibility: HUD-text size multiplier. Applied by Hud.cpp to in-match font
+// sizes (combo counter, summary panel, pause overlay, debug stats). Main menu
+// and settings screen are NOT affected -- those have tight layouts that would
+// overflow at large scales, and they're not "HUD" in the gameplay sense.
+//
+// Clamped to [0.85, 1.30] internally. Set globally (process-wide) by Client at
+// match start; settings UI updates it live for preview.
+void  setHudTextScale(float s);
+float currentHudTextScale();
+
+// Suppresses the next mouse-button-released event from registering as a click on
+// any drawButton-family widget. Use this whenever you switch UI phases on a click
+// (Match summary MAIN MENU -> Menu, pause MAIN MENU -> Menu, Settings BACK ->
+// Menu, etc.) -- raylib reports IsMouseButtonReleased() true on the frame AFTER
+// the release, so if the new screen renders that same frame the click leaks
+// through to whatever button sits under the mouse there.
+void swallowNextClick();
+
 } // namespace cr

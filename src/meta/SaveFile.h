@@ -39,6 +39,10 @@ struct SaveData {
     uint8_t  colorblind_mode    = 0;    // 0=off, 1=deuteranopia, 2=protanopia, 3=tritanopia
     bool     high_contrast      = false;
     uint16_t fps_cap            = 60;   // 0 = uncapped
+
+    // ---- v4 additions: HUD text scale + first-run intro flag ----
+    float    hud_text_scale     = 1.0f; // 0.85..1.30 multiplier on in-match HUD fonts
+    bool     first_run_complete = false; // set true after the first-run intro plays
 };
 
 // On-disk format (little-endian, packed):
@@ -57,6 +61,6 @@ struct SaveData {
 bool saveToFile(const SaveData& data, const std::string& path);
 bool loadFromFile(SaveData& data, const std::string& path);
 
-constexpr uint32_t kSaveCurrentVersion = 3;
+constexpr uint32_t kSaveCurrentVersion = 4;
 
 } // namespace cr

@@ -9,6 +9,17 @@
 
 namespace cr {
 
+namespace {
+
+// Apply the global HUD text scale to a font size. Used by every DrawText /
+// MeasureText call in this file. Keeping it inline + named short so the call
+// sites stay readable.
+inline int sc(int sz) {
+    return static_cast<int>(sz * currentHudTextScale() + 0.5f);
+}
+
+} // namespace
+
 void Hud::onPlayerAbsorb(float /*mass_gained*/, double now_sec, float combo_window_sec) {
     if (last_absorb_sec_ < 0.0 || now_sec - last_absorb_sec_ > combo_window_sec) {
         combo_count_ = 1;
@@ -60,7 +71,7 @@ SummaryAction Hud::render(int screen_w, int screen_h, const Cell* watched, Tick 
         unsigned char a = static_cast<unsigned char>(near_miss_red_ * 100.0f);
         DrawRectangle(0, 0, screen_w, screen_h, Color{220, 40, 40, a});
         const char* msg = "CLOSE ONE";
-        int fs = 36;
+        int fs = sc(36);
         int tw = MeasureText(msg, fs);
         DrawText(msg, screen_w / 2 - tw / 2, 80, fs,
                  Color{255, 60, 60, static_cast<unsigned char>(near_miss_red_ * 230.0f)});
@@ -76,7 +87,7 @@ SummaryAction Hud::render(int screen_w, int screen_h, const Cell* watched, Tick 
         std::snprintf(buf, sizeof(buf), "x%d", combo_count_);
         int base_size = 36;
         int extra     = std::min(28, combo_count_ * 2);
-        int fs        = base_size + extra + static_cast<int>(combo_flash_ * 12.0f);
+        int fs        = sc(base_size + extra + static_cast<int>(combo_flash_ * 12.0f));
         int tw        = MeasureText(buf, fs);
         Color shadow{0, 0, 0, 180};
         DrawText(buf, screen_w - tw - 22 + 2, 22 + 2, fs, shadow);
@@ -95,16 +106,18 @@ SummaryAction Hud::render(int screen_w, int screen_h, const Cell* watched, Tick 
     }
 
     // ----- Debug stats overlay (bottom-left) -----
+    // Y offsets are also scaled so the bottom-anchored text doesn't slide off-screen
+    // at large HUD scales.
     char buf[160];
     std::snprintf(buf, sizeof(buf), "FPS %d  Tick %u", fps, static_cast<unsigned>(tick));
-    DrawText(buf, 12, screen_h - 22, 16, Color{200, 200, 200, 220});
+    DrawText(buf, 12, screen_h - sc(22), sc(16), Color{200, 200, 200, 220});
     if (watched) {
         const char* mode = touch ? "touch" : "desktop";
         std::snprintf(buf, sizeof(buf),
                       "mass %.1f  pos (%.0f, %.0f)  zoom %.2f  dt_x%.2f  %s%s",
                       watched->mass, watched->pos.x, watched->pos.y, zoom, dt_mult, mode,
                       paused ? "  [PAUSED]" : "");
-        DrawText(buf, 12, screen_h - 40, 16, Color{200, 200, 200, 220});
+        DrawText(buf, 12, screen_h - sc(40), sc(16), Color{200, 200, 200, 220});
     }
 
     return summary_action;
@@ -114,8 +127,12 @@ SummaryAction Hud::renderSummary(int sw, int sh, const MatchSummary& s) {
     // Dim background
     DrawRectangle(0, 0, sw, sh, Color{0, 0, 0, 130});
 
+    // The summary panel grows along with text scale so it keeps its proportions.
+    // We scale every font size *and* every vertical advance/offset via sc(); the
+    // box itself grows in height (not width, since width is dominated by row labels
+    // that have plenty of horizontal breathing room).
     const int box_w = 560;
-    const int box_h = 600;
+    const int box_h = sc(600);
     const int box_x = (sw - box_w) / 2;
     const int box_y = (sh - box_h) / 2;
 
@@ -124,52 +141,56 @@ SummaryAction Hud::renderSummary(int sw, int sh, const MatchSummary& s) {
 
     // Title
     const char* title = "YOU DIED";
-    int title_size = 38;
+    int title_size = sc(38);
     int title_w = MeasureText(title, title_size);
-    DrawText(title, box_x + (box_w - title_w) / 2, box_y + 26, title_size,
+    DrawText(title, box_x + (box_w - title_w) / 2, box_y + sc(26), title_size,
              Color{255, 100, 100, 255});
 
     // Stats block
-    int y = box_y + 95;
+    int y = box_y + sc(95);
     char buf[128];
+    const int stat_fs    = sc(22);
+    const int stat_row_h = sc(32);
 
-    std::snprintf(buf, sizeof(buf), "Final mass    %d", s.final_mass);
-    DrawText(buf, box_x + 60, y, 22, RAYWHITE);
-    y += 32;
+    std::snprintf(buf, sizeof(buf), "Peak mass     %d", s.final_mass);
+    DrawText(buf, box_x + 60, y, stat_fs, RAYWHITE);
+    y += stat_row_h;
 
     std::snprintf(buf, sizeof(buf), "Best combo    x%d", s.best_combo);
-    DrawText(buf, box_x + 60, y, 22, RAYWHITE);
-    y += 32;
+    DrawText(buf, box_x + 60, y, stat_fs, RAYWHITE);
+    y += stat_row_h;
 
     std::snprintf(buf, sizeof(buf), "Time alive    %.1fs", s.time_alive_sec);
-    DrawText(buf, box_x + 60, y, 22, RAYWHITE);
-    y += 46;
+    DrawText(buf, box_x + 60, y, stat_fs, RAYWHITE);
+    y += sc(46);
 
     // XP gain
     std::snprintf(buf, sizeof(buf), "+%d XP", s.xp_earned);
-    int xp_size = 30;
+    int xp_size = sc(30);
     int xp_w = MeasureText(buf, xp_size);
     DrawText(buf, box_x + (box_w - xp_w) / 2, y, xp_size,
              Color{255, 220, 80, 255});
-    y += 42;
+    y += sc(42);
 
     // Level
     if (s.level_after > s.level_before) {
         std::snprintf(buf, sizeof(buf), "LEVEL UP!  %d -> %d", s.level_before, s.level_after);
-        int lw = MeasureText(buf, 26);
-        DrawText(buf, box_x + (box_w - lw) / 2, y, 26, Color{120, 255, 180, 255});
+        int lvl_fs = sc(26);
+        int lw = MeasureText(buf, lvl_fs);
+        DrawText(buf, box_x + (box_w - lw) / 2, y, lvl_fs, Color{120, 255, 180, 255});
     } else {
         std::snprintf(buf, sizeof(buf), "Level %d", s.level_after);
-        int lw = MeasureText(buf, 22);
-        DrawText(buf, box_x + (box_w - lw) / 2, y, 22, RAYWHITE);
+        int lvl_fs = sc(22);
+        int lw = MeasureText(buf, lvl_fs);
+        DrawText(buf, box_x + (box_w - lw) / 2, y, lvl_fs, RAYWHITE);
     }
-    y += 38;
+    y += sc(38);
 
     // XP bar -- deliberately partial so the bar always shows progress toward "next"
     const int bar_x = box_x + 70;
     const int bar_y = y;
     const int bar_w = box_w - 140;
-    const int bar_h = 14;
+    const int bar_h = sc(14);
     int xp_this_level = s.total_xp - s.xp_for_current_level;
     int xp_needed     = std::max(1, s.xp_for_next_level - s.xp_for_current_level);
     float frac        = std::clamp(static_cast<float>(xp_this_level) / static_cast<float>(xp_needed),
@@ -180,26 +201,31 @@ SummaryAction Hud::renderSummary(int sw, int sh, const MatchSummary& s) {
     DrawRectangleLines(bar_x, bar_y, bar_w, bar_h, Color{180, 180, 200, 220});
 
     std::snprintf(buf, sizeof(buf), "%d / %d to next level", xp_this_level, xp_needed);
-    int sub_w = MeasureText(buf, 14);
-    DrawText(buf, box_x + (box_w - sub_w) / 2, bar_y + bar_h + 6, 14,
+    int sub_fs = sc(14);
+    int sub_w  = MeasureText(buf, sub_fs);
+    DrawText(buf, box_x + (box_w - sub_w) / 2, bar_y + bar_h + sc(6), sub_fs,
              Color{200, 200, 200, 200});
 
     // ---- Daily Missions block ----
     {
-        int my = bar_y + bar_h + 32;
+        int my = bar_y + bar_h + sc(32);
         const char* h = "DAILY MISSIONS";
-        int hw_ = MeasureText(h, 16);
-        DrawText(h, box_x + (box_w - hw_) / 2, my, 16, Color{255, 220, 120, 220});
-        my += 22;
+        int hdr_fs = sc(16);
+        int hw_ = MeasureText(h, hdr_fs);
+        DrawText(h, box_x + (box_w - hw_) / 2, my, hdr_fs, Color{255, 220, 120, 220});
+        my += sc(22);
+
+        const int row_h     = sc(22);
+        const int row_pad   = 30;
+        const int row_w     = box_w - row_pad * 2;
+        const int row_x     = box_x + row_pad;
+        const int row_fs    = sc(14);
+        const int bar_y_off = sc(14);
+        const int bar_thick = std::max(3, sc(4));
 
         for (int i = 0; i < kMissionCount; ++i) {
             const Mission& m = s.missions[i];
             if (m.kind == MissionKind::None) continue;
-
-            const int row_h    = 22;
-            const int row_pad  = 30;
-            const int row_w    = box_w - row_pad * 2;
-            const int row_x    = box_x + row_pad;
 
             char status[96];
             missionStatusText(m, status, sizeof(status));
@@ -211,23 +237,26 @@ SummaryAction Hud::renderSummary(int sw, int sh, const MatchSummary& s) {
                 : 0.0f;
             if (m.completed) frac = 1.0f;
 
-            DrawRectangle(row_x, my + 14, row_w, 4, Color{40, 50, 70, 255});
+            DrawRectangle(row_x, my + bar_y_off, row_w, bar_thick,
+                          Color{40, 50, 70, 255});
             Color fill = m.completed
                 ? Color{120, 220, 140, 230}
                 : Color{220, 190, 100, 230};
-            DrawRectangle(row_x, my + 14,
-                          static_cast<int>(row_w * frac), 4, fill);
+            DrawRectangle(row_x, my + bar_y_off,
+                          static_cast<int>(row_w * frac), bar_thick, fill);
 
             Color text_c = m.completed
                 ? Color{170, 240, 180, 230}
                 : Color{220, 220, 230, 220};
-            DrawText(status, row_x, my, 14, text_c);
+            DrawText(status, row_x, my, row_fs, text_c);
 
             my += row_h;
         }
     }
 
     // ---- Buttons: PLAY AGAIN (primary, pulsing) + MAIN MENU (secondary) ----
+    // Buttons themselves are NOT scaled (their text would overflow the fixed widths);
+    // we just scale the vertical gap so they don't collide with the missions block.
     SummaryAction action = SummaryAction::None;
 
     const int btn_h    = 52;
@@ -235,7 +264,7 @@ SummaryAction Hud::renderSummary(int sw, int sh, const MatchSummary& s) {
     const int menu_w   = 160;
     const int btn_gap  = 18;
     const int total_w  = play_w + btn_gap + menu_w;
-    const int btn_y    = box_y + box_h - btn_h - 50;
+    const int btn_y    = box_y + box_h - btn_h - sc(50);
     const int play_x   = box_x + (box_w - total_w) / 2;
     const int menu_x   = play_x + play_w + btn_gap;
 
@@ -260,12 +289,11 @@ SummaryAction Hud::renderSummary(int sw, int sh, const MatchSummary& s) {
         action = SummaryAction::ReturnToMenu;
     }
 
-    // Countdown hint -- if the player ignores the buttons, auto-queue still fires.
-    std::snprintf(buf, sizeof(buf),
-                  "auto-respawning in %.1fs   (SPACE to play again now)",
-                  std::max(0.0f, s.remaining_sec));
-    int hw = MeasureText(buf, 14);
-    DrawText(buf, sw / 2 - hw / 2, box_y + box_h - 26, 14,
+    // Hint line under the buttons. Stats stay up until the player decides.
+    const char* hint = "press SPACE to play again, or click above";
+    int hint_fs = sc(14);
+    int hw = MeasureText(hint, hint_fs);
+    DrawText(hint, sw / 2 - hw / 2, box_y + box_h - sc(26), hint_fs,
              Color{180, 190, 215, 200});
 
     return action;
@@ -291,14 +319,14 @@ SummaryAction Hud::renderPauseOverlay(int sw, int sh) {
     // Title -- gentle pulse so the screen doesn't feel frozen-dead.
     float t          = static_cast<float>(GetTime());
     float pulse      = 0.5f + 0.5f * std::sin(t * 2.2f);
-    int   title_size = 44;
+    int   title_size = sc(44);
     const char* title = "PAUSED";
     int title_w = MeasureText(title, title_size);
     unsigned char a = static_cast<unsigned char>(200 + pulse * 55);
     DrawText(title, box_x + (box_w - title_w) / 2 + 2,
-             box_y + 32 + 2, title_size, Color{0, 0, 0, 180});
+             box_y + sc(32) + 2, title_size, Color{0, 0, 0, 180});
     DrawText(title, box_x + (box_w - title_w) / 2,
-             box_y + 32,     title_size, Color{255, 220, 130, a});
+             box_y + sc(32),     title_size, Color{255, 220, 130, a});
 
     // Buttons stack
     const int btn_w = 260;
@@ -323,8 +351,9 @@ SummaryAction Hud::renderPauseOverlay(int sw, int sh) {
 
     // Footer hint
     const char* hint = "ESC also resumes";
-    int hint_w = MeasureText(hint, 14);
-    DrawText(hint, box_x + (box_w - hint_w) / 2, box_y + box_h - 32, 14,
+    int hint_fs = sc(14);
+    int hint_w  = MeasureText(hint, hint_fs);
+    DrawText(hint, box_x + (box_w - hint_w) / 2, box_y + box_h - sc(32), hint_fs,
              Color{160, 175, 200, 200});
 
     return action;

@@ -387,10 +387,11 @@ void respawnViruses(World& world, const Tuning& t) {
 
 float rollFoodMass(Rng& rng) {
     float r = rng.nextFloat();
-    if (r < 0.02f) return 12.0f; //  2% epic   (gold, halo)
-    if (r < 0.10f) return  6.0f; //  8% rare   (cyan, halo)
-    if (r < 0.30f) return  3.0f; // 20% uncommon (lime)
-    return 1.0f;                 // 70% common (green)
+    if (r < 0.005f) return 36.0f; // 0.5% legendary (purple-red, strong halo, 3x gold)
+    if (r < 0.025f) return 12.0f; //   2% epic     (gold, halo)
+    if (r < 0.105f) return  6.0f; //   8% rare     (cyan, halo)
+    if (r < 0.305f) return  3.0f; //  20% uncommon (lime)
+    return 1.0f;                  // ~70% common   (green)
 }
 
 void doSplit(World& world, PlayerId player, const Tuning& t,

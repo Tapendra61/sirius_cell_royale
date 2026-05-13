@@ -138,12 +138,24 @@ MenuAction MainMenu::render(int sw, int sh, const SaveData& save) {
     }
     btn_y += btn_h + 22;
 
-    // Tertiary: Settings -- smaller height, neutral dark
-    if (drawButton(
-            Rectangle{(float)btn_x, (float)btn_y, (float)btn_w, 52.0f},
-            "SETTINGS", 22,
-            Color{42, 50, 72, 255}, Color{220, 225, 245, 230})) {
-        action = MenuAction::ShowSettings;
+    // Tertiary row: SETTINGS + TUTORIAL side-by-side, each half-width. Same total
+    // width as the primary buttons above so the column reads as a single stack.
+    {
+        const int gap   = 12;
+        const int sub_w = (btn_w - gap) / 2;
+        if (drawButton(
+                Rectangle{(float)btn_x, (float)btn_y, (float)sub_w, 52.0f},
+                "SETTINGS", 22,
+                Color{42, 50, 72, 255}, Color{220, 225, 245, 230})) {
+            action = MenuAction::ShowSettings;
+        }
+        if (drawButton(
+                Rectangle{(float)(btn_x + sub_w + gap), (float)btn_y,
+                          (float)sub_w, 52.0f},
+                "TUTORIAL", 22,
+                Color{42, 50, 72, 255}, Color{220, 225, 245, 230})) {
+            action = MenuAction::ReplayIntro;
+        }
     }
 
     // ---- "Coming soon" toast ----

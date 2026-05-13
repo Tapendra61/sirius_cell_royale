@@ -93,18 +93,26 @@ void writeV2Fields(std::vector<uint8_t>& buf, const SaveData& d) {
     }
 }
 
-std::vector<uint8_t> serializePayload(const SaveData& d) {
-    std::vector<uint8_t> buf;
-    buf.reserve(160);
-    writeV1Fields(buf, d);
-    writeV2Fields(buf, d);
-
-    // ---- v3 additions: accessibility / performance ----
+// v3 chunk: accessibility / performance settings. Shared by v3 and v4 serializers.
+void writeV3Fields(std::vector<uint8_t>& buf, const SaveData& d) {
     appendPod(buf, d.screen_shake_scale);
     appendPod(buf, d.colorblind_mode);
     uint8_t flags3 = (d.high_contrast ? 1u : 0u);
     appendPod(buf, flags3);
     appendPod(buf, d.fps_cap);
+}
+
+std::vector<uint8_t> serializePayload(const SaveData& d) {
+    std::vector<uint8_t> buf;
+    buf.reserve(192);
+    writeV1Fields(buf, d);
+    writeV2Fields(buf, d);
+    writeV3Fields(buf, d);
+
+    // ---- v4 additions: HUD text scale + first-run intro flag ----
+    appendPod(buf, d.hud_text_scale);
+    uint8_t flags4 = (d.first_run_complete ? 1u : 0u);
+    appendPod(buf, flags4);
     return buf;
 }
 
@@ -142,16 +150,33 @@ bool deserializePayloadV2(const uint8_t* buf, size_t len, SaveData& out) {
     return readV2Chunk(buf, len, off, out);
 }
 
-bool deserializePayloadV3(const uint8_t* buf, size_t len, SaveData& out) {
-    size_t off = 0;
-    if (!readV1Fields(buf, len, off, out)) return false;
-    if (!readV2Chunk(buf, len, off, out))  return false;
+bool readV3Chunk(const uint8_t* buf, size_t len, size_t& off, SaveData& out) {
     if (!readPod(buf, len, off, out.screen_shake_scale)) return false;
     if (!readPod(buf, len, off, out.colorblind_mode))    return false;
     uint8_t flags3 = 0;
     if (!readPod(buf, len, off, flags3)) return false;
     out.high_contrast = (flags3 & 1u) != 0;
     if (!readPod(buf, len, off, out.fps_cap)) return false;
+    return true;
+}
+
+bool deserializePayloadV3(const uint8_t* buf, size_t len, SaveData& out) {
+    size_t off = 0;
+    if (!readV1Fields(buf, len, off, out)) return false;
+    if (!readV2Chunk(buf, len, off, out))  return false;
+    if (!readV3Chunk(buf, len, off, out))  return false;
+    return true;
+}
+
+bool deserializePayloadV4(const uint8_t* buf, size_t len, SaveData& out) {
+    size_t off = 0;
+    if (!readV1Fields(buf, len, off, out)) return false;
+    if (!readV2Chunk(buf, len, off, out))  return false;
+    if (!readV3Chunk(buf, len, off, out))  return false;
+    if (!readPod(buf, len, off, out.hud_text_scale)) return false;
+    uint8_t flags4 = 0;
+    if (!readPod(buf, len, off, flags4)) return false;
+    out.first_run_complete = (flags4 & 1u) != 0;
     return true;
 }
 
@@ -194,6 +219,9 @@ bool tryLoadOne(const std::string& path, SaveData& out) {
     }
     if (version == 3) {
         return deserializePayloadV3(payload.data(), payload.size(), out);
+    }
+    if (version == 4) {
+        return deserializePayloadV4(payload.data(), payload.size(), out);
     }
     return false; // unsupported version (future-proof spot for migrations)
 }
