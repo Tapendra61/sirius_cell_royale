@@ -1,6 +1,7 @@
 #pragma once
 
 #include "raylib.h"
+#include "transport/LocalDiscovery.h"
 
 #include <string>
 #include <vector>
@@ -64,12 +65,14 @@ private:
     std::string   join_input_ = "127.0.0.1:7456";
     bool          join_input_focused_ = false;
 
-    // Stub discovery results. Real implementation will refresh this from a LAN
-    // broadcast service running on a background thread; for the skeleton we fill it
-    // with a hardcoded example so the layout is visible.
+    // Live LAN discovery results. The LocalDiscovery socket runs the moment the
+    // user enters the JoinBrowsing sub-state and stops when they go back or
+    // leave the lobby entirely. Each frame we copy out the current host list
+    // into `discovered_` for the render code to draw.
+    LocalDiscovery              discovery_;
     std::vector<DiscoveredHost> discovered_;
-    float                       refresh_remaining_ = 0.0f; // visual feedback for the
-                                                           // REFRESH button (stub)
+    float                       refresh_remaining_ = 0.0f; // visual feedback for
+                                                           // the REFRESH button
 };
 
 } // namespace cr

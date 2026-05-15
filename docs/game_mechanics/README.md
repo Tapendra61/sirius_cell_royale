@@ -329,12 +329,23 @@ shortcut and the command both refuse cleanly.
 - Refuses to kick PlayerId 1 (the host's own slot) and any PID not currently
   bound to a peer.
 
+### LAN discovery
+
+- Host: while a match is running in LocalHost mode, a side UDP socket on port
+  `7457` broadcasts a tiny "I'm hosting on port N" announce packet to
+  `255.255.255.255` every ~1 second.
+- Client: the JOIN screen opens a listener on udp/7457 the moment you enter
+  it. Each received announce shows up in the discovered-hosts list as a
+  clickable row (click → connects to that host's game port). Entries older
+  than 5 seconds (host stopped announcing) drop off automatically.
+- The announce packet is 39 bytes — magic `CRDS` + version + game port + a
+  32-byte display name. Loss tolerant: the next 1 s broadcast repopulates.
+
 ### Known limitations (current state, will fix)
 
-- LAN discovery (UDP broadcast) isn't implemented. Joiners must enter the host
-  IP manually.
 - Lobby-time bind isn't implemented. The UDP socket opens at START, not in the
-  HOSTING screen.
+  HOSTING screen. JOIN can only discover hosts whose match has already
+  started.
 
 ---
 

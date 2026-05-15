@@ -18,6 +18,7 @@
 #include "sim/Replay.h"
 #include "sim/Rules.h"           // rollFoodMass (used by seed_food dev command)
 #include "sim/Simulation.h"
+#include "transport/LocalDiscovery.h"
 #include "transport/NetworkTransport.h"
 
 #include <cstdio>
@@ -535,6 +536,12 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
     // peer's cells on DISCONNECT and so the `kick` console command can find the
     // ENetPeer to call disconnectPeer on.
     std::unordered_map<void*, cr::PlayerId> peer_to_player;
+    // LAN discovery: only the host runs an announcer; clients learn about
+    // hosts via the JoinBrowsing screen (which owns its own discovery client
+    // listener, separate from this runMatch state).
+    cr::LocalDiscovery discovery;
+    double last_announce_sec = 0.0;
+
     switch (mode) {
         case MatchMode::SinglePlayer:
             // No transport setup needed.
@@ -542,6 +549,18 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
         case MatchMode::LocalHost:
             if (!net_transport.host(net_cfg.listen_port)) {
                 client.console().log("[net] failed to bind host port; running solo");
+            } else {
+                // Spin up the LAN announcer alongside the game socket. Best-
+                // effort: a failure here just means the host isn't auto-
+                // discoverable; manual "host:port" entry still works.
+                char host_name[32];
+                std::snprintf(host_name, sizeof(host_name),
+                              "Cell Royale (port %u)",
+                              static_cast<unsigned>(net_cfg.listen_port));
+                if (!discovery.startHost(net_cfg.listen_port, host_name)) {
+                    client.console().log("[net] LAN announcer failed to bind; "
+                                          "joiners must enter address manually");
+                }
             }
             break;
         case MatchMode::LocalClient:
@@ -643,6 +662,17 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
         // connected; safe to call when SinglePlayer (no-op without an enet host).
         if (mode != MatchMode::SinglePlayer) {
             net_transport.poll();
+        }
+
+        // Periodic LAN announce on the host side. Once per ~1s is enough for
+        // the JOIN screen's polling cadence + dedupe window.
+        if (mode == MatchMode::LocalHost
+            && discovery.mode() == cr::LocalDiscovery::Mode::Host) {
+            const double now = GetTime();
+            if (now - last_announce_sec >= 1.0) {
+                discovery.announceNow();
+                last_announce_sec = now;
+            }
         }
 
         // ---- Host: accept new peers ----

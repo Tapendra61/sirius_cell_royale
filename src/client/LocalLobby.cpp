@@ -10,14 +10,20 @@ namespace cr {
 
 namespace {
 
-// Skeleton: hardcoded discovery results so the JOIN screen has something visible.
-// Replace with live UDP-broadcast results once net/LocalDiscovery is implemented.
-std::vector<DiscoveredHost> placeholderDiscovery() {
-    return {
-        // Empty by default -- a real REFRESH would populate this. We leave it empty so
-        // the empty-state copy is the default UX rather than fake hosts users might
-        // try to click.
-    };
+// Convert a LocalDiscovery entry into the lobby's display struct. The lobby
+// existed before discovery did, so the two have slightly different layouts;
+// `player_count` / `max_players` aren't part of the wire format yet (the
+// announce packet is tiny). Default both to 0 / 8 so the UI line still reads.
+DiscoveredHost toDiscoveredHost(const DiscoveredHostEntry& e) {
+    DiscoveredHost h;
+    h.name         = (e.name[0] != 0) ? std::string(e.name) : std::string("Cell Royale");
+    char addr_buf[80];
+    std::snprintf(addr_buf, sizeof(addr_buf), "%s:%u",
+                  e.address.c_str(), static_cast<unsigned>(e.game_port));
+    h.address      = addr_buf;
+    h.player_count = 0;
+    h.max_players  = 8;
+    return h;
 }
 
 } // namespace
@@ -27,11 +33,34 @@ void LocalLobby::update(float frame_dt, int /*sw*/, int /*sh*/) {
     if (refresh_remaining_ > 0.0f) {
         refresh_remaining_ -= frame_dt;
     }
+
+    // Drive LAN discovery while the JOIN browser is up. We lazily start the
+    // listener the first frame we land in JoinBrowsing and stop it the moment
+    // we leave (Picker / HostWaiting both kill it). Idle in the other states.
+    if (sub_state_ == LobbySubState::JoinBrowsing) {
+        if (discovery_.mode() != LocalDiscovery::Mode::Client) {
+            discovery_.startClient();
+        }
+        discovery_.pollIncoming();
+        // Build the visible list from live results. The lobby's `discovered_`
+        // is rebuilt every frame -- the underlying deque is tiny (<10) so
+        // there's no point caching.
+        std::vector<DiscoveredHostEntry> live;
+        discovery_.getKnownHosts(live, GetTime());
+        discovered_.clear();
+        discovered_.reserve(live.size());
+        for (const auto& e : live) discovered_.push_back(toDiscoveredHost(e));
+    } else {
+        if (discovery_.mode() != LocalDiscovery::Mode::Idle) {
+            discovery_.stop();
+        }
+    }
 }
 
 void LocalLobby::reset() {
     sub_state_         = LobbySubState::Picker;
     refresh_remaining_ = 0.0f;
+    discovery_.stop();
 }
 
 LocalLobbyAction LocalLobby::render(int sw, int sh) {
@@ -87,7 +116,8 @@ void LocalLobby::renderPicker(int sw, int sh, LocalLobbyAction& action) {
             Color{60, 100, 160, 255},
             Color{225, 235, 250, 255})) {
         sub_state_  = LobbySubState::JoinBrowsing;
-        discovered_ = placeholderDiscovery();
+        // update() will lazily start the LAN listener and refill discovered_.
+        discovered_.clear();
         swallowNextClick();
     }
     btn_y += btn_h + 30;
@@ -242,10 +272,12 @@ void LocalLobby::renderJoinBrowsing(int sw, int sh, LocalLobbyAction& action) {
         const bool busy = refresh_remaining_ > 0.0f;
         if (drawButton(rb, busy ? "..." : "REFRESH", 15,
                        Color{50, 70, 110, 255}, Color{220, 230, 250, 230}, !busy)) {
-            // Skeleton: trigger a brief visual flash. Real impl will kick off the
-            // background broadcast discovery scan.
+            // Visual flash only -- the listener is always running while this
+            // screen is up, so the list refreshes automatically as host
+            // announces arrive (every ~1s on the host side). Click is mostly
+            // there for "I clicked it, give me feedback".
             refresh_remaining_ = 0.6f;
-            discovered_        = placeholderDiscovery();
+            discovered_.clear(); // force a re-fill from the next poll cycle
         }
     }
 
