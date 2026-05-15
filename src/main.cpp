@@ -681,10 +681,33 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
         // local sim is empty so onEvents path that looks up world cells will return
         // null for most fields; the visual-only paths still fire because they rely
         // on event data not world state.
+        //
+        // The accumulator drives the renderer's interpolation alpha (alpha = accum /
+        // sim_dt). Since we don't tick a local sim, we advance the accumulator with
+        // wall-clock time and reset it whenever a fresh snapshot arrives -- alpha
+        // then sweeps 0 -> 1 between consecutive snapshots, the same way it does
+        // when the local sim is ticking authoritatively. Without this the alpha
+        // stays at 0 forever and the renderer shows the prev snapshot with no
+        // motion -- the cause of the "jumpy / laggy" client movement.
         if (mode == MatchMode::LocalClient) {
+            int snaps_received = 0;
             cr::Snapshot snap;
             while (net_transport.pollSnapshot(snap)) {
                 client.onSnapshot(snap);
+                ++snaps_received;
+            }
+            if (snaps_received > 0) {
+                // A fresh snapshot lands at "alpha = 0" and we begin interpolating
+                // toward it. We pin accumulator to 0 even if multiple snaps arrived
+                // in one frame -- we always render against the latest pair.
+                accumulator = 0.0;
+            } else {
+                // No snapshot this frame: advance the alpha so motion stays smooth
+                // between snapshots. Cap at sim_dt so alpha doesn't run past 1
+                // (which would overshoot during temporary network stalls).
+                accumulator = std::min(accumulator
+                                       + static_cast<double>(frame_dt),
+                                       static_cast<double>(sim_dt));
             }
             std::vector<cr::GameEvent> evs;
             cr::GameEvent ev;
@@ -747,18 +770,30 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
             }
         }
 
+        // Interpolation alpha for this frame. Computed *before* camera follow so the
+        // LocalClient camera can track the cell's interpolated position (where the
+        // renderer is actually drawing it) instead of the latest snapshot's pos
+        // (where the cell will be one tick from now). Used for the renderer below
+        // too.
+        float alpha = client.isHitstopActive()
+                          ? 1.0f
+                          : static_cast<float>(accumulator / sim_dt);
+
         // Camera: death cam steals the camera target while it's active. Otherwise follow
         // the watched cell, retargeting to the player's largest piece if it died.
         // Local sim path uses sim.world(); LocalClient reads from the renderer's
-        // current snapshot since its local sim is empty.
+        // interpolated snapshot since its local sim is empty.
         if (client.deathCamActive()) {
             // For player-vs-player deaths the target is the killer cell. For comet
             // kills it's the comet's entity id; fall back to that if no cell matches.
             const cr::EntityId tgt = client.deathCamTarget();
             if (mode == MatchMode::LocalClient && client.interpolator().hasCurr()) {
-                cr::Vec2 p; float m;
-                if (findCellPosMassInSnap(client.interpolator().curr(), tgt, p, m)) {
-                    client.camera().setTarget(p, m);
+                cr::Vec2 latest_pos; float m;
+                if (findCellPosMassInSnap(client.interpolator().curr(), tgt,
+                                          latest_pos, m)) {
+                    // Interpolated lookup so the killer focus doesn't strobe.
+                    client.camera().setTarget(
+                        client.interpolator().cellPos(tgt, alpha), m);
                 } else {
                     // Maybe a comet in the snapshot
                     for (const auto& cm : client.interpolator().curr().comets) {
@@ -778,13 +813,16 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                 }
             }
         } else if (mode == MatchMode::LocalClient) {
-            // Client-side follow via the latest snapshot. Find the watched cell; if
-            // it's gone (died on the host), fall back to the largest cell that
-            // belongs to our player slot and adopt that as the new watched.
+            // Client-side follow via the interpolated snapshot pair. Find the
+            // watched cell; if it's gone (died on the host), fall back to the
+            // largest cell that belongs to our player slot and adopt that as the
+            // new watched.
             if (client.interpolator().hasCurr()) {
                 const auto& snap = client.interpolator().curr();
-                cr::Vec2 p; float m;
-                if (!findCellPosMassInSnap(snap, player_cell, p, m)) {
+                cr::Vec2 latest_pos; float mass;
+                bool found = findCellPosMassInSnap(snap, player_cell,
+                                                   latest_pos, mass);
+                if (!found) {
                     cr::EntityId best  = cr::INVALID_ENTITY;
                     float    best_mass = 0.0f;
                     for (const auto& c : snap.cells) {
@@ -796,11 +834,15 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                     if (best != cr::INVALID_ENTITY) {
                         player_cell = best;
                         client.setWatchedCell(best);
-                        findCellPosMassInSnap(snap, best, p, m);
+                        found = findCellPosMassInSnap(snap, best, latest_pos, mass);
                     }
                 }
-                if (p.x != 0.0f || p.y != 0.0f) { // p was filled by the find above
-                    client.camera().setTarget(p, m);
+                if (found) {
+                    // cellPos() interpolates prev<->curr by alpha, matching the
+                    // visible cell position. The camera now travels in lockstep
+                    // with the rendered cell instead of one tick ahead.
+                    client.camera().setTarget(
+                        client.interpolator().cellPos(player_cell, alpha), mass);
                 }
             }
         } else {
@@ -825,12 +867,6 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
             }
         }
         client.camera().update(frame_dt);
-
-        // During hitstop we render the last interpolated frame at alpha=1 so the frozen
-        // state reads as "the impact is registering" rather than as choppy motion.
-        float alpha = client.isHitstopActive()
-                          ? 1.0f
-                          : static_cast<float>(accumulator / sim_dt);
 
         BeginDrawing();
         ClearBackground(Color{18, 22, 30, 255});

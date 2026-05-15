@@ -280,6 +280,19 @@ All channels are reliable. Default port: **UDP 7456**.
 4. Inputs from each peer flow upstream as Commands; host queues them into its
    sim alongside its own inputs.
 
+### Rendering on the client
+
+- The host broadcasts a snapshot at 30 Hz. The client interpolates between the
+  previous and most-recent snapshot using an alpha that sweeps 0 → 1 between
+  them (driven by wall-clock time, since the client doesn't tick its own sim).
+  Cells move smoothly at the render rate, not snap-by-snap.
+- The camera follows the **interpolated** cell position (`Interpolator::cellPos
+  (id, alpha)`), so the rendered cell stays locked to screen centre rather than
+  trailing one tick behind.
+- Expected end-to-end input lag on loopback / LAN: ~50–80 ms (one host tick
+  worth of "wait for next tick" plus the one-tick interpolation buffer).
+  Acceptable for a sandbox; lag compensation / prediction is a follow-up.
+
 ### Respawn flow
 
 - **Host's own death** spawns a fresh cell locally (direct sim mutation).
