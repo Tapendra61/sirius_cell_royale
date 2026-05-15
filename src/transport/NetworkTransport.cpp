@@ -2,6 +2,11 @@
 
 #include <utility>
 
+// NOTE: Codec.h carries the encode/decode functions for Snapshot / Command /
+// GameEvent. We don't pull it in here yet because the skeleton still uses in-memory
+// queues (no serialisation needed). The TODO comments below mark the exact spots
+// where codec::encodeSnapshot etc. plug in once ENet/UDP socket I/O lands.
+
 namespace cr {
 
 NetworkTransport::NetworkTransport()  = default;
@@ -40,15 +45,21 @@ void NetworkTransport::disconnect() {
 
 void NetworkTransport::poll() {
     // TODO(net): drain ENet events:
-    //   - ENET_EVENT_TYPE_CONNECT  -> ++peer_count_, push hello message
-    //   - ENET_EVENT_TYPE_RECEIVE  -> deserialise into commands_/snapshots_/events_
+    //   - ENET_EVENT_TYPE_CONNECT    -> ++peer_count_, push hello message
+    //   - ENET_EVENT_TYPE_RECEIVE    -> route by stream type:
+    //         hosts receive Commands  (codec::decodeCommand into commands_)
+    //         clients receive Snapshots / Events (codec::decodeSnapshot/Event into
+    //                                              snapshots_ / events_)
     //   - ENET_EVENT_TYPE_DISCONNECT -> --peer_count_
-    // Skeleton: nothing to pump because nothing connects over the wire yet.
+    // Skeleton: nothing to pump because nothing connects over the wire yet. The
+    // codec is already in place (see Codec.cpp) so this slot just needs the
+    // socket-event loop.
 }
 
 void NetworkTransport::sendCommand(Command cmd) {
-    // TODO(net): if hosting -> append to local commands_ deque (the local player's
-    // own input). If client -> serialise + enet_peer_send to host.
+    // Skeleton: same-process queue. Real impl:
+    //   - if hosting  : keep this path (the host's own local-player input).
+    //   - if a client : codec::encodeCommand + enet_peer_send to the host peer.
     commands_.push_back(std::move(cmd));
 }
 
@@ -60,9 +71,10 @@ bool NetworkTransport::pollCommand(Command& out) {
 }
 
 void NetworkTransport::sendSnapshot(Snapshot snap) {
-    // TODO(net): host -> serialise + broadcast to all peers. Client -> ignored (only
-    // the host produces snapshots). Skeleton: always push to the local deque so a
-    // host-only round-trip works for testing.
+    // Skeleton: same-process queue. Real impl (host only):
+    //   codec::encodeSnapshot(snap, buf);
+    //   for each connected peer: enet_peer_send(peer, packet_from(buf), CHAN_SNAP);
+    // Clients ignore their own sendSnapshot calls (they don't author state).
     snapshots_.push_back(std::move(snap));
 }
 
@@ -74,7 +86,9 @@ bool NetworkTransport::pollSnapshot(Snapshot& out) {
 }
 
 void NetworkTransport::sendEvent(GameEvent ev) {
-    // TODO(net): host -> broadcast. Client -> ignored.
+    // Skeleton: same-process queue. Real impl (host only):
+    //   codec::encodeEvent(ev, buf);
+    //   for each connected peer: enet_peer_send(peer, packet_from(buf), CHAN_EVENT);
     events_.push_back(std::move(ev));
 }
 
