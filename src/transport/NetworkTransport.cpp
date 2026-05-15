@@ -1,39 +1,234 @@
 #include "NetworkTransport.h"
 
+#include "Codec.h"
+
+#ifdef CR_NETWORK
+#  include <enet/enet.h>
+#endif
+
+#include <atomic>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
 #include <utility>
 
-// NOTE: Codec.h carries the encode/decode functions for Snapshot / Command /
-// GameEvent. We don't pull it in here yet because the skeleton still uses in-memory
-// queues (no serialisation needed). The TODO comments below mark the exact spots
-// where codec::encodeSnapshot etc. plug in once ENet/UDP socket I/O lands.
+// ENet wrapper. When CR_NETWORK is defined the four overrides do real UDP socket
+// work; without it they fall back to the in-memory queues (which is the same loopback
+// behaviour the skeleton commit shipped).
+//
+// Channels:
+//   CHAN_COMMAND  = 0  (client -> host: input intent, reliable)
+//   CHAN_SNAPSHOT = 1  (host -> clients: world state, reliable, the big one)
+//   CHAN_EVENT    = 2  (host -> clients: gameplay event stings, reliable)
+// We're treating LAN as low-latency + reliable; snapshot bandwidth dominates, but
+// LAN can absorb the cost. Phase 11 will revisit with deltas + unreliable snapshots.
 
 namespace cr {
 
-NetworkTransport::NetworkTransport()  = default;
-NetworkTransport::~NetworkTransport() { disconnect(); }
+namespace {
+
+#ifdef CR_NETWORK
+
+// ENet requires a one-time global initialisation per process. NetworkTransport
+// constructors / destructors refcount through these so multiple matches don't
+// re-init or double-deinit.
+std::mutex      g_enet_init_mutex;
+int             g_enet_init_refcount = 0;
+std::atomic_bool g_enet_init_failed{false};
+
+void enetGlobalAcquire() {
+    std::lock_guard<std::mutex> lock(g_enet_init_mutex);
+    if (g_enet_init_refcount == 0) {
+        if (enet_initialize() != 0) {
+            g_enet_init_failed.store(true);
+            std::fprintf(stderr, "[net] enet_initialize() failed\n");
+            return;
+        }
+        g_enet_init_failed.store(false);
+    }
+    ++g_enet_init_refcount;
+}
+
+void enetGlobalRelease() {
+    std::lock_guard<std::mutex> lock(g_enet_init_mutex);
+    if (g_enet_init_refcount <= 0) return;
+    --g_enet_init_refcount;
+    if (g_enet_init_refcount == 0 && !g_enet_init_failed.load()) {
+        enet_deinitialize();
+    }
+}
+
+// Channels mirror the codec stream split.
+constexpr enet_uint8 CHAN_COMMAND  = 0;
+constexpr enet_uint8 CHAN_SNAPSHOT = 1;
+constexpr enet_uint8 CHAN_EVENT    = 2;
+constexpr size_t     kChannelCount = 3;
+
+// Wrap a byte buffer in an ENet packet. RELIABLE = guaranteed-delivery + ordered.
+// We move the bytes in -- ENet copies internally so the caller's vector can be reused
+// after this call.
+ENetPacket* makePacket(const std::vector<uint8_t>& bytes) {
+    return enet_packet_create(bytes.data(), bytes.size(), ENET_PACKET_FLAG_RELIABLE);
+}
+
+// Parse "host[:port]" into ENetAddress. Returns true on success. Falls back to the
+// caller-provided default_port if the input has no ':port' suffix.
+bool parseAddress(const std::string& s, ENetAddress& out, uint16_t default_port) {
+    if (s.empty()) return false;
+    std::string host_part = s;
+    uint16_t    port      = default_port;
+    auto colon = s.find_last_of(':');
+    if (colon != std::string::npos) {
+        host_part = s.substr(0, colon);
+        try {
+            int p = std::stoi(s.substr(colon + 1));
+            if (p > 0 && p < 65536) port = static_cast<uint16_t>(p);
+            else                    return false;
+        } catch (...) {
+            return false;
+        }
+    }
+    out.port = port;
+    return enet_address_set_host(&out, host_part.c_str()) == 0;
+}
+
+#endif // CR_NETWORK
+
+} // namespace
+
+NetworkTransport::NetworkTransport() {
+#ifdef CR_NETWORK
+    enetGlobalAcquire();
+#endif
+}
+
+NetworkTransport::~NetworkTransport() {
+    disconnect();
+#ifdef CR_NETWORK
+    enetGlobalRelease();
+#endif
+}
 
 bool NetworkTransport::host(uint16_t port) {
-    // TODO(net): bind ENet host on `port`. Return false if the bind fails so the
-    // lobby UI can surface "port in use" or similar. Skeleton just records the role
-    // and reports success so callers can wire the rest of the flow.
+#ifdef CR_NETWORK
+    if (g_enet_init_failed.load()) {
+        std::fprintf(stderr, "[net] host(): ENet failed to init; falling back to "
+                              "loopback queues\n");
+        role_      = Role::Host;
+        host_port_ = port;
+        return false;
+    }
+    if (enet_host_ != nullptr) disconnect();
+
+    ENetAddress address;
+    address.host = ENET_HOST_ANY; // bind on all interfaces
+    address.port = port;
+
+    // Up to 8 incoming peers, kChannelCount channels, no bandwidth caps.
+    auto* host = enet_host_create(&address,
+                                  /*peerCount=*/8,
+                                  /*channelLimit=*/kChannelCount,
+                                  /*incomingBandwidth=*/0,
+                                  /*outgoingBandwidth=*/0);
+    if (host == nullptr) {
+        std::fprintf(stderr, "[net] enet_host_create (listen) failed on port %u\n",
+                     static_cast<unsigned>(port));
+        return false;
+    }
+    enet_host_  = static_cast<void*>(host);
+    enet_peer_  = nullptr;
+    role_       = Role::Host;
+    host_port_  = port;
+    peer_count_ = 0;
+    std::printf("[net] host bound on udp/%u (waiting for peers)\n",
+                static_cast<unsigned>(port));
+    return true;
+#else
+    // No ENet -> skeleton fallback: record the role so the lobby can show the
+    // "hosting" state, but nothing is actually listening.
     role_      = Role::Host;
     host_port_ = port;
     return true;
+#endif
 }
 
 bool NetworkTransport::connect(const std::string& address) {
-    // TODO(net): parse `address` as "host[:port]", resolve, open an ENet client
-    // session against the resolved endpoint. Block briefly (or return a pending
-    // handle) until the handshake completes.
+#ifdef CR_NETWORK
+    if (g_enet_init_failed.load()) {
+        std::fprintf(stderr, "[net] connect(): ENet failed to init; falling back to "
+                              "loopback queues\n");
+        role_        = Role::Client;
+        client_peer_ = address;
+        return false;
+    }
+    if (enet_host_ != nullptr) disconnect();
+
+    // Client host (no incoming peers, just outbound). 1 outgoing peer slot is enough
+    // for the single host we're connecting to.
+    auto* host = enet_host_create(/*address=*/nullptr,
+                                  /*peerCount=*/1,
+                                  /*channelLimit=*/kChannelCount,
+                                  /*incomingBandwidth=*/0,
+                                  /*outgoingBandwidth=*/0);
+    if (host == nullptr) {
+        std::fprintf(stderr, "[net] enet_host_create (client) failed\n");
+        return false;
+    }
+
+    constexpr uint16_t kDefaultHostPort = 7456;
+    ENetAddress addr{};
+    if (!parseAddress(address, addr, kDefaultHostPort)) {
+        std::fprintf(stderr, "[net] connect(): could not parse address '%s'\n",
+                     address.c_str());
+        enet_host_destroy(host);
+        return false;
+    }
+
+    auto* peer = enet_host_connect(host, &addr, kChannelCount, /*data=*/0);
+    if (peer == nullptr) {
+        std::fprintf(stderr, "[net] enet_host_connect failed (no peer slot)\n");
+        enet_host_destroy(host);
+        return false;
+    }
+
+    enet_host_   = static_cast<void*>(host);
+    enet_peer_   = static_cast<void*>(peer);
+    role_        = Role::Client;
+    client_peer_ = address;
+    peer_count_  = 0; // bumps to 1 in poll() once the CONNECT event fires
+    std::printf("[net] client connecting to %s (port %u resolved)\n",
+                address.c_str(), static_cast<unsigned>(addr.port));
+    return true;
+#else
     role_        = Role::Client;
     client_peer_ = address;
     return true;
+#endif
 }
 
 void NetworkTransport::disconnect() {
-    // TODO(net): cleanly close ENet host/client (peer disconnect with
-    // ENET_RELIABLE then service for a brief grace window). Skeleton just resets
-    // the role flag and drains the in-memory queues.
+#ifdef CR_NETWORK
+    if (enet_host_ != nullptr) {
+        auto* host = static_cast<ENetHost*>(enet_host_);
+        // For clients, ask the peer for a graceful disconnect and service briefly.
+        if (enet_peer_ != nullptr) {
+            auto* peer = static_cast<ENetPeer*>(enet_peer_);
+            enet_peer_disconnect(peer, 0);
+            // Service for ~100 ms so the disconnect packet actually leaves the
+            // box. We drain any final events but ignore their content.
+            ENetEvent ev;
+            while (enet_host_service(host, &ev, 100) > 0) {
+                if (ev.type == ENET_EVENT_TYPE_RECEIVE) {
+                    enet_packet_destroy(ev.packet);
+                }
+                if (ev.type == ENET_EVENT_TYPE_DISCONNECT) break;
+            }
+        }
+        enet_host_destroy(host);
+    }
+    enet_host_ = nullptr;
+    enet_peer_ = nullptr;
+#endif
     role_        = Role::Idle;
     host_port_   = 0;
     peer_count_  = 0;
@@ -44,22 +239,93 @@ void NetworkTransport::disconnect() {
 }
 
 void NetworkTransport::poll() {
-    // TODO(net): drain ENet events:
-    //   - ENET_EVENT_TYPE_CONNECT    -> ++peer_count_, push hello message
-    //   - ENET_EVENT_TYPE_RECEIVE    -> route by stream type:
-    //         hosts receive Commands  (codec::decodeCommand into commands_)
-    //         clients receive Snapshots / Events (codec::decodeSnapshot/Event into
-    //                                              snapshots_ / events_)
-    //   - ENET_EVENT_TYPE_DISCONNECT -> --peer_count_
-    // Skeleton: nothing to pump because nothing connects over the wire yet. The
-    // codec is already in place (see Codec.cpp) so this slot just needs the
-    // socket-event loop.
+#ifdef CR_NETWORK
+    if (enet_host_ == nullptr) return;
+    auto*     host = static_cast<ENetHost*>(enet_host_);
+    ENetEvent ev;
+    // Service repeatedly with 0-timeout so we drain everything that's pending without
+    // blocking the frame.
+    while (enet_host_service(host, &ev, 0) > 0) {
+        switch (ev.type) {
+            case ENET_EVENT_TYPE_CONNECT: {
+                ++peer_count_;
+                std::printf("[net] peer connected (peers=%d)\n", peer_count_);
+                break;
+            }
+            case ENET_EVENT_TYPE_DISCONNECT: {
+                if (peer_count_ > 0) --peer_count_;
+                std::printf("[net] peer disconnected (peers=%d)\n", peer_count_);
+                // If WE were the client and the host vanished, clear enet_peer_ so
+                // future sends short-circuit instead of hitting a stale peer.
+                if (role_ == Role::Client && ev.peer == static_cast<ENetPeer*>(enet_peer_)) {
+                    enet_peer_ = nullptr;
+                }
+                break;
+            }
+            case ENET_EVENT_TYPE_RECEIVE: {
+                // Route the packet to the right decoder by channelID. We trust the
+                // channel split because the codec also re-checks the version byte
+                // inside the payload (so a peer sending Commands on the Snapshot
+                // channel would still decode/fail correctly).
+                const uint8_t* data = ev.packet->data;
+                const size_t   len  = ev.packet->dataLength;
+                switch (ev.channelID) {
+                    case CHAN_COMMAND: {
+                        Command c;
+                        if (codec::decodeCommand(data, len, c)) {
+                            commands_.push_back(std::move(c));
+                        } else {
+                            std::fprintf(stderr, "[net] decodeCommand failed (%zu bytes)\n", len);
+                        }
+                        break;
+                    }
+                    case CHAN_SNAPSHOT: {
+                        Snapshot s;
+                        if (codec::decodeSnapshot(data, len, s)) {
+                            snapshots_.push_back(std::move(s));
+                        } else {
+                            std::fprintf(stderr, "[net] decodeSnapshot failed (%zu bytes)\n", len);
+                        }
+                        break;
+                    }
+                    case CHAN_EVENT: {
+                        GameEvent e;
+                        if (codec::decodeEvent(data, len, e)) {
+                            events_.push_back(std::move(e));
+                        } else {
+                            std::fprintf(stderr, "[net] decodeEvent failed (%zu bytes)\n", len);
+                        }
+                        break;
+                    }
+                    default:
+                        std::fprintf(stderr, "[net] packet on unknown channel %u\n",
+                                     static_cast<unsigned>(ev.channelID));
+                        break;
+                }
+                enet_packet_destroy(ev.packet);
+                break;
+            }
+            case ENET_EVENT_TYPE_NONE:
+                break;
+        }
+    }
+#endif
 }
 
 void NetworkTransport::sendCommand(Command cmd) {
-    // Skeleton: same-process queue. Real impl:
-    //   - if hosting  : keep this path (the host's own local-player input).
-    //   - if a client : codec::encodeCommand + enet_peer_send to the host peer.
+#ifdef CR_NETWORK
+    if (role_ == Role::Client && enet_host_ != nullptr && enet_peer_ != nullptr) {
+        // Client: serialise + send to host.
+        std::vector<uint8_t> buf;
+        if (codec::encodeCommand(cmd, buf)) {
+            auto* peer = static_cast<ENetPeer*>(enet_peer_);
+            enet_peer_send(peer, CHAN_COMMAND, makePacket(buf));
+        }
+        return;
+    }
+    // Host: the local-player's own commands stay in-process via the deque (peers'
+    // commands enter via poll() into the same deque).
+#endif
     commands_.push_back(std::move(cmd));
 }
 
@@ -71,10 +337,23 @@ bool NetworkTransport::pollCommand(Command& out) {
 }
 
 void NetworkTransport::sendSnapshot(Snapshot snap) {
-    // Skeleton: same-process queue. Real impl (host only):
-    //   codec::encodeSnapshot(snap, buf);
-    //   for each connected peer: enet_peer_send(peer, packet_from(buf), CHAN_SNAP);
-    // Clients ignore their own sendSnapshot calls (they don't author state).
+#ifdef CR_NETWORK
+    if (role_ == Role::Host && enet_host_ != nullptr) {
+        std::vector<uint8_t> buf;
+        if (codec::encodeSnapshot(snap, buf)) {
+            auto* host   = static_cast<ENetHost*>(enet_host_);
+            auto* packet = makePacket(buf);
+            enet_host_broadcast(host, CHAN_SNAPSHOT, packet);
+        }
+        // Don't also push to the local deque -- the host already has the source
+        // truth from sim.buildSnapshot(); it doesn't need to drain its own
+        // broadcasts.
+        return;
+    }
+    // Clients drop their own sendSnapshot calls (only the host authors state). The
+    // skeleton-fallback in-memory queue path is only meaningful when CR_NETWORK is
+    // off, so we fall through to the deque push below in that case.
+#endif
     snapshots_.push_back(std::move(snap));
 }
 
@@ -86,9 +365,17 @@ bool NetworkTransport::pollSnapshot(Snapshot& out) {
 }
 
 void NetworkTransport::sendEvent(GameEvent ev) {
-    // Skeleton: same-process queue. Real impl (host only):
-    //   codec::encodeEvent(ev, buf);
-    //   for each connected peer: enet_peer_send(peer, packet_from(buf), CHAN_EVENT);
+#ifdef CR_NETWORK
+    if (role_ == Role::Host && enet_host_ != nullptr) {
+        std::vector<uint8_t> buf;
+        if (codec::encodeEvent(ev, buf)) {
+            auto* host   = static_cast<ENetHost*>(enet_host_);
+            auto* packet = makePacket(buf);
+            enet_host_broadcast(host, CHAN_EVENT, packet);
+        }
+        return;
+    }
+#endif
     events_.push_back(std::move(ev));
 }
 

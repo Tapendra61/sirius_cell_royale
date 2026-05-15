@@ -89,11 +89,21 @@ private:
     std::string client_peer_;
     int         peer_count_   = 0;
 
-    // Local queues. Real impl will replace these with serialised network packets, but
-    // the interface stays identical so the rest of the codebase doesn't have to care.
+    // In-memory pumps. With CR_NETWORK off these are the entire pipeline (used by
+    // unit tests / single-process scenarios). With CR_NETWORK on, sendCommand on a
+    // client serialises + transmits and ALSO pushes to commands_ if the client is
+    // looping packets back (currently we don't); pollSnapshot on a client drains
+    // packets that poll() already decoded into snapshots_. Same with events_.
     std::deque<Command>   commands_;
     std::deque<Snapshot>  snapshots_;
     std::deque<GameEvent> events_;
+
+    // ENet handles are intentionally opaque void* in this header so we don't leak
+    // <enet/enet.h> into every translation unit that #includes NetworkTransport.h.
+    // The real impl in NetworkTransport.cpp casts these back to ENetHost* /
+    // ENetPeer*. Null when CR_NETWORK is undefined OR before host()/connect().
+    void* enet_host_  = nullptr;  // ENetHost*  (server listener OR client socket)
+    void* enet_peer_  = nullptr;  // ENetPeer*  (client only -- the host peer)
 };
 
 } // namespace cr

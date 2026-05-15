@@ -126,13 +126,15 @@ void LocalLobby::renderHostWaiting(int sw, int sh, LocalLobbyAction& action) {
     DrawText(title, (sw - tw) / 2,     ty,     t_size, Color{240, 230, 180, 255});
 
     // ---- Status line ----
-    // Skeleton: the real implementation will pull the bind address + port from
-    // NetworkTransport once host() is implemented. For now we show the placeholder
-    // that matches the loopback default the JOIN screen suggests.
+    // The UDP port doesn't actually open until START GAME is pressed (the
+    // NetworkTransport is constructed inside runMatch). When the lobby itself
+    // gets an owned transport, this line can show the live bind status + peer
+    // count -- that's the next step.
     char status_line[160];
     std::snprintf(status_line, sizeof(status_line),
-                  "listening on 0.0.0.0:7456  -- waiting for players...");
-    int s_fs = 18;
+                  "will host on udp/7456 once you start  -- share your local IP "
+                  "with joiners");
+    int s_fs = 16;
     int sw_w = MeasureText(status_line, s_fs);
     DrawText(status_line, (sw - sw_w) / 2, ty + t_size + 20, s_fs,
              Color{200, 215, 230, 220});
@@ -197,7 +199,7 @@ void LocalLobby::renderHostWaiting(int sw, int sh, LocalLobbyAction& action) {
 
     // ---- Hint footer ----
     {
-        const char* foot = "skeleton: START runs a local session (network sync wires in next).";
+        const char* foot = "START opens the host socket; joiners can connect once you have.";
         int fs = 13;
         int fw = MeasureText(foot, fs);
         DrawText(foot, (sw - fw) / 2, sh - 30, fs,

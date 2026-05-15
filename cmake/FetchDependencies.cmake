@@ -34,4 +34,9 @@ if(CR_ENABLE_NETWORK)
         GIT_TAG        v1.3.18
         GIT_SHALLOW    TRUE)
     FetchContent_MakeAvailable(enet)
+    # ENet's CMake only sets include_directories for the enet target's own .c files;
+    # downstream consumers (cell_royale_core) need the headers too. Promote include/
+    # to a PUBLIC interface include directory on the target so target_link_libraries
+    # downstream just works.
+    target_include_directories(enet PUBLIC ${enet_SOURCE_DIR}/include)
 endif()

@@ -383,14 +383,11 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
         // background and stops the sim from accumulating real time the player can't see.
         client.setAutoPaused(!IsWindowFocused());
 
-        // Network pump (skeleton: no-op). Real impl will drain ENet events here and
-        // populate the transport's inbound queues for the rest of the frame.
+        // Drain ENet events (CONNECT/DISCONNECT/RECEIVE) and decode any inbound
+        // packets into the transport's typed queues. Cheap when no peers are
+        // connected; safe to call when SinglePlayer (no-op without an enet host).
         if (mode != MatchMode::SinglePlayer) {
             net_transport.poll();
-            // TODO(net): LocalClient -- drain net_transport.pollSnapshot()/pollEvent()
-            //                            into client.onSnapshot() / client.onEvents().
-            //            LocalHost  -- broadcast sim.buildSnapshot() via
-            //                            net_transport.sendSnapshot() after each tick.
         }
 
         client.pollFrame(screen_w, screen_h, sim.currentTick());
@@ -400,25 +397,76 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
         for (const auto& c : cmds) {
             sim.queueCommand(c);
             if (replay_recording) live_replay.recordCommand(c);
+            // LocalClient: also forward this command to the host so the authoritative
+            // sim sees the client's input. NetworkTransport::sendCommand routes
+            // appropriately based on its role.
+            if (mode == MatchMode::LocalClient) {
+                net_transport.sendCommand(c);
+            }
+        }
+
+        // LocalHost: drain commands received from peers via the network transport
+        // and queue them into the local sim. The transport decoded the bytes during
+        // poll() above so they're already typed Command objects here.
+        if (mode == MatchMode::LocalHost) {
+            cr::Command remote_cmd;
+            while (net_transport.pollCommand(remote_cmd)) {
+                sim.queueCommand(remote_cmd);
+                if (replay_recording) live_replay.recordCommand(remote_cmd);
+            }
         }
 
         // Per-frame feel layer update (shake decay, particles, popups, HUD, death cam).
         client.updateFrame(frame_dt, GetTime(), tuning);
 
-        // Sim ticks -- skipped entirely while hitstop is freezing time.
+        // Sim ticks -- skipped entirely while hitstop is freezing time. LocalHost
+        // ticks the authoritative sim AND broadcasts the resulting snapshot/events
+        // each tick. LocalClient still ticks locally for now (deterministic with
+        // host given same seed + replicated commands) -- in a follow-up we'll
+        // replace this with snapshot-driven rendering and stop running a local sim.
         if (!client.isHitstopActive()) {
             accumulator += static_cast<double>(frame_dt) * client.effectiveDtMultiplier();
             int safety = 0;
             while (accumulator >= sim_dt && safety < 8) {
                 sim.tick(sim_dt);
-                client.onSnapshot(sim.buildSnapshot());
-                client.onEvents(sim.takeEvents(), sim.world(), tuning);
+                cr::Snapshot snap = sim.buildSnapshot();
+                client.onSnapshot(snap);
+                std::vector<cr::GameEvent> evs = sim.takeEvents();
+                client.onEvents(evs, sim.world(), tuning);
+                if (mode == MatchMode::LocalHost) {
+                    net_transport.sendSnapshot(snap);
+                    for (const auto& e : evs) net_transport.sendEvent(e);
+                }
                 accumulator -= sim_dt;
                 ++safety;
             }
             if (accumulator >= sim_dt) {
                 // Long pause / breakpoint -- drop the backlog instead of spiraling.
                 accumulator = 0.0;
+            }
+        }
+
+        // LocalClient: drain decoded snapshots/events from the host. For now we just
+        // log the count and discard -- the local sim is still authoritative on the
+        // client side. Replacing the local sim with received state is the next
+        // increment.
+        if (mode == MatchMode::LocalClient) {
+            cr::Snapshot dummy_snap;
+            int snaps_received = 0;
+            while (net_transport.pollSnapshot(dummy_snap)) ++snaps_received;
+            cr::GameEvent dummy_ev;
+            int events_received = 0;
+            while (net_transport.pollEvent(dummy_ev)) ++events_received;
+            // Throttle the log: only print when something actually arrived so the
+            // terminal isn't spammed during idle.
+            if (snaps_received > 0 || events_received > 0) {
+                static int log_throttle = 0;
+                if ((log_throttle++ & 31) == 0) {
+                    std::printf("[net] client received %d snapshots, %d events "
+                                "this frame (peers=%d)\n",
+                                snaps_received, events_received,
+                                net_transport.peerCount());
+                }
             }
         }
 
