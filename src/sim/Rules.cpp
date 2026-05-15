@@ -965,13 +965,24 @@ void doBlast(World& world, PlayerId player, const Tuning& t,
     if (source->mass < t.blast_min_mass) return;
     if (source->blast_cooldown_until > now) return;
 
-    // Spend mass, start cooldown.
+    // Spend mass, start cooldown. Capture the SOURCE radius BEFORE we deduct mass --
+    // the blast's reach is anchored to the cell that initiated the cast, not the
+    // (smaller) cell that exists right after the mass spend.
+    const float source_r_at_cast = cellRadius(source->mass);
     source->mass               *= (1.0f - t.blast_cost_percent);
     source->blast_cooldown_until = now + secondsToTicks(t.blast_cooldown_sec);
     const Vec2  origin    = source->pos;
-    const float radius    = t.blast_radius;
-    const float radius_sq = radius * radius;
-    const float push_peak = t.blast_push_speed;
+    // Scale the blast reach with the source's size. t.blast_radius is the reach at
+    // the minimum cast mass; a bigger caster gets a proportionally bigger shockwave
+    // so enemies just outside its body still feel the push. Previously the radius
+    // was fixed, so a 4000-mass cell's blast barely cleared its own perimeter.
+    const float min_r       = std::max(1.0f, cellRadius(t.blast_min_mass));
+    const float size_scale  = std::max(1.0f, source_r_at_cast / min_r);
+    const float radius      = t.blast_radius * size_scale;
+    const float radius_sq   = radius * radius;
+    // Push strength also scales with size, but more conservatively (sqrt rather than
+    // linear) so a giant cell doesn't fling enemies across the whole map.
+    const float push_peak   = t.blast_push_speed * std::sqrt(size_scale);
     const float food_scale = t.blast_food_push_scale;
 
     events.push_back(BlastEvent{source->id, player, origin, radius});
