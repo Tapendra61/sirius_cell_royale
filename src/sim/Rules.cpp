@@ -90,6 +90,19 @@ void stepCells(World& world, const Tuning& t, float dt) {
             speed *= t.speed_multiplier;
         }
 
+        // Anti-jitter: when the cell is closer than a full-speed step (speed * dt)
+        // to its target, the original code took a full step anyway and overshot;
+        // next tick the cell aimed back the other way and overshot again. Result:
+        // the cell oscillates ~step-size pixels around the cursor whenever the
+        // cursor is "right above" it. Scaling the speed so the step length equals
+        // the distance lands the cell exactly on target and stops it cleanly.
+        // Below the 1e-3 threshold we already set dir to zero, so the multiplication
+        // produces no motion -- no special-case needed for the truly-on-target case.
+        const float max_step = speed * dt;
+        if (dist < max_step && dt > 1e-5f) {
+            speed = dist / dt;
+        }
+
         Vec2 seek_vel  = dir * speed;
         Vec2 total_vel = seek_vel + c.launch_vel;
         c.pos          = c.pos + total_vel * dt;
