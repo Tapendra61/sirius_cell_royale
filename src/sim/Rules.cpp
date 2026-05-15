@@ -473,28 +473,57 @@ void applyMagnetPulls(World& world, const Tuning& t) {
     }
     if (sources.empty()) return;
 
-    const float radius   = t.pickup_magnet_radius;
+    const float radius    = t.pickup_magnet_radius;
     const float radius_sq = radius * radius;
-    const float speed    = t.pickup_magnet_speed;
+    const float speed     = t.pickup_magnet_speed;
 
-    for (auto& f : world.foodMut()) {
-        // Pick the nearest magnet source within range and pull toward it. Unconditional:
-        // we deliberately also pull ejected pellets that happen to fly through the
-        // radius -- magneted food in flight gets diverted, which is a neat side-effect
-        // of the mechanic rather than a bug.
-        float best_dsq = radius_sq;
-        const Source* picked = nullptr;
-        for (const auto& s : sources) {
-            float dx = s.pos.x - f.pos.x;
-            float dy = s.pos.y - f.pos.y;
+    auto& foods = world.foodMut();
+    if (foods.empty()) return;
+
+    // Instead of an O(F * S) sweep over all 3600 food entries, query the food grid for
+    // each magnet source (radius ~kPickupMagnetRadius, so each query touches a handful
+    // of buckets). We may still need to compare a food against multiple sources to pick
+    // the closest, so track `(best_src_idx, best_dsq)` per food. -1 = not magneted this
+    // tick.
+    //
+    // Determinism: foods are applied in vector-index order (same as the original), and
+    // the closest-source choice is identical to the original sweep.
+    static thread_local std::vector<int>   best_src_scratch;
+    static thread_local std::vector<float> best_dsq_scratch;
+    best_src_scratch.assign(foods.size(), -1);
+    best_dsq_scratch.assign(foods.size(), 0.0f);
+
+    std::vector<uint32_t> nearby;
+    const auto& food_grid = world.foodsGrid();
+    for (size_t si = 0; si < sources.size(); ++si) {
+        const auto& s = sources[si];
+        nearby.clear();
+        food_grid.query(Vec2{s.pos.x - radius, s.pos.y - radius},
+                        Vec2{s.pos.x + radius, s.pos.y + radius}, nearby);
+        for (uint32_t fi : nearby) {
+            // The grid may return duplicate indices (entity straddling buckets) -- the
+            // best-tracker pattern is idempotent so duplicates are harmless.
+            if (fi >= foods.size()) continue;
+            const auto& f = foods[fi];
+            float dx  = s.pos.x - f.pos.x;
+            float dy  = s.pos.y - f.pos.y;
             float dsq = dx * dx + dy * dy;
-            if (dsq < best_dsq) { best_dsq = dsq; picked = &s; }
+            if (dsq >= radius_sq) continue;
+            if (best_src_scratch[fi] < 0 || dsq < best_dsq_scratch[fi]) {
+                best_src_scratch[fi] = static_cast<int>(si);
+                best_dsq_scratch[fi] = dsq;
+            }
         }
-        if (!picked) continue;
+    }
 
-        float dx = picked->pos.x - f.pos.x;
-        float dy = picked->pos.y - f.pos.y;
-        float d  = std::sqrt(best_dsq);
+    for (size_t fi = 0; fi < foods.size(); ++fi) {
+        int sidx = best_src_scratch[fi];
+        if (sidx < 0) continue;
+        auto& f = foods[fi];
+        const auto& s = sources[static_cast<size_t>(sidx)];
+        float dx = s.pos.x - f.pos.x;
+        float dy = s.pos.y - f.pos.y;
+        float d  = std::sqrt(best_dsq_scratch[fi]);
         if (d < 1.0f) continue;
         // Strength tapers with distance so food at the edge of the radius drifts
         // slowly while food up close zips in.

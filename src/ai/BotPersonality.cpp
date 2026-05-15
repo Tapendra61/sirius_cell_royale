@@ -71,4 +71,12 @@ char letterOf(BotPersonality p) {
     return '?';
 }
 
+char letterForTag(uint8_t tag) {
+    // Tag 0 means the human player; non-zero tags are BotPersonality+1.
+    if (tag == 0) return 'P';
+    const uint8_t pi = static_cast<uint8_t>(tag - 1);
+    if (pi >= static_cast<uint8_t>(BotPersonality::Count)) return '?';
+    return letterOf(static_cast<BotPersonality>(pi));
+}
+
 } // namespace cr::ai

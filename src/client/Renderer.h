@@ -32,6 +32,13 @@ bool currentHighContrast();
 // The actual table is selected by the current PaletteMode.
 Color colorForPlayer(PlayerId p);
 
+// Free GPU resources owned by the renderer (the black-hole shader + 1x1 texture).
+// Must be called before raylib's CloseWindow() -- otherwise the shader / texture leak
+// at shutdown and (under some drivers) raylib logs a "trying to delete after context
+// destroyed" warning. Safe to call multiple times; safe to call without ever drawing
+// a black hole (lazy-init means resources are only allocated on first use).
+void unloadRendererGpuResources();
+
 // Renderer. Caller wraps drawWorld() in BeginMode2D/EndMode2D so it can share the camera
 // with the feel layer (particles, popups) and apply screen shake. Takes a view AABB so it
 // can frustum-cull entities; with a 16k x 16k world and a typical 1280 x 720 viewport at

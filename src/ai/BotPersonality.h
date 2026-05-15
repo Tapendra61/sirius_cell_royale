@@ -46,4 +46,10 @@ PersonalityWeights weightsFor(BotPersonality p);
 const char*        nameOf(BotPersonality p);
 char               letterOf(BotPersonality p);
 
+// Convert the Cell::personality_tag encoding (0 = human player, N+1 = BotPersonality
+// enum value) to the display letter used by the HUD glyph and the killfeed. Centralised
+// so both renderer paths can't drift apart -- previously each had its own hard-coded
+// {'P','G','C','H','h','R'} array.
+char letterForTag(uint8_t tag);
+
 } // namespace cr::ai

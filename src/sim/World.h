@@ -29,6 +29,11 @@ struct Cell {
     // Cell so death events / kill feed entries can read it without crossing into
     // BotDirector. BotDirector writes this once at spawn.
     uint8_t  personality_tag      = 0;
+    // Elite flag mirrored from BotDirector at spawn so the snapshot builder and the
+    // renderer can read it directly without scanning bots. (dash_telegraph stays on
+    // BotMind because it has to be recomputed every tick, which would just move the
+    // O(B×C) scan from buildSnapshot to BotDirector::tick.)
+    bool     is_elite             = false;
     // Black-hole hiding state. hiding_in == INVALID_ENTITY means the cell is in the
     // open world. When non-invalid, the cell's position is pinned to that black
     // hole's centre and the cell is excluded from eating / pulls / recombine. The

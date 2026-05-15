@@ -240,23 +240,25 @@ Snapshot Simulation::buildSnapshot() const {
         } else {
             cs.dash_cooldown_norm = 1.0f;
         }
-        // Tag with personality if this cell is bot-owned (small linear scan; bot count <= ~30).
-        // Also surface Hunter dash-windup progress + elite flag so the renderer can draw
-        // both tells.
-        cs.personality_tag     = 0;
+        // personality_tag + is_elite are stored on the Cell at bot spawn; the only
+        // bot-side value that still needs a scan is the Hunter dash-windup telegraph
+        // (it changes every tick so writing it back to Cell would cost the same as
+        // reading it here). Cache that scan to skip the inner loop for player cells,
+        // which is most of them in the early game.
+        cs.personality_tag     = c.personality_tag;
+        cs.is_elite            = c.is_elite;
         cs.dash_telegraph_norm = 0.0f;
-        cs.is_elite            = false;
-        for (const auto& bot : bots) {
-            if (bot.player == c.owner) {
-                cs.personality_tag = static_cast<uint8_t>(bot.personality) + 1;
-                cs.is_elite        = bot.is_elite;
-                if (bot.dash_windup_until > now
-                    && bot.dash_windup_until > bot.dash_windup_started) {
-                    float dur = static_cast<float>(bot.dash_windup_until - bot.dash_windup_started);
-                    float el  = static_cast<float>(now - bot.dash_windup_started);
-                    cs.dash_telegraph_norm = std::clamp(el / dur, 0.0f, 1.0f);
+        if (c.personality_tag != 0) {
+            for (const auto& bot : bots) {
+                if (bot.player == c.owner) {
+                    if (bot.dash_windup_until > now
+                        && bot.dash_windup_until > bot.dash_windup_started) {
+                        float dur = static_cast<float>(bot.dash_windup_until - bot.dash_windup_started);
+                        float el  = static_cast<float>(now - bot.dash_windup_started);
+                        cs.dash_telegraph_norm = std::clamp(el / dur, 0.0f, 1.0f);
+                    }
+                    break;
                 }
-                break;
             }
         }
         s.cells.push_back(cs);

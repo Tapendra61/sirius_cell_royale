@@ -1,6 +1,7 @@
 #include "Client.h"
 
 #include "UiWidgets.h"
+#include "ai/BotPersonality.h" // letterForTag
 #include "raylib.h"
 
 #include <algorithm>
@@ -261,9 +262,8 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                 // (set via involves_player) so they stand out among bot-vs-bot rows.
                 {
                     auto fmtName = [](char* buf, size_t n, PlayerId pid, uint8_t tag) {
-                        static const char kLetters[] = {'P', 'G', 'C', 'H', 'h', 'R'};
-                        char letter = (tag < sizeof(kLetters)) ? kLetters[tag] : '?';
-                        std::snprintf(buf, n, "%c%u", letter, static_cast<unsigned>(pid));
+                        std::snprintf(buf, n, "%c%u", ai::letterForTag(tag),
+                                      static_cast<unsigned>(pid));
                     };
                     const bool involves_player =
                         (e.predator_player == watched_player_)

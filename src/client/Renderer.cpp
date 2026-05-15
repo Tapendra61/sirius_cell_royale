@@ -1,5 +1,7 @@
 #include "Renderer.h"
 
+#include "ai/BotPersonality.h" // letterForTag
+
 #include "raylib.h"
 
 #include <algorithm>
@@ -227,6 +229,22 @@ void ensureBlackHoleGfx() {
     UnloadImage(img);
 
     g_bh_gfx.initialized = true;
+}
+
+void unloadBlackHoleGfx() {
+    // Reverse of ensureBlackHoleGfx -- frees GPU resources at shutdown. Must run while
+    // raylib's GL context is still alive (i.e. before CloseWindow). Idempotent: a
+    // freshly-constructed BlackHoleGfx has initialized=false so a redundant call is
+    // a no-op.
+    if (g_bh_gfx.initialized) {
+        UnloadTexture(g_bh_gfx.white);
+        UnloadShader(g_bh_gfx.shader);
+        g_bh_gfx = BlackHoleGfx{}; // reset to default-constructed (all fields cleared)
+    } else if (g_bh_gfx.failed && g_bh_gfx.shader.id != 0) {
+        // Shader compile failed but still left an id behind on some drivers; nuke it.
+        UnloadShader(g_bh_gfx.shader);
+        g_bh_gfx = BlackHoleGfx{};
+    }
 }
 
 void drawBlackHole(const BlackHoleSnap& b, double now_sec) {
@@ -530,10 +548,7 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec, bool fl
         }
     }
 
-    static const char kPersonalityLetters[] = {'P', 'G', 'C', 'H', 'h', 'R'};
-    char letter = (c.personality_tag < sizeof(kPersonalityLetters))
-                      ? kPersonalityLetters[c.personality_tag]
-                      : '?';
+    char letter = ai::letterForTag(c.personality_tag);
     char buf[32];
     // Phase 8 cosmetic unlock: a star prefix on the watched player's name at L20+.
     // (Other cosmetic tiers -- trail colors, skins -- deferred to a focused pass.)
@@ -578,6 +593,13 @@ inline bool circleInView(Vec2 p, float r, Vec2 vmin, Vec2 vmax) {
 }
 
 } // namespace
+
+void unloadRendererGpuResources() {
+    // Currently just the black-hole shader / 1x1 texture. If we ever add more lazy GPU
+    // resources (e.g. a virus-glow shader), hang their cleanup off this same function so
+    // shutdown stays one call.
+    unloadBlackHoleGfx();
+}
 
 void Renderer::drawWorld(const Interpolator& interp,
                          const Tuning&       tuning,

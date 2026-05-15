@@ -583,6 +583,10 @@ int runWindow(uint64_t initial_seed) {
                     kSavePath.c_str());
     }
 
+    // Free renderer-owned GPU resources (lazy-loaded black-hole shader + 1x1 texture)
+    // BEFORE CloseWindow destroys the GL context, otherwise we leak driver-side handles
+    // and on some drivers raylib logs "delete after context destroyed" warnings.
+    cr::unloadRendererGpuResources();
     CloseWindow();
     return 0;
 }
