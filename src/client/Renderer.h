@@ -54,6 +54,22 @@ public:
                    PlayerId                watched_player = INVALID_PLAYER,
                    int                     watched_player_level = 1) const;
 
+    // Bottom-right corner minimap. Drawn in SCREEN space (no BeginMode2D), so the
+    // caller must NOT wrap this in the world camera. Reads the current snapshot for
+    // cell / black-hole positions and draws a frustum rectangle from view_min/view_max
+    // so the player can tell where they're looking on the full 16k world.
+    //
+    // Cells are dot-per-cell, scaled by mass so threats are obvious at a glance. Food
+    // isn't drawn (3600 dots would just be noise). Pickups skipped for the same reason.
+    void drawMinimap(const Interpolator& interp,
+                     int                 world_w,
+                     int                 world_h,
+                     Vec2                view_min,
+                     Vec2                view_max,
+                     int                 screen_w,
+                     int                 screen_h,
+                     PlayerId            watched_player) const;
+
 private:
     // Scratch vectors reused across frames so drawWorld doesn't allocate per call.
     mutable std::vector<const CellSnap*> sort_order_;

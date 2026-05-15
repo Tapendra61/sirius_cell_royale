@@ -741,4 +741,102 @@ void Renderer::drawWorld(const Interpolator& interp,
     }
 }
 
+void Renderer::drawMinimap(const Interpolator& interp,
+                           int                 world_w,
+                           int                 world_h,
+                           Vec2                view_min,
+                           Vec2                view_max,
+                           int                 screen_w,
+                           int                 screen_h,
+                           PlayerId            watched_player) const {
+    if (!interp.hasCurr()) return;
+
+    // Layout: bottom-right corner. The minimap aspect mirrors the world aspect so the
+    // shape on the minimap matches what the player sees in the world (square in our
+    // case, but parameterised so a future non-square world doesn't squish).
+    constexpr int kPadding   = 12;
+    constexpr int kMaxExtent = 200;   // px -- ~15% of a 1280 screen, less of a 1920
+    constexpr int kBorder    = 2;
+
+    // Fit the world AABB into a kMaxExtent x kMaxExtent box, preserving aspect.
+    const float world_w_f = static_cast<float>(world_w);
+    const float world_h_f = static_cast<float>(world_h);
+    const float aspect    = world_w_f / world_h_f;
+    int box_w, box_h;
+    if (aspect >= 1.0f) {
+        box_w = kMaxExtent;
+        box_h = static_cast<int>(kMaxExtent / aspect);
+    } else {
+        box_h = kMaxExtent;
+        box_w = static_cast<int>(kMaxExtent * aspect);
+    }
+    const int x0 = screen_w - box_w - kPadding;
+    const int y0 = screen_h - box_h - kPadding;
+
+    // Scale: world coord -> minimap px.
+    const float sx = static_cast<float>(box_w) / world_w_f;
+    const float sy = static_cast<float>(box_h) / world_h_f;
+    auto toMx = [&](float wx) { return x0 + wx * sx; };
+    auto toMy = [&](float wy) { return y0 + wy * sy; };
+
+    // Backdrop: semi-transparent dark panel + subtle border. Border first (acts as
+    // outer frame), then inner fill.
+    DrawRectangle(x0 - kBorder, y0 - kBorder,
+                  box_w + kBorder * 2, box_h + kBorder * 2,
+                  Color{20, 24, 32, 220});
+    DrawRectangle(x0, y0, box_w, box_h, Color{8, 10, 14, 200});
+
+    const Snapshot& snap = interp.curr();
+
+    // Black holes first (under everything else). Pull radius as a faint ring, event
+    // horizon as a filled purple disc.
+    for (const auto& b : snap.blackholes) {
+        const float mx = toMx(b.pos.x);
+        const float my = toMy(b.pos.y);
+        const float pr_px = std::max(2.0f, b.pull_radius * sx);
+        const float r_px  = std::max(1.5f, b.radius      * sx);
+        DrawCircleV(Vector2{mx, my}, pr_px, Color{110, 40, 175,  60});
+        DrawCircleV(Vector2{mx, my}, r_px,  Color{230, 60, 200, 220});
+    }
+
+    // Cells: dot per cell, radius scales like sqrt(mass) so larger threats read at a
+    // glance. Watched player's cells get a white outline so they stand out among bots.
+    for (const auto& c : snap.cells) {
+        if (c.hiding) continue; // hidden cells are pinned to the BH centre; skip the dup
+        const float mx = toMx(c.pos.x);
+        const float my = toMy(c.pos.y);
+        // Cell radius on the minimap. We use cellRadius's sqrt scaling but clamp so
+        // tiny cells stay visible and huge ones don't dominate.
+        const float world_r = cellRadius(c.mass);
+        const float dot_r   = std::clamp(world_r * sx, 1.5f, 5.0f);
+        Color col = colorForPlayer(c.owner);
+        // Watched player's cells: brighter accent with a thin white ring so they pop.
+        const bool is_watched = (watched_player != INVALID_PLAYER) && (c.owner == watched_player);
+        DrawCircleV(Vector2{mx, my}, dot_r, col);
+        if (is_watched) {
+            DrawCircleLinesV(Vector2{mx, my}, dot_r + 1.0f, Color{255, 255, 255, 230});
+        } else if (c.is_elite) {
+            // Elites get a faint red ring even when off-screen so the player can track
+            // them on the minimap (the in-world halo is also red).
+            DrawCircleLinesV(Vector2{mx, my}, dot_r + 1.0f, Color{255, 80, 80, 200});
+        }
+    }
+
+    // Camera frustum: thin yellow rectangle showing what the player can currently see.
+    // Clamp to the minimap rect (the in-world view AABB has a cull margin and may
+    // extend slightly past the world edge).
+    {
+        const float fx0 = std::clamp(toMx(view_min.x), static_cast<float>(x0),
+                                     static_cast<float>(x0 + box_w));
+        const float fy0 = std::clamp(toMy(view_min.y), static_cast<float>(y0),
+                                     static_cast<float>(y0 + box_h));
+        const float fx1 = std::clamp(toMx(view_max.x), static_cast<float>(x0),
+                                     static_cast<float>(x0 + box_w));
+        const float fy1 = std::clamp(toMy(view_max.y), static_cast<float>(y0),
+                                     static_cast<float>(y0 + box_h));
+        const Rectangle fr{fx0, fy0, std::max(2.0f, fx1 - fx0), std::max(2.0f, fy1 - fy0)};
+        DrawRectangleLinesEx(fr, 1.0f, Color{255, 220, 80, 230});
+    }
+}
+
 } // namespace cr

@@ -615,6 +615,17 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
     // Screen-space overlays.
     renderTouchOverlay(screen_w, screen_h, input_config_);
 
+    // Minimap (bottom-right corner). Drawn before the HUD so the killfeed (top-right)
+    // and the minimap don't collide -- they're at opposite corners but rendering order
+    // makes the HUD pause/summary panels overlay on top if they ever did overlap. Only
+    // drawn while there's a world to show (skip during raw startup before the first
+    // snapshot).
+    if (phase_ == GamePhase::Playing || phase_ == GamePhase::DeathCam) {
+        renderer_.drawMinimap(interp_, world.width(), world.height(),
+                              view_min, view_max,
+                              screen_w, screen_h, watched_player_);
+    }
+
     const Cell* watched = world.findCell(watched_cell_);
     const MatchSummary* summary_ptr =
         (phase_ == GamePhase::Summary) ? &summary_ : nullptr;
