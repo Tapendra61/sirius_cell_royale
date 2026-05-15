@@ -151,16 +151,36 @@ void LocalDiscovery::announceNow() {
     if (mode_ != Mode::Host || socket_ == -1) return;
     uint8_t packet[kPacketSize];
     packAnnounce(packet, game_port_, name_);
-    ENetAddress dst{};
-    dst.host = ENET_HOST_BROADCAST;
-    dst.port = kDiscoveryPort;
     ENetBuffer buf{};
     buf.data       = packet;
     buf.dataLength = kPacketSize;
-    int sent = enet_socket_send(toSock(socket_), &dst, &buf, 1);
-    if (sent < 0) {
-        // Don't spam -- a transient failure (e.g. driver hiccup) is harmless
-        // since the next tick retries.
+
+    // Destination 1: limited broadcast (255.255.255.255). Reaches every host
+    // on the LAN via the default interface's broadcast address.
+    ENetAddress bcast{};
+    bcast.host = ENET_HOST_BROADCAST;
+    bcast.port = kDiscoveryPort;
+    int s1 = enet_socket_send(toSock(socket_), &bcast, &buf, 1);
+
+    // Destination 2: 127.0.0.1 loopback. macOS (and a number of Linux distros
+    // with strict reverse-path filtering) DOESN'T deliver 255.255.255.255
+    // packets to a local listener bound to 0.0.0.0 -- the packet goes out the
+    // physical interface and never crosses back. For two-instances-on-one-
+    // machine testing we explicitly cc the loopback so the local JOIN screen
+    // also sees the announce.
+    ENetAddress loop{};
+    enet_address_set_host(&loop, "127.0.0.1");
+    loop.port = kDiscoveryPort;
+    int s2 = enet_socket_send(toSock(socket_), &loop, &buf, 1);
+
+    // One-time confirmation print so it's obvious from the terminal whether
+    // the host is actually shipping announces. After the first success we
+    // shut up to avoid spamming.
+    static bool logged_once = false;
+    if (!logged_once && (s1 > 0 || s2 > 0)) {
+        std::printf("[discovery] announce sent (bcast=%d bytes, loopback=%d bytes)\n",
+                    s1, s2);
+        logged_once = true;
     }
 #endif
 }
@@ -215,6 +235,10 @@ void LocalDiscovery::pollIncoming() {
             std::memset(e.name, 0, sizeof(e.name));
             std::memcpy(e.name, name_buf, kNameSize);
             e.name[sizeof(e.name) - 1] = '\0';
+            std::printf("[discovery] new host found: %s:%u (%s)\n",
+                        e.address.c_str(),
+                        static_cast<unsigned>(e.game_port),
+                        e.name);
             hosts_.push_back(std::move(e));
         }
     }
