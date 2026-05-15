@@ -8,6 +8,7 @@
 #include "client/Renderer.h"   // setPaletteMode / setHighContrast
 #include "client/RoyaleMenu.h"
 #include "client/SettingsScreen.h"
+#include "client/Hud.h"        // cr::GamePhase
 #include "client/UiWidgets.h"  // setHudTextScale
 #include "core/Rng.h"
 #include "core/Tuning.h"
@@ -331,8 +332,15 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
         cr::setForceTouch(v != 0);
         con.log(std::string("force_touch = ") + (v ? "on" : "off"));
     } else if (cmd == "pause") {
-        s.client->togglePause();
-        con.log(s.client->isPaused() ? "paused" : "unpaused");
+        // Single-player only. In multiplayer pausing isn't a real concept: the
+        // host's sim ticking is what feeds clients, so freezing one side is
+        // either invisible (client) or world-stopping (host) -- neither is good.
+        if (s.mode != MatchMode::SinglePlayer) {
+            con.log("pause: only available in single-player");
+        } else {
+            s.client->togglePause();
+            con.log(s.client->isPaused() ? "paused" : "unpaused");
+        }
     } else if (cmd == "comet") {
         // Force-spawns a crashing-comet world event on the next sim tick. Useful for
         // demoing the effect without waiting for the regular cadence. Spawn point /
@@ -446,6 +454,10 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
 
     cr::Client client(player_cell,
                       mode == MatchMode::LocalClient ? cr::INVALID_PLAYER : player);
+    // Disables the pause shortcut + pause overlay's keyboard handler. Snapshots
+    // can't be frozen in multiplayer -- the host's world keeps ticking for peers
+    // and the client just renders what it gets.
+    client.setMultiplayerActive(mode != MatchMode::SinglePlayer);
     client.camera().snapTo(
         cr::Vec2{static_cast<float>(tuning.world_width)  * 0.5f,
                  static_cast<float>(tuning.world_height) * 0.5f},
@@ -684,39 +696,55 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
             }
         }
 
-        // Phase 8 respawn: when Client signals the player should come back, pick a clear
-        // spot and spawn a fresh cell. Bots forget the player's previous peak mass so the
-        // world doesn't keep dropping elite scaled threats while the player is at start_mass.
-        //
-        // LocalClient skips local respawn: the host owns spawning. The host's respawn
-        // protocol for remote players hasn't shipped yet, so a dead client just stays
-        // dead until the next match. TODO(net): per-peer respawn protocol so the host
-        // re-spawns a fresh cell + sends an updated Welcome.
-        if (client.consumeRespawnRequest() && mode != MatchMode::LocalClient) {
-            cr::Vec2 spawn{0.0f, 0.0f};
-            const float margin = 500.0f;
-            for (int attempt = 0; attempt < 8; ++attempt) {
-                cr::Vec2 candidate{
-                    sim.world().rng().rangeFloat(margin,
-                                                 static_cast<float>(sim.world().width())  - margin),
-                    sim.world().rng().rangeFloat(margin,
-                                                 static_cast<float>(sim.world().height()) - margin),
-                };
-                bool clear = true;
-                for (const auto& c : sim.world().cells()) {
-                    if (cr::distance(c.pos, candidate)
-                        < cr::cellRadius(c.mass) + 400.0f) {
-                        clear = false; break;
-                    }
-                }
-                if (clear) { spawn = candidate; break; }
-                spawn = candidate; // fallback to last attempt
+        // Respawn flow. Three paths:
+        //   SinglePlayer / LocalHost: spawn locally and immediately mark the
+        //     client back to Playing. (Host's own respawn -- direct mutation of
+        //     the authoritative sim.)
+        //   LocalClient: send a RespawnCmd up to the host; the host's sim runs
+        //     doRespawn, the new cell shows up in the next snapshot, and the
+        //     `re-acquire` block below transitions the client back to Playing.
+        if (client.consumeRespawnRequest()) {
+            if (mode == MatchMode::LocalClient) {
+                cr::Command rc;
+                rc.player  = player;
+                rc.tick    = 0; // host applies on receipt; tick is ignored
+                rc.payload = cr::RespawnCmd{};
+                net_transport.sendCommand(rc);
+            } else {
+                cr::Vec2 spawn = pickClearSpawn();
+                player_cell = sim.world().spawnCell(player, spawn, tuning.start_mass);
+                client.setWatchedCell(player_cell);
+                client.camera().snapTo(spawn, tuning.start_mass);
+                client.onPlayerRespawned(GetTime());
+                sim.director().resetPlayerTracking();
             }
-            player_cell = sim.world().spawnCell(player, spawn, tuning.start_mass);
-            client.setWatchedCell(player_cell);
-            client.camera().snapTo(spawn, tuning.start_mass);
-            client.onPlayerRespawned(GetTime());
-            sim.director().resetPlayerTracking();
+        }
+
+        // LocalClient: once the host's snapshot reflects a fresh cell for our
+        // PlayerId, adopt it and transition back to Playing. This handles the
+        // wait-for-snapshot half of the respawn protocol. We look up the largest
+        // cell owned by `player` -- the host's spawn always lands at start_mass,
+        // and the player has exactly one cell at this point, so the lookup is
+        // unambiguous.
+        if (mode == MatchMode::LocalClient
+            && client.phase() == cr::GamePhase::Respawning
+            && client.interpolator().hasCurr()) {
+            const auto& snap = client.interpolator().curr();
+            cr::EntityId best  = cr::INVALID_ENTITY;
+            float        best_mass = 0.0f;
+            for (const auto& c : snap.cells) {
+                if (c.owner == player && c.mass > best_mass) {
+                    best_mass = c.mass;
+                    best      = c.id;
+                }
+            }
+            if (best != cr::INVALID_ENTITY) {
+                player_cell = best;
+                client.setWatchedCell(best);
+                client.onPlayerRespawned(GetTime());
+                std::printf("[net] client respawn complete (new cell=%u)\n",
+                            static_cast<unsigned>(best));
+            }
         }
 
         // Camera: death cam steals the camera target while it's active. Otherwise follow

@@ -406,6 +406,7 @@ bool encodeCommand(const Command& c, std::vector<uint8_t>& out) {
         case static_cast<uint8_t>(CommandTag::Eject):
         case static_cast<uint8_t>(CommandTag::Dash):
         case static_cast<uint8_t>(CommandTag::Blast):
+        case static_cast<uint8_t>(CommandTag::Respawn):
             return true; // no payload bytes
         default:
             out.clear(); // unknown variant -- refuse to send garbage
@@ -437,6 +438,8 @@ bool decodeCommand(const uint8_t* data, size_t len, Command& c) {
             c.payload = DashCmd{};  return true;
         case static_cast<uint8_t>(CommandTag::Blast):
             c.payload = BlastCmd{}; return true;
+        case static_cast<uint8_t>(CommandTag::Respawn):
+            c.payload = RespawnCmd{}; return true;
         default:
             return false;
     }

@@ -72,7 +72,12 @@ void Client::pollFrame(int screen_w, int screen_h, Tick current_tick) {
     }
 
     // ---- Playing phase ----
-    if (s.pausePressed) {
+    // Pause is single-player only. In multiplayer the host can't freeze the world
+    // for clients (their snapshots would just stop arriving) and the client can't
+    // freeze the host either; either way Esc is silently ignored as a pause
+    // toggle. The lobby's `pause` console command is similarly host-only via the
+    // dev-console gate when this changes in the future.
+    if (s.pausePressed && !multiplayer_active_) {
         togglePause();
         return;
     }

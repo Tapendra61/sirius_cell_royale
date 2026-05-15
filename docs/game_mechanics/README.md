@@ -32,7 +32,7 @@ and connect to `127.0.0.1:7456`. Multiplayer modes don't auto-pause on focus los
 | Eject mass | `W` | Drops a small food pellet in the cursor direction. Used to feed viruses, push enemies, or barter mass. |
 | Dash | `Shift` | Short burst of 3× speed with brief invuln. 4s cooldown. |
 | Mass Blast (Q) | `Q` | Spends 20% of your biggest cell's mass to push every enemy cell + nearby food radially outward. 4s cooldown. Min cast mass = 300. Blast radius scales with caster size. |
-| Pause | `Esc` (in match) | Opens the Pause overlay. RESUME or MAIN MENU buttons. |
+| Pause | `Esc` (in match, **single-player only**) | Opens the Pause overlay. RESUME or MAIN MENU buttons. In multiplayer Esc is silently ignored as a pause toggle (the host can't freeze the world for clients and a client can't freeze the host either). |
 | Hold-to-move mode | Console command `set_hold_to_move 0|1` | When on, your cell only moves while the left mouse button is held. Off by default. |
 | Dev console | `` ` `` (backtick / tilde) | Opens a text input for commands. See §10. Hidden in release builds (CR_ENABLE_DEV_TOOLS=OFF). |
 | Skip Death Cam | Any gameplay key | The 1.5s killer-focus cam can be skipped early. |
@@ -260,7 +260,7 @@ Each effect has an aura ring around the cell while active.
 
 | Channel | Direction | Payload |
 |---|---|---|
-| 0 | Client → Host | Commands (Move / Split / Eject / Dash / Blast) |
+| 0 | Client → Host | Commands (Move / Split / Eject / Dash / Blast / Respawn) |
 | 1 | Host → Clients | Snapshots (world state) |
 | 2 | Host → Clients | Game events (absorbs, deaths, blasts, comet phases, ...) |
 | 3 | Host → New Peer | Welcome (player_id + initial cell_id) |
@@ -280,10 +280,26 @@ All channels are reliable. Default port: **UDP 7456**.
 4. Inputs from each peer flow upstream as Commands; host queues them into its
    sim alongside its own inputs.
 
+### Respawn flow
+
+- **Host's own death** spawns a fresh cell locally (direct sim mutation).
+- **Client's death** routes through a `RespawnCmd`: client sends it up after
+  the Summary panel countdown (or after PLAY AGAIN), host's sim runs
+  `doRespawn` deterministically, the new cell appears in the next snapshot,
+  and the client's camera follow re-acquires it. The client's HUD transitions
+  back to Playing once any cell owned by its slot is visible in the snapshot.
+- Idempotent: a duplicate `RespawnCmd` while the player still has cells is a
+  no-op.
+
+### Pause semantics
+
+Esc and the `pause` dev console command are both **single-player only**.
+Pausing the host would stop snapshots for clients; pausing a client would
+just freeze its local view. Both are confusing in multiplayer, so the
+shortcut and the command both refuse cleanly.
+
 ### Known limitations (current state, will fix)
 
-- Clients can't respawn yet. If you die, you stay dead until the next match.
-  A per-peer respawn protocol is pending.
 - Disconnect cleanup is partial: the host doesn't yet despawn a leaving peer's
   cells. They linger as zombie cells.
 - LAN discovery (UDP broadcast) isn't implemented. Joiners must enter the host
@@ -321,7 +337,7 @@ only).
 | Command | What it does |
 |---|---|
 | `slowmo F` | Set the dt multiplier. `slowmo 1` = normal speed; `slowmo 0.25` = quarter-speed (cinematic / debug). `slowmo 2` = double-speed. |
-| `pause` | Toggle local pause. |
+| `pause` | Toggle local pause. **Single-player only**; refuses in multiplayer. |
 | `reload_tuning` | Re-read `tuning.ini` from disk and push it into the sim + menu copies. |
 | `replay_save FILE` | Write the in-memory replay tape to `FILE`. Records seed + initial cells + every command since match start. |
 | `replay_load FILE` | Stub. Use `--replay-load FILE` on the CLI instead for now. |

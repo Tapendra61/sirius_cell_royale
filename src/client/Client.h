@@ -59,6 +59,13 @@ public:
     void  setDtMultiplier(float m) { dt_mult_ = m; }
     bool  isPaused() const { return paused_; }
     void  togglePause() { paused_ = !paused_; }
+    // Multiplayer modes disable the pause shortcut entirely (the host can't freeze
+    // the world for clients via Esc, and a client can't pause the authoritative sim
+    // either). The outer loop flips this on for LocalHost / LocalClient. Esc in
+    // multiplayer still propagates to the dev console etc. -- this only blocks the
+    // pause toggle and the pause overlay's keyboard handler.
+    void  setMultiplayerActive(bool v) { multiplayer_active_ = v; }
+    bool  isMultiplayerActive() const  { return multiplayer_active_; }
     // Includes pause + death-cam slow-mo.
     float effectiveDtMultiplier() const;
 
@@ -180,6 +187,7 @@ private:
     float                dt_mult_     = 1.0f;
     bool                 paused_      = false;
     bool                 auto_paused_ = false; // window unfocused
+    bool                 multiplayer_active_ = false;
 
     // Crashing-comet world event: pure presentation state. Set to kCometBannerSec when
     // a Telegraph event fires; counts down each frame (regardless of pause state) so

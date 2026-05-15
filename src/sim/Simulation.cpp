@@ -180,6 +180,10 @@ void Simulation::applyCommand(const Command& cmd) {
         rules::doBlast(world_, cmd.player, tuning_, events_);
         return;
     }
+    if (std::holds_alternative<RespawnCmd>(cmd.payload)) {
+        rules::doRespawn(world_, cmd.player, tuning_);
+        return;
+    }
 }
 
 Snapshot Simulation::buildSnapshot() const {

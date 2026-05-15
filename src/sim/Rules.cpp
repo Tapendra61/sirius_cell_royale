@@ -1038,4 +1038,36 @@ void doBlast(World& world, PlayerId player, const Tuning& t,
     }
 }
 
+void doRespawn(World& world, PlayerId player, const Tuning& t) {
+    // Idempotent: if this player already has any cells in the world, do nothing.
+    // Prevents a double-click on PLAY AGAIN (or a duplicated network packet) from
+    // turning into two cells at once.
+    if (world.playerCellCount(player) > 0) return;
+
+    // Pick a clear position using the deterministic world RNG. Same algorithm as
+    // the host-side helper in main.cpp -- duplicated here so the command flow
+    // doesn't need to ferry a pre-picked position over the wire.
+    constexpr float kMargin    = 500.0f;
+    constexpr float kClearance = 400.0f;
+    Vec2  chosen{static_cast<float>(world.width())  * 0.5f,
+                  static_cast<float>(world.height()) * 0.5f};
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        Vec2 candidate{
+            world.rng().rangeFloat(kMargin,
+                                    static_cast<float>(world.width())  - kMargin),
+            world.rng().rangeFloat(kMargin,
+                                    static_cast<float>(world.height()) - kMargin),
+        };
+        bool clear = true;
+        for (const auto& c : world.cells()) {
+            if (distance(c.pos, candidate) < cellRadius(c.mass) + kClearance) {
+                clear = false; break;
+            }
+        }
+        if (clear) { chosen = candidate; break; }
+        chosen = candidate; // accept last try if nothing was clear
+    }
+    world.spawnCell(player, chosen, t.start_mass);
+}
+
 } // namespace cr::rules

@@ -64,6 +64,12 @@ void doDash(World& world, PlayerId player, const Tuning& t);
 // enemy cell (and food, weaker) within `blast_radius` outward. Emits a BlastEvent
 // for client-side feel. Respects min-mass + cooldown.
 void doBlast(World& world, PlayerId player, const Tuning& t, std::vector<GameEvent>& events);
+// Spawns a fresh cell for `player` at a randomly-chosen clear position. Uses the
+// world RNG so the spawn is deterministic. Skips if `player` already has any cells
+// in the world (idempotent against double-respawn-clicks from a peer). Used by the
+// multiplayer respawn path: a dead client sends a RespawnCmd, the host queues it,
+// and the sim calls doRespawn during applyCommand.
+void doRespawn(World& world, PlayerId player, const Tuning& t);
 
 // Weighted food-tier roll. Used by both Simulation::ctor (initial pile) and respawnFood().
 // Returns one of {1, 3, 6, 12} -- common / uncommon / rare / epic. Consumes one rng.nextFloat().
