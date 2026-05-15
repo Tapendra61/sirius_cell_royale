@@ -208,11 +208,55 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
         return dx * dx + dy * dy <= audible_r_sq;
     };
 
+    // Cell-by-id lookup that works in any mode. SinglePlayer / LocalHost: the
+    // local sim's world has the cell. LocalClient: the local world is empty so
+    // findCell returns null; fall back to the latest snapshot which carries all
+    // cells the host knows about. Without this fallback, every is_player check
+    // returned false on a client (because pred = nullptr), which silently gated
+    // out all the audio paths that distinguish "I ate" from "someone else ate"
+    // (e.g. eating common food = no sound at all).
+    struct CellRef {
+        PlayerId owner = INVALID_PLAYER;
+        Vec2     pos{0.0f, 0.0f};
+        float    mass = 0.0f;
+        bool     found = false;
+    };
+    auto lookupCell = [&](EntityId id) -> CellRef {
+        CellRef r;
+        if (const Cell* c = world.findCell(id)) {
+            r.owner = c->owner;
+            r.pos   = c->pos;
+            r.mass  = c->mass;
+            r.found = true;
+            return r;
+        }
+        if (interp_.hasCurr()) {
+            for (const auto& cs : interp_.curr().cells) {
+                if (cs.id == id) {
+                    r.owner = cs.owner;
+                    r.pos   = cs.pos;
+                    r.mass  = cs.mass;
+                    r.found = true;
+                    return r;
+                }
+            }
+        }
+        return r;
+    };
+
     // ReachMass mission: tracks the player's largest total mass during this match.
     // Computed once per onEvents (i.e., once per sim tick) rather than per event.
+    // Uses the snapshot when the local world is empty (LocalClient) so the
+    // mission still progresses for the client's own player.
     float player_total_mass = 0.0f;
-    for (const auto& c : world.cells()) {
-        if (c.owner == watched_player_) player_total_mass += c.mass;
+    if (!world.cells().empty()) {
+        for (const auto& c : world.cells()) {
+            if (c.owner == watched_player_) player_total_mass += c.mass;
+        }
+    } else if (interp_.hasCurr()) {
+        for (const auto& cs : interp_.curr().cells) {
+            if (cs.owner == watched_player_) player_total_mass += cs.mass;
+        }
     }
     if (player_total_mass > match_peak_mass_) {
         match_peak_mass_ = player_total_mass;
@@ -225,8 +269,8 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
             using T = std::decay_t<decltype(e)>;
 
             if constexpr (std::is_same_v<T, AbsorbEvent>) {
-                Cell* pred = world.findCell(e.predator);
-                Color color = pred ? colorForPlayer(pred->owner) : RAYWHITE;
+                CellRef pred  = lookupCell(e.predator);
+                Color   color = pred.found ? colorForPlayer(pred.owner) : RAYWHITE;
                 particles_.spawnAbsorbBurst(e.at, e.mass_gained, color);
 
                 // Skip "+1" food micro-popups (would spam) but show pellets / cell absorbs.
@@ -239,7 +283,7 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                 // Player-specific: combo, hitstop, screen shake. Trauma is *only* added
                 // for player absorbs -- otherwise 50 bots all eating food at start of
                 // match pin the screen-shake to max for the entire opening frenzy.
-                const bool is_player = pred && pred->owner == watched_player_;
+                const bool is_player = pred.found && pred.owner == watched_player_;
                 if (is_player) {
                     shake_.addTrauma(std::min(0.5f, e.mass_gained * 0.012f));
                     hud_.onPlayerAbsorb(e.mass_gained, now_sec, tuning.combo_window_sec);
@@ -299,17 +343,31 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                 // death when no player cells remain in the world.
                 if (e.player != watched_player_) return;
 
-                bool any_player_alive = false;
-                for (const auto& c : world.cells()) {
-                    if (c.owner == watched_player_) {
-                        any_player_alive = true;
-                        break;
+                // "Are any of my cells still alive?" -- consult world if present,
+                // otherwise scan the snapshot (LocalClient path). DeathEvent fires
+                // for the cell that just died, so the host's next snapshot reflects
+                // its removal; that's the snap we read here. NB: this is also why
+                // the partial-death "lose a piece" path below shows a small burst
+                // only when at least one of our cells survives.
+                auto playerAlive = [&]() -> bool {
+                    if (!world.cells().empty()) {
+                        for (const auto& c : world.cells()) {
+                            if (c.owner == watched_player_) return true;
+                        }
+                        return false;
                     }
-                }
-                if (any_player_alive) {
+                    if (interp_.hasCurr()) {
+                        for (const auto& cs : interp_.curr().cells) {
+                            if (cs.owner == watched_player_) return true;
+                        }
+                    }
+                    return false;
+                };
+                if (playerAlive()) {
                     // Lost a piece but the run continues. Lightweight feedback.
-                    if (auto* killed = world.findCell(e.by)) {
-                        particles_.spawnDeathBurst(killed->pos, 60.0f,
+                    CellRef killed = lookupCell(e.by);
+                    if (killed.found) {
+                        particles_.spawnDeathBurst(killed.pos, 60.0f,
                                                    colorForPlayer(watched_player_));
                     }
                     shake_.addTrauma(0.35f);
@@ -319,9 +377,10 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                 // Full death: all player cells are gone. Phase 8 run-end sequence.
                 Vec2  pos{0.0f, 0.0f};
                 float mass = 100.0f;
-                if (auto* dead = world.findCell(watched_cell_)) {
-                    pos  = dead->pos;
-                    mass = dead->mass;
+                CellRef dead = lookupCell(watched_cell_);
+                if (dead.found) {
+                    pos  = dead.pos;
+                    mass = dead.mass;
                 }
                 particles_.spawnDeathBurst(pos, mass, colorForPlayer(watched_player_));
                 shake_.addTrauma(0.9f);
@@ -339,30 +398,30 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                 summary_.best_combo      = hud_.bestCombo();
                 summary_.time_alive_sec  = static_cast<float>(now_sec - run_start_sec_);
             } else if constexpr (std::is_same_v<T, SplitEvent>) {
-                Cell* from = world.findCell(e.from);
-                if (from) {
-                    particles_.spawnSplitPuff(from->pos, colorForPlayer(e.player));
+                CellRef from = lookupCell(e.from);
+                if (from.found) {
+                    particles_.spawnSplitPuff(from.pos, colorForPlayer(e.player));
                 }
                 // SplitEvents with INVALID_ENTITY child indicate a virus explosion.
                 // Player virus pops always audible; bot virus pops only if visible --
                 // otherwise 60 viruses + 50 bots produce a constant pop fog from off-screen.
                 if (e.into == INVALID_ENTITY) {
                     const bool is_player = e.player == watched_player_;
-                    if (is_player || (from && within_earshot(from->pos))) {
+                    if (is_player || (from.found && within_earshot(from.pos))) {
                         audio_.playVirusPop();
                     }
                 }
             } else if constexpr (std::is_same_v<T, NearMissEvent>) {
                 // hunter is the bigger cell that couldn't quite eat.
-                Cell* hunter = world.findCell(e.hunter);
-                Cell* prey   = world.findCell(e.prey);
-                bool  player_involved = false;
-                if (hunter && hunter->owner == watched_player_) {
+                CellRef hunter = lookupCell(e.hunter);
+                CellRef prey   = lookupCell(e.prey);
+                bool    player_involved = false;
+                if (hunter.found && hunter.owner == watched_player_) {
                     hud_.onPlayerNearMissPrey();
                     particles_.spawnNearMissSparks(e.at, Color{255, 220, 80, 255});
                     player_involved = true;
                 }
-                if (prey && prey->owner == watched_player_) {
+                if (prey.found && prey.owner == watched_player_) {
                     hud_.onPlayerNearMissAttacker();
                     shake_.addTrauma(0.25f);
                     particles_.spawnNearMissSparks(e.at, Color{255, 80, 80, 255});
@@ -374,8 +433,8 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                 // burst / popup / combo / chomp have already happened. This is the
                 // "slot-machine payout" layer on top. Trauma only fires for player crits
                 // (same reason as AbsorbEvent -- bot crits would shake too much).
-                Cell* pred = world.findCell(e.predator);
-                const bool is_player = pred && pred->owner == watched_player_;
+                CellRef pred = lookupCell(e.predator);
+                const bool is_player = pred.found && pred.owner == watched_player_;
                 particles_.spawnAbsorbBurst(e.at, e.mass_gained * 0.6f,
                                             Color{255, 220, 60, 255});
                 popups_.spawn(e.at, "CRIT!", Color{255, 230, 80, 255}, 32.0f);
