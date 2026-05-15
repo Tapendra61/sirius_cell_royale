@@ -1,5 +1,6 @@
 #include "raylib.h"
 
+#include "ai/BotPersonality.h"  // kFirstBotPlayerId
 #include "client/Client.h"
 #include "client/IntroScreen.h"
 #include "client/LocalLobby.h"
@@ -139,6 +140,16 @@ int runReplayHeadless(const std::string& replay_path) {
 // Window mode: Fix-Your-Timestep loop + interpolated render + dev console.
 // ---------------------------------------------------------------------------
 
+// Which transport / sim ownership model the current match is running under. The
+// dev console gates some commands by this (host-only mutations: spawn/kill,
+// reset-bots, etc. are no-ops or refused on LocalClient since the sim there is
+// just a passive renderer).
+enum class MatchMode {
+    SinglePlayer,
+    LocalHost,
+    LocalClient,
+};
+
 struct WindowState {
     cr::Simulation* sim;
     cr::Client*     client;
@@ -147,6 +158,7 @@ struct WindowState {
     bool*           replay_recording;
     cr::EntityId*   player_cell_id;
     cr::PlayerId    player_id;
+    MatchMode       mode = MatchMode::SinglePlayer;
 };
 
 void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
@@ -162,6 +174,7 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
 
     if (cmd == "help") {
         con.log("commands: spawn_food N, set_mass N, god, slowmo F, pause, comet,");
+        con.log("          bots N  -- HOST-ONLY: set bot target count (0 = clear all),");
         con.log("          reload_tuning, replay_save FILE, replay_load FILE,");
         con.log("          set_hold_to_move 0|1, set_invert_thumbs 0|1, force_touch 0|1,");
         con.log("          vol_master F, vol_sfx F, vol_music F, music_on, music_off, mute,");
@@ -237,6 +250,38 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
         // direction are still RNG-driven and deterministic.
         s.sim->triggerCometSpawn();
         con.log("comet scheduled for next tick");
+    } else if (cmd == "bots" && needs(2)) {
+        // Host-only: set the bot target count + immediately despawn excess bot
+        // cells so the change reads on screen instantly. `bots 0` clears the world
+        // of AI -- useful for testing multiplayer or just having a calm sandbox.
+        // `bots 50` brings the swarm back to full strength. Clients can't run this
+        // because they don't own the authoritative sim.
+        if (s.mode == MatchMode::LocalClient) {
+            con.log("bots: host-only command (client can't mutate the world)");
+        } else {
+            int n = std::atoi(args[1].c_str());
+            if (n < 0) n = 0;
+            // Update both the menu-owned Tuning and the Simulation's internal copy
+            // (the Sim holds its own Tuning by value, mirrored at construction).
+            s.tuning->bot_target_count = n;
+            cr::Tuning sim_tuning = s.sim->tuning();
+            sim_tuning.bot_target_count = n;
+            s.sim->setTuning(sim_tuning);
+            // Despawn existing bot cells so the change is immediate. The director
+            // will respawn up to N over the next several seconds on its own cadence.
+            auto& cells = s.sim->world().cellsMut();
+            int removed = 0;
+            for (auto it = cells.begin(); it != cells.end();) {
+                if (it->owner >= cr::ai::kFirstBotPlayerId) {
+                    it = cells.erase(it);
+                    ++removed;
+                } else {
+                    ++it;
+                }
+            }
+            con.log("bots target=" + std::to_string(n)
+                  + " (despawned " + std::to_string(removed) + " bot cells)");
+        }
     } else if (cmd == "vol_master" && needs(2)) {
         float v = static_cast<float>(std::atof(args[1].c_str()));
         s.client->audio().setMasterVolume(v);
@@ -272,16 +317,6 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
 enum class MatchOutcome {
     ReturnToMenu,   // player clicked MAIN MENU on Summary, or hit a future "leave" button
     WindowClosed,   // user closed the OS window during the match
-};
-
-// Which transport / sim ownership model this match is running under. SinglePlayer is
-// the historical default; LocalHost / LocalClient are the LAN-multiplayer skeleton
-// modes. LocalHost owns the authoritative sim and broadcasts snapshots; LocalClient
-// has no sim of its own and renders snapshots received over the wire.
-enum class MatchMode {
-    SinglePlayer,
-    LocalHost,
-    LocalClient,
 };
 
 // Optional connection inputs for LocalClient mode. Ignored for other modes. Default-
@@ -347,7 +382,7 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
     }
 
     WindowState state{&sim, &client, &live_replay, &tuning,
-                      &replay_recording, &player_cell, player};
+                      &replay_recording, &player_cell, player, mode};
     client.console().setHandler(
         [&state](const std::vector<std::string>& args) { runDevCommand(state, args); });
     client.console().log("Cell Royale v0.2.0 -- press ~ for console, 'help' for commands");

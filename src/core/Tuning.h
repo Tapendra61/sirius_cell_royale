@@ -87,7 +87,9 @@ struct Tuning {
     float comet_first_after_sec    = 45.0f;  // delay before the first comet of a match
 
     // [bots]
-    int   bot_target_count = 22;
+    // Default 0 so test sessions start with an empty world. The `bots N` dev console
+    // command (host-only in multiplayer) flips this on demand.
+    int   bot_target_count = 0;
     float bot_spawn_interval_sec = 1.5f;
     float difficulty_scaling = 0.85f;
 
