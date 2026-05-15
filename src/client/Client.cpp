@@ -666,6 +666,109 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
                               screen_w, screen_h, watched_player_);
     }
 
+    // ---- Q-ability (Mass Blast) cooldown bar, top-right corner ----
+    // Reads the player's effective blast cooldown (max blast_cooldown_until across
+    // all their cells -- the cooldown sits on whichever cell was the source) and
+    // draws a filling bar. The fill colour shifts red -> orange -> yellow as the
+    // bar approaches ready, with a steady-state bright glow when ready. Dimmed
+    // when the player's biggest cell is below the min-cast mass threshold.
+    if (phase_ == GamePhase::Playing) {
+        Tick   max_cd_until = 0;
+        float  biggest_mass = 0.0f;
+        for (const auto& c : world.cells()) {
+            if (c.owner != watched_player_) continue;
+            max_cd_until = std::max(max_cd_until, c.blast_cooldown_until);
+            biggest_mass = std::max(biggest_mass, c.mass);
+        }
+        const float cooldown_ticks = std::max(1.0f, tuning.blast_cooldown_sec * kSimHz);
+        float fill_norm = 1.0f;
+        if (max_cd_until > tick) {
+            const float remaining = static_cast<float>(max_cd_until - tick);
+            fill_norm = std::clamp(1.0f - remaining / cooldown_ticks, 0.0f, 1.0f);
+        }
+        const bool ready          = (fill_norm >= 1.0f);
+        const bool below_min_mass = (biggest_mass < tuning.blast_min_mass);
+
+        // Layout: top-right corner, clear of the combo counter and killfeed.
+        const int bar_w   = 220;
+        const int bar_h   = 18;
+        const int margin  = 16;
+        const int label_w = 24;
+        const int bar_x   = screen_w - bar_w - margin;
+        const int bar_y   = margin;
+        const int label_x = bar_x - label_w - 4;
+
+        // Backdrop + dark fill track. Slight inset border so the bar has a clean edge
+        // against busy backgrounds.
+        DrawRectangle(bar_x - 2, bar_y - 2, bar_w + 4, bar_h + 4, Color{0, 0, 0, 190});
+        DrawRectangle(bar_x, bar_y, bar_w, bar_h, Color{30, 22, 30, 230});
+
+        // Fill colour ramp: red (0%) -> orange (50%) -> yellow (90%) -> bright yellow.
+        // Linearly interpolate channels so there's no banding.
+        const float k = fill_norm;
+        Color fill_c;
+        if (k < 0.5f) {
+            const float u = k / 0.5f;
+            fill_c = Color{
+                static_cast<unsigned char>(160 + u * 95.0f),
+                static_cast<unsigned char>( 30 + u * 110.0f),
+                static_cast<unsigned char>( 30 - u * 20.0f),
+                240};
+        } else {
+            const float u = (k - 0.5f) / 0.5f;
+            fill_c = Color{255,
+                           static_cast<unsigned char>(140 + u * 95.0f),
+                           static_cast<unsigned char>( 10 + u * 60.0f),
+                           240};
+        }
+        if (below_min_mass) {
+            // De-saturate so the bar reads as "blocked, not yet useable" rather than
+            // "cooldown ticking".
+            fill_c.r = static_cast<unsigned char>(fill_c.r * 0.4f);
+            fill_c.g = static_cast<unsigned char>(fill_c.g * 0.4f);
+            fill_c.b = static_cast<unsigned char>(fill_c.b * 0.5f);
+        }
+        const int fill_px = static_cast<int>(bar_w * fill_norm);
+        DrawRectangle(bar_x, bar_y, fill_px, bar_h, fill_c);
+
+        // Ready-state glow: subtle border pulse when the ability is castable. Skipped
+        // when min-mass is the blocker -- the bar already looks dimmed in that case.
+        if (ready && !below_min_mass) {
+            const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(GetTime()) * 4.0f);
+            const unsigned char glow_a = static_cast<unsigned char>(140 + pulse * 100.0f);
+            DrawRectangleLinesEx(Rectangle{static_cast<float>(bar_x - 2),
+                                           static_cast<float>(bar_y - 2),
+                                           static_cast<float>(bar_w + 4),
+                                           static_cast<float>(bar_h + 4)},
+                                 2.0f, Color{255, 240, 150, glow_a});
+        } else {
+            DrawRectangleLinesEx(Rectangle{static_cast<float>(bar_x),
+                                           static_cast<float>(bar_y),
+                                           static_cast<float>(bar_w),
+                                           static_cast<float>(bar_h)},
+                                 1.0f, Color{200, 180, 200, 160});
+        }
+
+        // "Q" label on the left, dimmed when blocked by min mass.
+        const Color label_c = below_min_mass
+                                ? Color{160, 160, 160, 220}
+                                : Color{255, 230, 130, 235};
+        DrawText("Q", label_x, bar_y, bar_h, label_c);
+
+        // Status text inside the bar. Centred horizontally so it doesn't get cut off
+        // by the fill front edge.
+        const char* status = below_min_mass ? "NEED MASS"
+                                            : (ready ? "BLAST" : "");
+        if (status[0] != 0) {
+            const int fs   = 12;
+            const int tw   = MeasureText(status, fs);
+            const int tx   = bar_x + (bar_w - tw) / 2;
+            const int ty   = bar_y + (bar_h - fs) / 2;
+            DrawText(status, tx + 1, ty + 1, fs, Color{0, 0, 0, 180});
+            DrawText(status, tx,     ty,     fs, Color{255, 255, 255, 230});
+        }
+    }
+
     // Crashing-comet HUD banner. Big alarm text centered horizontally, just below the
     // top of the screen. Fades in over the first 0.3s of the warning, holds, then
     // fades out as comet_banner_remaining_ approaches zero.

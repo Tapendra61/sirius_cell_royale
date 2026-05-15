@@ -92,6 +92,8 @@ SummaryAction Hud::render(int screen_w, int screen_h, const Cell* watched, Tick 
     }
 
     // ----- Combo counter (only when alive / playing) -----
+    // Y offset clears the Q-ability cooldown bar (drawn by Client::render at y=16,
+    // height 18, so it ends at ~y=34). 46 leaves a few pixels of slack.
     if (phase == GamePhase::Playing && combo_count_ >= 2) {
         char buf[16];
         std::snprintf(buf, sizeof(buf), "x%d", combo_count_);
@@ -99,10 +101,11 @@ SummaryAction Hud::render(int screen_w, int screen_h, const Cell* watched, Tick 
         int extra     = std::min(28, combo_count_ * 2);
         int fs        = sc(base_size + extra + static_cast<int>(combo_flash_ * 12.0f));
         int tw        = MeasureText(buf, fs);
+        constexpr int kComboY = 46;
         Color shadow{0, 0, 0, 180};
-        DrawText(buf, screen_w - tw - 22 + 2, 22 + 2, fs, shadow);
+        DrawText(buf, screen_w - tw - 22 + 2, kComboY + 2, fs, shadow);
         unsigned char g = static_cast<unsigned char>(std::max(80, 220 - combo_count_ * 10));
-        DrawText(buf, screen_w - tw - 22, 22, fs, Color{255, g, 60, 255});
+        DrawText(buf, screen_w - tw - 22, kComboY, fs, Color{255, g, 60, 255});
     }
 
     // ----- Killfeed (top-right, under the combo counter) -----
@@ -364,11 +367,10 @@ void Hud::renderKillfeed(int sw, int /*sh*/, double now_sec) const {
     constexpr int kMargin     = 22;
     constexpr int kArrowFontSize = 14;
     constexpr int kNameFontSize  = 16;
-    // Top Y: clear the combo counter's max footprint at scale 1.30 (~y=22 + 83px
-    // text) regardless of whether combo is showing -- the killfeed shouldn't shift
-    // around when combo enters/leaves visibility, and the small slack keeps the two
-    // from ever touching.
-    int y = 120;
+    // Top Y: clear the Q-ability bar (y=16, height=18) AND the combo counter's max
+    // footprint at scale 1.30 (combo y=46 + ~99px text = ~145). 160 leaves slack
+    // and keeps the killfeed from shifting when combo enters/leaves visibility.
+    int y = 160;
 
     for (int i = 0; i < recent_kills_count_; ++i) {
         const KillfeedEntry& e = recent_kills_[i];
