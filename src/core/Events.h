@@ -58,7 +58,24 @@ struct BlastEvent {
     float    radius = 0.0f;
 };
 
+// World-event comet: fires once when the telegraph starts (so the client can play
+// the warning stinger + HUD text), again when the comet becomes active, and once more
+// when it leaves the map (in case the client wants a fadeout cue). The same struct
+// covers all three via `phase`.
+struct CometEvent {
+    enum Phase : uint8_t {
+        Telegraph = 0, // warning window started
+        Active    = 1, // comet became visible / dangerous
+        Despawn   = 2, // left the world
+    };
+    EntityId id    = INVALID_ENTITY;
+    Phase    phase = Phase::Telegraph;
+    Vec2     at;             // current comet position (or telegraph start)
+    Vec2     dir;             // unit direction (zero during Despawn)
+};
+
 using GameEvent = std::variant<AbsorbEvent, DeathEvent, SplitEvent, CritEvent,
-                               NearMissEvent, PickupCollectedEvent, BlastEvent>;
+                               NearMissEvent, PickupCollectedEvent, BlastEvent,
+                               CometEvent>;
 
 } // namespace cr

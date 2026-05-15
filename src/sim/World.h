@@ -89,6 +89,28 @@ struct BlackHole {
     float    pull_radius = 0.0f; // outer reach where the pull starts
 };
 
+// World-event comet. Spawned periodically by the world upkeep step. Two-phase:
+//   1) Telegraph: from `spawned_at` to `start_at` the comet is "incoming" -- a glowing
+//      path line is drawn on the world / minimap but the comet itself isn't yet visible
+//      and doesn't kill anything. Gives the player a window to dodge.
+//   2) Active: from `start_at` onward the comet flies in a straight line from one edge
+//      of the map to the other, with `vel` set so it exits in `flight_sec` seconds. Any
+//      cell within `radius` of `pos` dies on contact.
+// Despawns automatically when `pos` leaves the world bounds + a margin.
+//
+// The path endpoints (telegraph_start, telegraph_end) are stored so the renderer can
+// draw the predicted line without re-deriving it from pos+vel.
+struct Comet {
+    EntityId id              = INVALID_ENTITY;
+    Vec2     pos;
+    Vec2     vel;
+    float    radius          = 0.0f;
+    Tick     spawned_at      = 0;   // sim tick when the telegraph started
+    Tick     start_at        = 0;   // sim tick when the comet becomes active
+    Vec2     telegraph_start;       // world-edge entry point
+    Vec2     telegraph_end;         // world-edge exit point (predicted from vel)
+};
+
 // Uniform-grid spatial index. Bucket size = 2 * max expected entity radius (~400px default).
 // Stores VECTOR INDICES (not entity ids) so callers can dereference directly without an
 // id-to-index lookup. World owns three separate grids (one per type) so queries return
@@ -126,29 +148,35 @@ public:
     EntityId spawnVirus(Vec2 pos, float mass);
     EntityId spawnPickup(Vec2 pos, PickupKind kind);
     EntityId spawnBlackHole(Vec2 pos, float radius, float pull_radius);
+    EntityId spawnComet(Vec2 pos, Vec2 vel, float radius, Tick spawned_at, Tick start_at,
+                        Vec2 telegraph_start, Vec2 telegraph_end);
 
     Cell*            findCell(EntityId id);
     Food*            findFood(EntityId id);
     Virus*           findVirus(EntityId id);
     Pickup*          findPickup(EntityId id);
     BlackHole*       findBlackHole(EntityId id);
+    Comet*           findComet(EntityId id);
     const Cell*      findCell(EntityId id) const;
     const Food*      findFood(EntityId id) const;
     const Virus*     findVirus(EntityId id) const;
     const Pickup*    findPickup(EntityId id) const;
     const BlackHole* findBlackHole(EntityId id) const;
+    const Comet*     findComet(EntityId id) const;
 
     const std::vector<Cell>&      cells()      const { return cells_; }
     const std::vector<Food>&      food()       const { return food_; }
     const std::vector<Virus>&     viruses()    const { return viruses_; }
     const std::vector<Pickup>&    pickups()    const { return pickups_; }
     const std::vector<BlackHole>& blackholes() const { return blackholes_; }
+    const std::vector<Comet>&     comets()     const { return comets_; }
 
     std::vector<Cell>&      cellsMut()      { return cells_; }
     std::vector<Food>&      foodMut()       { return food_; }
     std::vector<Virus>&     virusesMut()    { return viruses_; }
     std::vector<Pickup>&    pickupsMut()    { return pickups_; }
     std::vector<BlackHole>& blackholesMut() { return blackholes_; }
+    std::vector<Comet>&     cometsMut()     { return comets_; }
 
     int playerCellCount(PlayerId p) const;
 
@@ -181,6 +209,7 @@ private:
     std::vector<Virus>     viruses_;
     std::vector<Pickup>    pickups_;
     std::vector<BlackHole> blackholes_;
+    std::vector<Comet>     comets_; // tiny vector (0..1 typically); no spatial grid
     SpatialGrid            cells_grid_;
     SpatialGrid            foods_grid_;
     SpatialGrid            viruses_grid_;

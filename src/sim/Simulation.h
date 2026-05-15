@@ -51,6 +51,9 @@ private:
     ai::BotDirector        director_;
     std::vector<Command>   pending_;
     std::vector<GameEvent> events_;
+    // Tick at which the next crashing-comet world event should fire. Owned here (not
+    // in Rules) so processComets stays stateless. Initialised in the constructor.
+    Tick                   next_comet_spawn_tick_ = 0;
 };
 
 } // namespace cr

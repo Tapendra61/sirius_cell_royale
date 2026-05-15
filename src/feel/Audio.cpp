@@ -118,6 +118,45 @@ float gBlast(float t) {
     return (low * env_low + mid + crack) * 0.85f;
 }
 
+float gCometWarn(float t) {
+    // Crashing-comet telegraph alarm. Three short alarm chirps over 0.9 seconds at
+    // ~880 Hz, layered with a rising-pitch low-frequency rumble so it reads as "big
+    // thing coming". The chirps fall off in volume so the third is the soft one --
+    // your eye / minimap should pick up the path line by then.
+    if (t > 0.95f) return 0.0f;
+    // Three chirps at 0.00, 0.30, 0.60 with 0.12s envelope each.
+    float chirps = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+        float dt = t - i * 0.30f;
+        if (dt < 0.0f || dt > 0.12f) continue;
+        float env = std::exp(-dt * 16.0f);
+        chirps += std::sin(dt * 880.0f * kTwoPi) * env
+                * (1.0f - i * 0.18f); // softer each repeat
+    }
+    // Rising-pitch rumble underneath: 80 Hz -> 130 Hz over the full duration.
+    float rumble_freq = 80.0f + t * 55.0f;
+    float rumble_env  = std::min(1.0f, t * 4.0f) * std::exp(-(t - 0.25f) * 1.6f);
+    float rumble = std::sin(t * rumble_freq * kTwoPi) * rumble_env * 0.45f;
+    return (chirps * 0.55f + rumble) * 0.85f;
+}
+
+float gCometStrike(float t) {
+    // The "comet now active" cue. Whoosh of falling noise + a sharp transient at t=0.
+    // 0.55 seconds long; first 0.04s is the impact crack, the rest is the wind.
+    if (t > 0.55f) return 0.0f;
+    float crack_env = (t < 0.040f) ? (1.0f - t / 0.040f) : 0.0f;
+    float crack     = std::sin(t * 2400.0f * kTwoPi) * crack_env * 0.55f;
+    // Pseudo-noise via fast frequency modulation -- cheap "whoosh".
+    float noise_freq = 320.0f + 180.0f * std::sin(t * 47.0f);
+    float noise_env  = std::exp(-t * 3.5f);
+    float noise = std::sin(t * noise_freq * kTwoPi) * noise_env * 0.35f;
+    // Falling pitch tail.
+    float tail_freq = 200.0f * std::exp(-t * 2.5f);
+    float tail_env  = std::exp(-t * 4.0f);
+    float tail = std::sin(t * tail_freq * kTwoPi) * tail_env * 0.45f;
+    return (crack + noise + tail) * 0.9f;
+}
+
 float gCrit(float t) {
     // Rising harmonics sting (original design, dropped one octave). Two sine partials
     // sweep up over the duration with a slow exp decay -- same character as the first
@@ -175,6 +214,8 @@ AudioSystem::AudioSystem() {
     death_       = generateSound(450,   gDeath);
     near_miss_   = generateSound(180,   gNearMiss);
     crit_        = generateSound(320,   gCrit);
+    comet_warn_   = generateSound(950,  gCometWarn);
+    comet_strike_ = generateSound(560,  gCometStrike);
     music_sound_ = generateSound(16000, gMusicPad); // 16 seconds, seamless
 
     applyVolumes();
@@ -196,6 +237,8 @@ AudioSystem::~AudioSystem() {
     UnloadSound(death_);
     UnloadSound(near_miss_);
     UnloadSound(crit_);
+    UnloadSound(comet_warn_);
+    UnloadSound(comet_strike_);
     UnloadSound(music_sound_);
     CloseAudioDevice();
 }
@@ -322,6 +365,18 @@ void AudioSystem::playCrit() {
     if (!device_ready_) return;
     SetSoundVolume(crit_, 1.0f * sfx_);
     PlaySound(crit_);
+}
+
+void AudioSystem::playCometWarn() {
+    if (!device_ready_) return;
+    SetSoundVolume(comet_warn_, 0.95f * sfx_);
+    PlaySound(comet_warn_);
+}
+
+void AudioSystem::playCometStrike() {
+    if (!device_ready_) return;
+    SetSoundVolume(comet_strike_, 1.0f * sfx_);
+    PlaySound(comet_strike_);
 }
 
 } // namespace cr

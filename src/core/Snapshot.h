@@ -82,6 +82,22 @@ struct BlackHoleSnap {
     bool operator==(const BlackHoleSnap&) const = default;
 };
 
+// Periodic world-event comet. `telegraph_norm` is 0..1 across the warning window: 0 at
+// spawn, 1 when the comet becomes active (and then stays 1 until despawn). The renderer
+// uses telegraph_norm < 1 to draw the predicted path line + fade the comet's own
+// visibility in.
+struct CometSnap {
+    EntityId id     = INVALID_ENTITY;
+    Vec2     pos;
+    Vec2     vel;
+    float    radius = 0.0f;
+    Vec2     telegraph_start;
+    Vec2     telegraph_end;
+    float    telegraph_norm = 1.0f; // 0..1; 1 = active (no longer telegraphed)
+
+    bool operator==(const CometSnap&) const = default;
+};
+
 struct Snapshot {
     Tick                       tick      = 0;
     uint64_t                   rng_state = 0;
@@ -90,6 +106,7 @@ struct Snapshot {
     std::vector<VirusSnap>     viruses;
     std::vector<PickupSnap>    pickups;
     std::vector<BlackHoleSnap> blackholes;
+    std::vector<CometSnap>     comets;
 
     bool operator==(const Snapshot&) const = default;
 };

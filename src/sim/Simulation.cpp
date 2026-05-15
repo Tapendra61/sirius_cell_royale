@@ -12,6 +12,10 @@ Simulation::Simulation(uint64_t seed, Tuning tuning)
     : world_(seed, tuning.world_width, tuning.world_height),
       tuning_(std::move(tuning)),
       director_(seed) {
+    // Schedule the first crashing-comet event. Subsequent reschedules happen inside
+    // processComets after each spawn. Using a concrete tick (not a sentinel) keeps
+    // the cadence deterministic across save/load.
+    next_comet_spawn_tick_ = secondsToTicks(tuning_.comet_first_after_sec);
     // Initial food: tiered roll so the world spawns with a mix of common/uncommon/rare/epic.
     for (int i = 0; i < tuning_.food_target; ++i) {
         Vec2 pos{
@@ -109,8 +113,11 @@ void Simulation::tick(float dt) {
     //    Magnet pulls write velocity onto nearby food before stepFood integrates it.
     //    Black-hole pulls write velocity onto cells before stepCells integrates them;
     //    the same function also handles entry, draining stamina, and exit.
+    //    Comets move + kill on contact + reschedule themselves; runs after BH so a cell
+    //    that just got pinned into a black hole is safe (hiding cells are immune).
     rules::applyMagnetPulls(world_, tuning_);
     rules::processBlackHoles(world_, tuning_, dt);
+    rules::processComets(world_, tuning_, dt, next_comet_spawn_tick_, events_);
     rules::stepCells(world_, tuning_, dt);
     rules::stepFood(world_, tuning_, dt);
     rules::applySoftBounds(world_, tuning_);
@@ -288,6 +295,27 @@ Snapshot Simulation::buildSnapshot() const {
             if (c.hiding_in == b.id) { ++occ; if (occ == 255) break; }
         }
         s.blackholes.push_back(BlackHoleSnap{b.id, b.pos, b.radius, b.pull_radius, occ});
+    }
+
+    // Comets: 0..1 typically. telegraph_norm is 0 at spawn, 1 at start_at (and stays 1).
+    s.comets.reserve(world_.comets().size());
+    for (const auto& c : world_.comets()) {
+        CometSnap cs;
+        cs.id              = c.id;
+        cs.pos             = c.pos;
+        cs.vel             = c.vel;
+        cs.radius          = c.radius;
+        cs.telegraph_start = c.telegraph_start;
+        cs.telegraph_end   = c.telegraph_end;
+        if (c.start_at > now) {
+            const float total = std::max(1.0f,
+                static_cast<float>(c.start_at - c.spawned_at));
+            const float el    = static_cast<float>(now - c.spawned_at);
+            cs.telegraph_norm = std::clamp(el / total, 0.0f, 1.0f);
+        } else {
+            cs.telegraph_norm = 1.0f;
+        }
+        s.comets.push_back(cs);
     }
     return s;
 }

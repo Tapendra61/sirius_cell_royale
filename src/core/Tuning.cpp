@@ -93,6 +93,13 @@ bool LoadTuningFromFile(Tuning& out, const std::string& path) {
     readFloat(ini, "blackholes", "stamina_refill_sec",    out.blackhole_stamina_refill_sec);
     readFloat(ini, "blackholes", "transition_sec",        out.blackhole_transition_sec);
 
+    readFloat(ini, "comet", "event_interval_sec", out.comet_event_interval_sec);
+    readFloat(ini, "comet", "interval_jitter",    out.comet_interval_jitter);
+    readFloat(ini, "comet", "telegraph_sec",      out.comet_telegraph_sec);
+    readFloat(ini, "comet", "radius",             out.comet_radius);
+    readFloat(ini, "comet", "speed",              out.comet_speed);
+    readFloat(ini, "comet", "first_after_sec",    out.comet_first_after_sec);
+
     readInt  (ini, "bots", "target_count",            out.bot_target_count);
     readFloat(ini, "bots", "spawn_interval_sec",      out.bot_spawn_interval_sec);
     readFloat(ini, "bots", "difficulty_scaling",      out.difficulty_scaling);
@@ -129,6 +136,10 @@ void PrintTuning(const Tuning& t) {
     std::printf("  [feel]    shake_max=%.1f  hitstop>%.0f@%.2fs  particles=%d/%d\n",
                 t.screen_shake_max, t.hitstop_threshold_mass, t.hitstop_duration_sec,
                 t.particle_pool_size_desktop, t.particle_pool_size_mobile);
+    std::printf("  [comet]   every %.0fs (+/-%.0f%%, first @ %.0fs)  warn=%.1fs  r=%.0f  speed=%.0f\n",
+                t.comet_event_interval_sec, t.comet_interval_jitter * 100.0f,
+                t.comet_first_after_sec, t.comet_telegraph_sec,
+                t.comet_radius, t.comet_speed);
 }
 
 } // namespace cr

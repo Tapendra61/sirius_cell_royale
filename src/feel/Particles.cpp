@@ -253,4 +253,50 @@ void ParticleSystem::spawnBlackHoleBubble(Vec2 center, float ring_radius) {
           /*accel=*/accel);
 }
 
+void ParticleSystem::spawnCometTrail(Vec2 pos, Vec2 vel, float radius) {
+    // Compute the unit "backwards" direction once so the trail streams behind the
+    // head rather than around it.
+    const float speed = std::sqrt(vel.x * vel.x + vel.y * vel.y);
+    Vec2  back        = (speed > 1.0f)
+                         ? Vec2{-vel.x / speed, -vel.y / speed}
+                         : Vec2{-1.0f, 0.0f};
+    // Perp vector for lateral scatter (rotate `back` 90 degrees).
+    const Vec2 perp{-back.y, back.x};
+
+    // Spawn a small clump per call -- caller invokes once per frame, so 4-6 sparks
+    // per frame at 60fps = a thick fiery trail without saturating the pool.
+    constexpr int kPerCall = 5;
+    for (int i = 0; i < kPerCall; ++i) {
+        // Drop the emit point a little behind the head so the trail "starts" at the
+        // back of the fireball and doesn't fight the shader's edge noise.
+        const float drop_back = radius * frand(0.55f, 0.85f);
+        const float lateral   = radius * frand(-0.45f, 0.45f);
+        Vec2 spawn_pos{pos.x + back.x * drop_back + perp.x * lateral,
+                       pos.y + back.y * drop_back + perp.y * lateral};
+
+        // Particle drifts backward at a fraction of the comet's own speed plus a
+        // small lateral component so the trail visibly billows.
+        const float back_speed_scale = frand(0.25f, 0.55f);
+        const float side_speed       = frand(-80.0f, 80.0f);
+        Vec2 v{back.x * speed * back_speed_scale + perp.x * side_speed,
+               back.y * speed * back_speed_scale + perp.y * side_speed};
+
+        // Color: blazing yellow-orange at birth, deep red-grey at death. Random
+        // brightness per spark gives the trail a flickery texture.
+        const float bright = frand(0.85f, 1.0f);
+        Color c_start{
+            static_cast<unsigned char>(255 * bright),
+            static_cast<unsigned char>((180 + frand(-25.0f, 25.0f)) * bright),
+            static_cast<unsigned char>(( 60 + frand(-20.0f, 20.0f)) * bright),
+            235};
+        Color c_end{40, 8, 4, 0};
+
+        const float lifetime = frand(0.40f, 0.80f);
+        const float size0    = radius * frand(0.18f, 0.32f);
+        const float size1    = radius * frand(0.02f, 0.06f);
+
+        spawn(spawn_pos, v, lifetime, c_start, c_end, size0, size1);
+    }
+}
+
 } // namespace cr

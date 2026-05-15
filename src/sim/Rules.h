@@ -43,6 +43,19 @@ void processBlackHoles(World& world, const Tuning& t, float dt);
 // where an auto-ejected cell instantly gets sucked back in).
 constexpr float kBlackHoleEntryFloor = 0.20f;
 
+// Periodic crashing-comet world event. Spawns based on internal cadence (see
+// Tuning::comet_event_interval_sec). The function:
+//   1. Steps existing comets forward and despawns any that left the world.
+//   2. Applies kill-on-touch to cells inside an active comet's radius. The cell is
+//      marked dead via DeathEvent with `predator_player = INVALID_PLAYER` so the
+//      killfeed can label it "COMET" instead of looking up a player.
+//   3. Spawns a new comet when the cadence timer fires.
+// Caller supplies `next_spawn_tick_inout` (-1 sentinel = "not initialised yet") so the
+// schedule is owned by Simulation, not Rules (keeps Rules stateless).
+void processComets(World& world, const Tuning& t, float dt,
+                   Tick& next_spawn_tick_inout,
+                   std::vector<GameEvent>& events);
+
 // Triggered by commands
 void doSplit(World& world, PlayerId player, const Tuning& t, std::vector<GameEvent>& events);
 void doEject(World& world, PlayerId player, const Tuning& t);

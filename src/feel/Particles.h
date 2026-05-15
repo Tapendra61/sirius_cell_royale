@@ -40,6 +40,13 @@ public:
     // 4th-ability (Mass Blast).
     void spawnBlastBurst(Vec2 center, float radius, Color color);
 
+    // Comet fire trail. Called continuously each frame while a crashing-comet world
+    // event is active. Spawns 4-6 short-lived embers at `pos` with velocity drifting
+    // *opposite* to `vel` (so the trail streams out behind the comet) plus random
+    // lateral spread. Colors fade orange -> red -> dark grey, sizes shrink. Cheap
+    // per-call (handful of particles); caller drives the spawn cadence.
+    void spawnCometTrail(Vec2 pos, Vec2 vel, float radius);
+
     size_t poolSize() const { return pool_size_; }
     size_t liveCount() const;
 

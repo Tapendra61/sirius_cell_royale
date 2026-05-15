@@ -29,6 +29,8 @@ public:
     void playPlayerDeath();
     void playNearMiss();
     void playCrit();
+    void playCometWarn();   // low rumble + alarm chirp -- world-event telegraph
+    void playCometStrike(); // sharper roar when the comet becomes active
 
     // Procedural ambient music. Generated as a 16-second seamless loop at ctor time;
     // playMusic starts the loop, stopMusic halts it, update() re-triggers when the
@@ -74,6 +76,8 @@ private:
     Sound death_{};
     Sound near_miss_{};
     Sound crit_{};
+    Sound comet_warn_{};
+    Sound comet_strike_{};
     Sound music_sound_{};
 };
 

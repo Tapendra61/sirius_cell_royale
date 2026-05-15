@@ -76,6 +76,16 @@ struct Tuning {
     float blackhole_stamina_refill_sec = 15.0f;  // 0 -> 1 while outside
     float blackhole_transition_sec     = 0.35f;  // entry / exit animation duration
 
+    // [comet] -- periodic "world event" flying across the map. Telegraphed for a few
+    // seconds with a glowing path line so the player can dodge, then sweeps across in
+    // a straight line, killing every cell it touches. Despawns when it exits the world.
+    float comet_event_interval_sec = 75.0f;  // mean time between comet spawns
+    float comet_interval_jitter    = 0.30f;  // +/- this fraction of the interval (RNG)
+    float comet_telegraph_sec      = 3.0f;   // warning window before the strike
+    float comet_radius             = 220.0f; // kill radius / visual half-size
+    float comet_speed              = 900.0f; // world units per second
+    float comet_first_after_sec    = 45.0f;  // delay before the first comet of a match
+
     // [bots]
     int   bot_target_count = 22;
     float bot_spawn_interval_sec = 1.5f;

@@ -5,6 +5,7 @@
 #include "raylib.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <utility>
@@ -269,11 +270,18 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                         (e.predator_player == watched_player_)
                      || (e.player          == watched_player_);
                     KillfeedEntry kf;
-                    fmtName(kf.predator, sizeof(kf.predator),
-                            e.predator_player, e.predator_personality);
-                    fmtName(kf.prey,     sizeof(kf.prey),
-                            e.player,          e.prey_personality);
-                    kf.pred_color      = colorForPlayer(e.predator_player);
+                    if (e.predator_player == INVALID_PLAYER) {
+                        // Environmental death (e.g. crashing comet). Show a distinct
+                        // label + a hot orange tint instead of a per-player color.
+                        std::snprintf(kf.predator, sizeof(kf.predator), "COMET");
+                        kf.pred_color = Color{255, 140, 60, 255};
+                    } else {
+                        fmtName(kf.predator, sizeof(kf.predator),
+                                e.predator_player, e.predator_personality);
+                        kf.pred_color = colorForPlayer(e.predator_player);
+                    }
+                    fmtName(kf.prey, sizeof(kf.prey),
+                            e.player, e.prey_personality);
                     kf.prey_color      = colorForPlayer(e.player);
                     kf.spawned_sec     = now_sec;
                     kf.involves_player = involves_player;
@@ -411,6 +419,25 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                 // without needing a new procedural sound.
                 audio_.playCrit();
                 chroma_.addShift(0.25f);
+            } else if constexpr (std::is_same_v<T, CometEvent>) {
+                // World event: a crashing comet sweeps across the map. Three phases
+                // signal different feedback. Telegraph: warning sound + HUD banner.
+                // Active: heavier roar + brief chroma flash. Despawn: no-op (the
+                // particles already faded).
+                switch (e.phase) {
+                    case CometEvent::Telegraph:
+                        audio_.playCometWarn();
+                        comet_banner_remaining_ = kCometBannerSec;
+                        break;
+                    case CometEvent::Active:
+                        audio_.playCometStrike();
+                        chroma_.addShift(0.30f);
+                        // Tiny screen shake to sell the impact moment world-wide.
+                        shake_.addTrauma(0.20f);
+                        break;
+                    case CometEvent::Despawn:
+                        break;
+                }
             }
         }, ev);
     }
@@ -425,6 +452,11 @@ void Client::updateFrame(float frame_dt, double now_sec, const Tuning& tuning) {
     hud_.update(frame_dt, now_sec, tuning.combo_window_sec);
     audio_.update();
 
+    // Crashing-comet banner countdown. Pure visual; doesn't affect the sim.
+    if (comet_banner_remaining_ > 0.0f) {
+        comet_banner_remaining_ = std::max(0.0f, comet_banner_remaining_ - frame_dt);
+    }
+
     // Continuous black-hole bubble particle spray. Each frame, each hole emits one
     // dark-red bubble at a random point on its pull-ring edge with velocity toward
     // the centre. Purely visual -- particles_ has its own RNG so this doesn't touch
@@ -432,6 +464,13 @@ void Client::updateFrame(float frame_dt, double now_sec, const Tuning& tuning) {
     if (interp_.hasCurr()) {
         for (const auto& b : interp_.curr().blackholes) {
             particles_.spawnBlackHoleBubble(b.pos, b.pull_radius);
+        }
+        // Crashing-comet trail. Same per-frame cadence as the black-hole bubbles;
+        // only active comets (telegraph_norm >= 1.0) emit sparks. Telegraphed comets
+        // are dormant -- their warning line is enough.
+        for (const auto& cm : interp_.curr().comets) {
+            if (cm.telegraph_norm < 1.0f) continue;
+            particles_.spawnCometTrail(cm.pos, cm.vel, cm.radius);
         }
     }
 
@@ -624,6 +663,34 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         renderer_.drawMinimap(interp_, world.width(), world.height(),
                               view_min, view_max,
                               screen_w, screen_h, watched_player_);
+    }
+
+    // Crashing-comet HUD banner. Big alarm text centered horizontally, just below the
+    // top of the screen. Fades in over the first 0.3s of the warning, holds, then
+    // fades out as comet_banner_remaining_ approaches zero.
+    if (comet_banner_remaining_ > 0.0f) {
+        const float age   = kCometBannerSec - comet_banner_remaining_;
+        const float fadeI = std::min(1.0f, age / 0.30f);                       // fade in
+        const float fadeO = std::min(1.0f, comet_banner_remaining_ / 0.60f);   // fade out
+        const float a01   = std::min(fadeI, fadeO);
+        const unsigned char a_text = static_cast<unsigned char>(a01 * 250.0f);
+        const unsigned char a_bg   = static_cast<unsigned char>(a01 * 130.0f);
+        // Pulsing color: orange -> yellow ramp.
+        const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(GetTime()) * 8.0f);
+        const Color tint{255,
+                         static_cast<unsigned char>(140 + pulse * 80.0f),
+                         static_cast<unsigned char>( 40 + pulse * 30.0f),
+                         a_text};
+        const char* msg  = "!! COMET INCOMING !!";
+        const int   fs   = 44;
+        const int   tw   = MeasureText(msg, fs);
+        const int   x    = screen_w / 2 - tw / 2;
+        const int   y    = 110;
+        // Dark backdrop strip behind the text for readability against bright worlds.
+        DrawRectangle(0, y - 12, screen_w, fs + 24, Color{40, 10, 0, a_bg});
+        // Drop shadow + main text.
+        DrawText(msg, x + 2, y + 2, fs, Color{0, 0, 0, a_text});
+        DrawText(msg, x,     y,     fs, tint);
     }
 
     const Cell* watched = world.findCell(watched_cell_);

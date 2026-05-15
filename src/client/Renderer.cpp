@@ -208,7 +208,88 @@ struct BlackHoleGfx {
     bool       failed      = false;
 };
 
+// Procedural fire-ball shader for the crashing-comet head. Two layers of FBM noise
+// give the surface a flickering plasma look; radial gradient blends a white-hot core
+// through yellow, orange, and red, with the edge dissolving into the alpha channel
+// for the soft halo. Trail rendering is handled separately by the particle system --
+// keeps this shader focused on a single quad covering the comet's head.
+const char* const kCometHeadFS = R"GLSL(
+#version 330
+
+in  vec2 fragTexCoord;
+out vec4 finalColor;
+
+uniform float u_time;
+uniform float u_telegraph; // 0..1; <1 dims the comet during the telegraph window
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+float fbm(vec2 p) {
+    float s = 0.0, a = 0.5;
+    for (int i = 0; i < 5; ++i) {
+        s += a * vnoise(p);
+        p *= 2.02;
+        a *= 0.5;
+    }
+    return s;
+}
+
+void main() {
+    // uv ranges -1..1 across the quad; r is distance from centre.
+    vec2  uv = fragTexCoord * 2.0 - 1.0;
+    float r  = length(uv);
+    if (r > 1.0) discard;
+
+    // Two slightly offset noise layers, animated in opposite directions so the surface
+    // boils rather than scrolls. The +uv*3 frequency gives ~3 plume cells across the
+    // visible disc.
+    vec2  np1 = uv * 3.0 + vec2( u_time * 1.3, -u_time * 0.9);
+    vec2  np2 = uv * 5.0 + vec2(-u_time * 0.7,  u_time * 1.1);
+    float n   = fbm(np1) * 0.6 + fbm(np2) * 0.4;
+
+    // Radial thresholds, perturbed by noise so the silhouette ripples like flame.
+    float core_t = 0.18 + 0.04 * n;
+    float halo_t = 0.55 + 0.18 * n;
+
+    float core  = smoothstep(core_t, 0.0, r);            // bright white centre
+    float mid   = smoothstep(halo_t, core_t, r);         // yellow band
+    float outer = smoothstep(1.0,    halo_t, r) * (0.55 + 0.6 * n); // wispy red tendrils
+
+    vec3 col_core   = vec3(1.0, 1.0, 0.92);
+    vec3 col_mid    = vec3(1.0, 0.72, 0.22);
+    vec3 col_outer  = vec3(1.0, 0.32, 0.06);
+
+    vec3  rgb = col_core * core + col_mid * mid + col_outer * outer;
+    float a   = core + mid * 0.95 + outer * 0.78;
+    a = clamp(a, 0.0, 1.0);
+
+    // Telegraph fade-in: during the warning window the comet is faint and translucent.
+    a *= u_telegraph;
+
+    finalColor = vec4(rgb, a);
+}
+)GLSL";
+
+struct CometGfx {
+    Shader    shader{};
+    Texture2D white{};
+    int       loc_time      = -1;
+    int       loc_telegraph = -1;
+    bool      initialized   = false;
+    bool      failed        = false;
+};
+
 BlackHoleGfx g_bh_gfx;
+CometGfx     g_comet_gfx;
 
 void ensureBlackHoleGfx() {
     if (g_bh_gfx.initialized || g_bh_gfx.failed) return;
@@ -244,6 +325,107 @@ void unloadBlackHoleGfx() {
         // Shader compile failed but still left an id behind on some drivers; nuke it.
         UnloadShader(g_bh_gfx.shader);
         g_bh_gfx = BlackHoleGfx{};
+    }
+}
+
+void ensureCometGfx() {
+    if (g_comet_gfx.initialized || g_comet_gfx.failed) return;
+    g_comet_gfx.shader = LoadShaderFromMemory(nullptr, kCometHeadFS);
+    if (g_comet_gfx.shader.id == 0) {
+        g_comet_gfx.failed = true;
+        return;
+    }
+    g_comet_gfx.loc_time      = GetShaderLocation(g_comet_gfx.shader, "u_time");
+    g_comet_gfx.loc_telegraph = GetShaderLocation(g_comet_gfx.shader, "u_telegraph");
+
+    Image img = GenImageColor(1, 1, WHITE);
+    g_comet_gfx.white = LoadTextureFromImage(img);
+    UnloadImage(img);
+
+    g_comet_gfx.initialized = true;
+}
+
+void unloadCometGfx() {
+    if (g_comet_gfx.initialized) {
+        UnloadTexture(g_comet_gfx.white);
+        UnloadShader(g_comet_gfx.shader);
+        g_comet_gfx = CometGfx{};
+    } else if (g_comet_gfx.failed && g_comet_gfx.shader.id != 0) {
+        UnloadShader(g_comet_gfx.shader);
+        g_comet_gfx = CometGfx{};
+    }
+}
+
+// Render a single comet -- telegraph line + fire head + (if active) screen-space halo.
+// Called from drawWorld inside BeginMode2D so coordinates are in world space. The
+// renderer applies a faint glow ring under the head via additive blending so the
+// comet still pops over the dark background once the shader pass dims with distance.
+void drawComet(const CometSnap& cm, double now_sec) {
+    ensureCometGfx();
+    const float t = static_cast<float>(now_sec);
+
+    // ---- Telegraph line ----
+    // Drawn during the warning window only (telegraph_norm < 1). Two layers: a thick
+    // soft glow underneath, a thin sharp line on top, both pulsing in intensity.
+    if (cm.telegraph_norm < 1.0f) {
+        float pulse = 0.5f + 0.5f * std::sin(t * 9.0f);
+        // Fade IN over the warning so it doesn't suddenly disappear at the strike.
+        float vis   = std::clamp(cm.telegraph_norm * 1.3f, 0.0f, 1.0f);
+        unsigned char a_glow = static_cast<unsigned char>(60 + pulse * 90 * vis);
+        unsigned char a_line = static_cast<unsigned char>(140 + pulse * 90 * vis);
+        Vector2 a{cm.telegraph_start.x, cm.telegraph_start.y};
+        Vector2 b{cm.telegraph_end.x,   cm.telegraph_end.y};
+        DrawLineEx(a, b, 18.0f, Color{255, 120, 40, a_glow});
+        DrawLineEx(a, b,  4.0f, Color{255, 220, 130, a_line});
+        // Strike marker at the impact origin: pulsing crosshair on the entry edge.
+        float ring_r = cm.radius * (0.6f + 0.25f * pulse);
+        DrawCircleLinesV(a, ring_r, Color{255, 180, 80,
+                                          static_cast<unsigned char>(180 * vis)});
+    }
+
+    // ---- Head ----
+    // The shader does the heavy lifting. We pre-multiply telegraph_norm so the comet
+    // fades IN during the warning (faintly visible at telegraph_start) and is fully
+    // opaque while active.
+    const Vector2 c{cm.pos.x, cm.pos.y};
+    const float   draw_r = cm.radius * 1.35f; // overshoot so the noisy edge isn't clipped
+    if (g_comet_gfx.initialized) {
+        const Rectangle dst{c.x - draw_r, c.y - draw_r, draw_r * 2.0f, draw_r * 2.0f};
+        // During telegraph the head is barely visible (0..0.35 of full intensity); when
+        // active it's full intensity with a tiny shimmer from the noise layers.
+        float intensity = (cm.telegraph_norm < 1.0f)
+                            ? (cm.telegraph_norm * 0.35f)
+                            : 1.0f;
+        BeginShaderMode(g_comet_gfx.shader);
+        SetShaderValue(g_comet_gfx.shader, g_comet_gfx.loc_time,
+                       &t, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(g_comet_gfx.shader, g_comet_gfx.loc_telegraph,
+                       &intensity, SHADER_UNIFORM_FLOAT);
+        DrawTexturePro(g_comet_gfx.white,
+                       Rectangle{0, 0, 1, 1},
+                       dst,
+                       Vector2{0, 0},
+                       0.0f,
+                       WHITE);
+        EndShaderMode();
+    } else {
+        // Fallback: bright orange core + red halo. Loses the boiling fire but keeps
+        // the entity readable.
+        if (cm.telegraph_norm >= 1.0f) {
+            DrawCircleV(c, cm.radius * 0.85f, Color{255, 230, 120, 230});
+            DrawCircleV(c, cm.radius * 0.55f, Color{255, 250, 200, 255});
+            DrawCircleLinesV(c, cm.radius,    Color{255, 140,  40, 220});
+        }
+    }
+
+    // ---- Additive shock ring (active only) ----
+    // A faint expanding ring just outside the kill radius -- helps players read the
+    // exact danger boundary at a glance.
+    if (cm.telegraph_norm >= 1.0f) {
+        float pulse = 0.5f + 0.5f * std::sin(t * 3.5f);
+        DrawCircleLinesV(c, cm.radius * (1.05f + 0.04f * pulse),
+                         Color{255, 200, 80,
+                               static_cast<unsigned char>(110 + 60.0f * pulse)});
     }
 }
 
@@ -595,10 +777,10 @@ inline bool circleInView(Vec2 p, float r, Vec2 vmin, Vec2 vmax) {
 } // namespace
 
 void unloadRendererGpuResources() {
-    // Currently just the black-hole shader / 1x1 texture. If we ever add more lazy GPU
-    // resources (e.g. a virus-glow shader), hang their cleanup off this same function so
-    // shutdown stays one call.
+    // All lazy GPU resources hang off this one call. Add new cleanups here as new
+    // procedural shaders / textures get introduced.
     unloadBlackHoleGfx();
+    unloadCometGfx();
 }
 
 void Renderer::drawWorld(const Interpolator& interp,
@@ -739,6 +921,24 @@ void Renderer::drawWorld(const Interpolator& interp,
         c_local.blackhole_visual_scale = interp_scale;
         drawCell(pos, c_local, /*watched=*/c.id == watched_cell, now_sec, flair);
     }
+
+    // Comets last so the fire ball draws OVER cells / food / viruses. Telegraph rays
+    // span the full map so they're always in view; skip the per-comet head cull only
+    // for the head pass (the line draws unconditionally during telegraph).
+    for (const auto& cm : curr.comets) {
+        Vec2 pos = cm.pos;
+        if (have_prev && cm.telegraph_norm >= 1.0f) {
+            for (const auto& prev_cm : prev.comets) {
+                if (prev_cm.id == cm.id) {
+                    pos = lerp(prev_cm.pos, cm.pos, alpha);
+                    break;
+                }
+            }
+        }
+        CometSnap cm_local = cm;
+        cm_local.pos = pos;
+        drawComet(cm_local, now_sec);
+    }
 }
 
 void Renderer::drawMinimap(const Interpolator& interp,
@@ -819,6 +1019,26 @@ void Renderer::drawMinimap(const Interpolator& interp,
             // Elites get a faint red ring even when off-screen so the player can track
             // them on the minimap (the in-world halo is also red).
             DrawCircleLinesV(Vector2{mx, my}, dot_r + 1.0f, Color{255, 80, 80, 200});
+        }
+    }
+
+    // Comets: telegraph as a thin orange line across the minimap (so the player can
+    // see the predicted path even when looking elsewhere), plus a bright dot at the
+    // current comet position once it's active.
+    for (const auto& cm : snap.comets) {
+        const float ax = toMx(cm.telegraph_start.x);
+        const float ay = toMy(cm.telegraph_start.y);
+        const float bx = toMx(cm.telegraph_end.x);
+        const float by = toMy(cm.telegraph_end.y);
+        const unsigned char a = static_cast<unsigned char>(
+            120 + 100.0f * std::min(cm.telegraph_norm, 1.0f));
+        DrawLineEx(Vector2{ax, ay}, Vector2{bx, by}, 1.5f,
+                   Color{255, 150, 60, a});
+        if (cm.telegraph_norm >= 1.0f) {
+            const float hx = toMx(cm.pos.x);
+            const float hy = toMy(cm.pos.y);
+            DrawCircleV(Vector2{hx, hy}, 3.0f, Color{255, 220, 110, 255});
+            DrawCircleLinesV(Vector2{hx, hy}, 5.0f, Color{255, 120, 30, 200});
         }
     }
 

@@ -384,8 +384,13 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save) {
         // Camera: death cam steals the camera target while it's active. Otherwise follow
         // the watched cell, retargeting to the player's largest piece if it died.
         if (client.deathCamActive()) {
-            if (auto* killer = sim.world().findCell(client.deathCamTarget())) {
+            // For player-vs-player deaths the target is the killer cell. For comet
+            // kills it's the comet's entity id; fall back to that if no cell matches.
+            const cr::EntityId tgt = client.deathCamTarget();
+            if (auto* killer = sim.world().findCell(tgt)) {
                 client.camera().setTarget(killer->pos, killer->mass);
+            } else if (auto* comet = sim.world().findComet(tgt)) {
+                client.camera().setTarget(comet->pos, comet->radius * comet->radius / 9.0f);
             }
         } else {
             cr::Cell* watched = sim.world().findCell(player_cell);

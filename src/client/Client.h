@@ -172,6 +172,12 @@ private:
     float                dt_mult_     = 1.0f;
     bool                 paused_      = false;
     bool                 auto_paused_ = false; // window unfocused
+
+    // Crashing-comet world event: pure presentation state. Set to kCometBannerSec when
+    // a Telegraph event fires; counts down each frame (regardless of pause state) so
+    // the HUD overlay can fade out. Doesn't affect the sim.
+    float                comet_banner_remaining_ = 0.0f;
+    static constexpr float kCometBannerSec      = 3.5f;
 };
 
 } // namespace cr

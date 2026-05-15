@@ -738,6 +738,134 @@ void processBlackHoles(World& world, const Tuning& t, float dt) {
     }
 }
 
+void processComets(World& world, const Tuning& t, float dt,
+                   Tick& next_spawn_tick_inout,
+                   std::vector<GameEvent>& events) {
+    auto&       comets = world.cometsMut();
+    const Tick  now    = world.currentTick();
+
+    // ---- 1. Step active comets forward. Telegraphed comets sit still. ----
+    for (auto& c : comets) {
+        if (c.start_at > now) continue;
+        c.pos.x += c.vel.x * dt;
+        c.pos.y += c.vel.y * dt;
+    }
+
+    // ---- 2. Telegraph -> Active transitions emit a CometEvent ----
+    for (const auto& c : comets) {
+        if (c.start_at == now) {
+            Vec2  dir   = c.vel;
+            float speed = length(dir);
+            if (speed > 1e-3f) dir = dir * (1.0f / speed);
+            else               dir = Vec2{1.0f, 0.0f};
+            events.push_back(CometEvent{c.id, CometEvent::Active, c.pos, dir});
+        }
+    }
+
+    // ---- 3. Kill cells inside any *active* comet's radius ----
+    auto&             cells     = world.cellsMut();
+    std::vector<char> cell_dead(cells.size(), 0);
+    bool              any_dead  = false;
+    for (const auto& cm : comets) {
+        if (cm.start_at > now) continue;
+        const float r_sq = cm.radius * cm.radius;
+        for (size_t i = 0; i < cells.size(); ++i) {
+            auto& c = cells[i];
+            if (cell_dead[i])                    continue;
+            if (c.mass <= 0.0f)                  continue;
+            if (c.god)                           continue;
+            if (c.hiding_in != INVALID_ENTITY)   continue; // BH-hidden cells survive
+            if (c.shield_until > now)            continue; // shield pickup grants immunity
+            float dx = c.pos.x - cm.pos.x;
+            float dy = c.pos.y - cm.pos.y;
+            if (dx * dx + dy * dy <= r_sq) {
+                cell_dead[i] = 1;
+                any_dead     = true;
+                events.push_back(DeathEvent{
+                    /*player=*/c.owner,
+                    /*by=*/cm.id,                // points at the comet, not a cell
+                    /*predator_player=*/INVALID_PLAYER,
+                    /*prey_personality=*/c.personality_tag,
+                    /*predator_personality=*/0});
+            }
+        }
+    }
+    if (any_dead) {
+        // Same compact-in-place pattern as processEating, kept local to avoid coupling
+        // this function to that file's templated helper.
+        size_t w = 0;
+        for (size_t r = 0; r < cells.size(); ++r) {
+            if (!cell_dead[r]) {
+                if (w != r) cells[w] = std::move(cells[r]);
+                ++w;
+            }
+        }
+        cells.resize(w);
+    }
+
+    // ---- 4. Despawn comets that have left the world ----
+    const float margin = t.comet_radius + 200.0f;
+    const float wx0    = -margin;
+    const float wy0    = -margin;
+    const float wx1    = static_cast<float>(world.width())  + margin;
+    const float wy1    = static_cast<float>(world.height()) + margin;
+    comets.erase(std::remove_if(comets.begin(), comets.end(),
+        [&](const Comet& c) {
+            if (c.start_at > now) return false;
+            const bool out = (c.pos.x < wx0 || c.pos.x > wx1
+                           || c.pos.y < wy0 || c.pos.y > wy1);
+            if (out) {
+                events.push_back(CometEvent{c.id, CometEvent::Despawn, c.pos, Vec2{0, 0}});
+            }
+            return out;
+        }), comets.end());
+
+    // ---- 5. Spawn a fresh comet when the cadence timer fires ----
+    if (now >= next_spawn_tick_inout) {
+        Rng&  rng     = world.rng();
+        const float W = static_cast<float>(world.width());
+        const float H = static_cast<float>(world.height());
+
+        // Pick an entry edge, then an exit point on the opposite edge. This guarantees
+        // the comet sweeps across the long axis of the world (not a corner-cut clip).
+        const int side = rng.rangeInt(0, 3);
+        Vec2      entry{}, exit{};
+        const float r = t.comet_radius;
+        switch (side) {
+            case 0: entry = {rng.rangeFloat(0.0f, W), -r}; break;
+            case 1: entry = {W + r, rng.rangeFloat(0.0f, H)}; break;
+            case 2: entry = {rng.rangeFloat(0.0f, W), H + r}; break;
+            default:entry = {-r, rng.rangeFloat(0.0f, H)}; break;
+        }
+        const int opp = (side + 2) & 3;
+        switch (opp) {
+            case 0: exit = {rng.rangeFloat(0.0f, W), -r}; break;
+            case 1: exit = {W + r, rng.rangeFloat(0.0f, H)}; break;
+            case 2: exit = {rng.rangeFloat(0.0f, W), H + r}; break;
+            default:exit = {-r, rng.rangeFloat(0.0f, H)}; break;
+        }
+
+        Vec2  dir = exit - entry;
+        float L   = std::sqrt(dir.x * dir.x + dir.y * dir.y);
+        if (L < 1.0f) { dir = Vec2{1.0f, 0.0f}; L = 1.0f; }
+        const Vec2 unit_dir = dir * (1.0f / L);
+        const Vec2 vel      = unit_dir * t.comet_speed;
+
+        const Tick telegraph_ticks = secondsToTicks(t.comet_telegraph_sec);
+        EntityId   id              = world.spawnComet(entry, vel, t.comet_radius, now,
+                                                      now + telegraph_ticks, entry, exit);
+        events.push_back(CometEvent{id, CometEvent::Telegraph, entry, unit_dir});
+
+        // Reschedule. Jitter is symmetric around the mean interval.
+        float interval = t.comet_event_interval_sec;
+        if (t.comet_interval_jitter > 0.0f) {
+            float j = rng.rangeFloat(-t.comet_interval_jitter, t.comet_interval_jitter);
+            interval *= (1.0f + j);
+        }
+        next_spawn_tick_inout = now + secondsToTicks(std::max(5.0f, interval));
+    }
+}
+
 float rollFoodMass(Rng& rng) {
     float r = rng.nextFloat();
     if (r < 0.005f) return 36.0f; // 0.5% legendary (purple-red, strong halo, 3x gold)

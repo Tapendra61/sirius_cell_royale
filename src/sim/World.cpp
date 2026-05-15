@@ -106,6 +106,22 @@ EntityId World::spawnBlackHole(Vec2 pos, float radius, float pull_radius) {
     return b.id;
 }
 
+EntityId World::spawnComet(Vec2 pos, Vec2 vel, float radius,
+                           Tick spawned_at, Tick start_at,
+                           Vec2 telegraph_start, Vec2 telegraph_end) {
+    Comet c;
+    c.id              = next_id_++;
+    c.pos             = pos;
+    c.vel             = vel;
+    c.radius          = radius;
+    c.spawned_at      = spawned_at;
+    c.start_at        = start_at;
+    c.telegraph_start = telegraph_start;
+    c.telegraph_end   = telegraph_end;
+    comets_.push_back(c);
+    return c.id;
+}
+
 Cell* World::findCell(EntityId id) {
     for (auto& c : cells_) {
         if (c.id == id) return &c;
@@ -172,6 +188,20 @@ BlackHole* World::findBlackHole(EntityId id) {
 const BlackHole* World::findBlackHole(EntityId id) const {
     for (const auto& b : blackholes_) {
         if (b.id == id) return &b;
+    }
+    return nullptr;
+}
+
+Comet* World::findComet(EntityId id) {
+    for (auto& c : comets_) {
+        if (c.id == id) return &c;
+    }
+    return nullptr;
+}
+
+const Comet* World::findComet(EntityId id) const {
+    for (const auto& c : comets_) {
+        if (c.id == id) return &c;
     }
     return nullptr;
 }
