@@ -39,7 +39,13 @@ void LocalLobby::update(float frame_dt, int /*sw*/, int /*sh*/) {
     // we leave (Picker / HostWaiting both kill it). Idle in the other states.
     if (sub_state_ == LobbySubState::JoinBrowsing) {
         if (discovery_.mode() != LocalDiscovery::Mode::Client) {
-            discovery_.startClient();
+            discovery_retry_timer_ -= frame_dt;
+            if (discovery_retry_timer_ <= 0.0f) {
+                discovery_.startClient();
+                // Whether bind succeeded or not, back off for a second so we
+                // don't spam errno logs each frame on persistent failure.
+                discovery_retry_timer_ = 1.0f;
+            }
         }
         discovery_.pollIncoming();
         // Build the visible list from live results. The lobby's `discovered_`
@@ -58,8 +64,9 @@ void LocalLobby::update(float frame_dt, int /*sw*/, int /*sh*/) {
 }
 
 void LocalLobby::reset() {
-    sub_state_         = LobbySubState::Picker;
-    refresh_remaining_ = 0.0f;
+    sub_state_              = LobbySubState::Picker;
+    refresh_remaining_      = 0.0f;
+    discovery_retry_timer_  = 0.0f;
     discovery_.stop();
 }
 

@@ -5,6 +5,7 @@
 #endif
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 
@@ -97,7 +98,8 @@ bool LocalDiscovery::startClient() {
     stop();
     ENetSocket s = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
     if (s == ENET_SOCKET_NULL) {
-        std::fprintf(stderr, "[discovery] socket_create failed (client)\n");
+        std::fprintf(stderr, "[discovery] socket_create failed (client) errno=%d (%s)\n",
+                     errno, std::strerror(errno));
         return false;
     }
     // Reuse the port so a second instance on the same machine can also
@@ -107,10 +109,12 @@ bool LocalDiscovery::startClient() {
     if (enet_socket_set_option(s, ENET_SOCKOPT_REUSEADDR, 1) < 0) {
         // Not fatal -- log and try the bind anyway. Single-instance JOIN
         // will still work.
-        std::fprintf(stderr, "[discovery] enable REUSEADDR failed (client)\n");
+        std::fprintf(stderr, "[discovery] enable REUSEADDR failed (client) errno=%d (%s)\n",
+                     errno, std::strerror(errno));
     }
     if (enet_socket_set_option(s, ENET_SOCKOPT_NONBLOCK, 1) < 0) {
-        std::fprintf(stderr, "[discovery] enable NONBLOCK failed (client)\n");
+        std::fprintf(stderr, "[discovery] enable NONBLOCK failed (client) errno=%d (%s)\n",
+                     errno, std::strerror(errno));
         enet_socket_destroy(s);
         return false;
     }
@@ -118,8 +122,15 @@ bool LocalDiscovery::startClient() {
     bind_addr.host = ENET_HOST_ANY;
     bind_addr.port = kDiscoveryPort;
     if (enet_socket_bind(s, &bind_addr) < 0) {
-        std::fprintf(stderr, "[discovery] bind failed on udp/%u\n",
-                     static_cast<unsigned>(kDiscoveryPort));
+        // errno here is the only clue we get back from the kernel about why
+        // the bind failed. EADDRINUSE = something else owns this port (often
+        // another cell_royale instance OR a previous run that didn't release
+        // it cleanly + SO_REUSEADDR couldn't override). EACCES = sandbox /
+        // root-required port (shouldn't apply to 7457 but possible if macOS
+        // Privacy Settings denied the binary network access).
+        std::fprintf(stderr, "[discovery] bind failed on udp/%u errno=%d (%s)\n",
+                     static_cast<unsigned>(kDiscoveryPort),
+                     errno, std::strerror(errno));
         enet_socket_destroy(s);
         return false;
     }

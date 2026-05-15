@@ -73,6 +73,10 @@ private:
     std::vector<DiscoveredHost> discovered_;
     float                       refresh_remaining_ = 0.0f; // visual feedback for
                                                            // the REFRESH button
+    // Rate-limiter for the lazy startClient retry. If the bind keeps failing
+    // (port already in use, sandbox denial, etc.) we'd otherwise spam the
+    // terminal with errno output every frame. Cooldown to one retry per second.
+    float                       discovery_retry_timer_ = 0.0f;
 };
 
 } // namespace cr
