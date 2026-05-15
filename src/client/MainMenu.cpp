@@ -68,9 +68,6 @@ void MainMenu::ensureBgInit(int sw, int sh) {
 void MainMenu::update(float frame_dt, int sw, int sh) {
     ensureBgInit(sw, sh);
     anim_time_ += frame_dt;
-    if (coming_soon_remaining_ > 0.0f) {
-        coming_soon_remaining_ -= frame_dt;
-    }
 
     // Drift the bg cells around. Wrap with margin so a cell never visually pops in.
     for (auto& c : bg_cells_) {
@@ -127,14 +124,16 @@ MenuAction MainMenu::render(int sw, int sh, const SaveData& save) {
     }
     btn_y += btn_h + 22;
 
-    // Secondary: Royale (placeholder, dim)
+    // Secondary: Royale -- opens the Local / Global sub-menu. Local is the
+    // shippable multiplayer mode; Global is still a placeholder (server-backed
+    // matchmaking) shown inside the sub-menu.
     if (drawButtonWithSub(
             Rectangle{(float)btn_x, (float)btn_y, (float)btn_w, (float)btn_h},
             "ROYALE", 30,
-            "multiplayer  --  coming soon", 13,
-            Color{52, 62, 92, 255},
-            Color{220, 225, 245, 255})) {
-        coming_soon_remaining_ = 2.4f;
+            "multiplayer  --  local or global", 13,
+            Color{75, 90, 160, 255},
+            Color{225, 230, 250, 255})) {
+        action = MenuAction::ShowRoyaleMenu;
     }
     btn_y += btn_h + 22;
 
@@ -156,27 +155,6 @@ MenuAction MainMenu::render(int sw, int sh, const SaveData& save) {
                 Color{42, 50, 72, 255}, Color{220, 225, 245, 230})) {
             action = MenuAction::ReplayIntro;
         }
-    }
-
-    // ---- "Coming soon" toast ----
-    if (coming_soon_remaining_ > 0.0f) {
-        const char* msg = "Multiplayer is a placeholder right now -- coming in Phase 10.";
-        int m_fs = 18;
-        int mw   = MeasureText(msg, m_fs);
-        float k  = std::clamp(coming_soon_remaining_ / 2.4f, 0.0f, 1.0f);
-        // Fade in/out: full opacity in middle, fade at start/end.
-        float fade = std::min(k * 2.0f, (1.0f - k) * 3.0f + 0.5f);
-        fade = std::clamp(fade, 0.0f, 1.0f);
-        unsigned char a = static_cast<unsigned char>(fade * 230);
-        int pad = 18;
-        int box_x = sw / 2 - mw / 2 - pad;
-        int box_y = sh - 130;
-        Rectangle box{(float)box_x, (float)box_y, (float)(mw + pad * 2),
-                      (float)(m_fs + pad)};
-        DrawRectangleRounded(box, 0.4f, 6, Color{60, 30, 30, a});
-        DrawRectangleRoundedLines(box, 0.4f, 6, Color{255, 180, 180, (unsigned char)(a * 0.7f)});
-        DrawText(msg, box_x + pad, box_y + pad / 2 + 2, m_fs,
-                 Color{255, 220, 220, a});
     }
 
     // ---- Lifetime stats panel (top-right) ----

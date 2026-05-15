@@ -11,7 +11,7 @@ namespace cr {
 enum class MenuAction {
     None,
     StartVsAI,
-    StartRoyalePlaceholder,  // shows a "coming soon" toast; outer loop does nothing
+    ShowRoyaleMenu,          // navigate to the Royale sub-menu (Local / Global picker)
     ShowSettings,
     ReplayIntro,             // replay the first-run intro for users who want a refresher
     Quit,
@@ -40,7 +40,6 @@ private:
     int    bg_init_w_           = 0;
     int    bg_init_h_           = 0;
     float  anim_time_           = 0.0f;
-    float  coming_soon_remaining_ = 0.0f;
 };
 
 } // namespace cr

@@ -2,8 +2,10 @@
 
 #include "client/Client.h"
 #include "client/IntroScreen.h"
+#include "client/LocalLobby.h"
 #include "client/MainMenu.h"
 #include "client/Renderer.h"   // setPaletteMode / setHighContrast
+#include "client/RoyaleMenu.h"
 #include "client/SettingsScreen.h"
 #include "client/UiWidgets.h"  // setHudTextScale
 #include "core/Rng.h"
@@ -13,6 +15,7 @@
 #include "platform/Paths.h"
 #include "sim/Replay.h"
 #include "sim/Simulation.h"
+#include "transport/NetworkTransport.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -271,10 +274,34 @@ enum class MatchOutcome {
     WindowClosed,   // user closed the OS window during the match
 };
 
+// Which transport / sim ownership model this match is running under. SinglePlayer is
+// the historical default; LocalHost / LocalClient are the LAN-multiplayer skeleton
+// modes. LocalHost owns the authoritative sim and broadcasts snapshots; LocalClient
+// has no sim of its own and renders snapshots received over the wire.
+enum class MatchMode {
+    SinglePlayer,
+    LocalHost,
+    LocalClient,
+};
+
+// Optional connection inputs for LocalClient mode. Ignored for other modes. Default-
+// constructed in single-player paths. For LocalHost the port comes from a small
+// internal default until the lobby exposes a "pick a port" UI.
+struct MatchNetworkConfig {
+    std::string  host_address;     // LocalClient only: "host[:port]" string
+    uint16_t     listen_port = 7456; // LocalHost only: UDP bind port
+};
+
 // Runs one match start-to-finish. Builds a fresh sim + client, applies persistent state,
 // runs the play loop, and writes updated persistent state back into `save` before
 // returning. Designed to be called repeatedly from the menu loop with different seeds.
-MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save) {
+// `mode` selects the transport role; `net_cfg` carries the address/port for network
+// modes. Skeleton: all three modes share the same gameplay loop -- LocalHost/Client
+// just additionally set up a NetworkTransport and bind / connect via it. The full
+// snapshot-replication path is a Phase 10 follow-up.
+MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
+                      MatchMode mode = MatchMode::SinglePlayer,
+                      MatchNetworkConfig net_cfg = {}) {
     cr::Simulation     sim(seed, tuning);
     const cr::PlayerId player = 1;
     cr::EntityId       player_cell = sim.world().spawnCell(
@@ -309,6 +336,34 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save) {
         [&state](const std::vector<std::string>& args) { runDevCommand(state, args); });
     client.console().log("Cell Royale v0.2.0 -- press ~ for console, 'help' for commands");
 
+    // ---- Network skeleton ----
+    // Allocated for every match for now (cheap) so the lobby's mode flag can flow
+    // straight through. LocalHost binds the listener; LocalClient resolves and
+    // connects. Both calls are no-ops in the skeleton, so SinglePlayer is unaffected
+    // and the network modes currently play out exactly like single-player.
+    cr::NetworkTransport net_transport;
+    switch (mode) {
+        case MatchMode::SinglePlayer:
+            // No transport setup needed.
+            break;
+        case MatchMode::LocalHost:
+            if (!net_transport.host(net_cfg.listen_port)) {
+                client.console().log("[net] failed to bind host port; falling back to local play");
+            } else {
+                std::printf("[net] hosting (skeleton) on port %u\n",
+                            static_cast<unsigned>(net_cfg.listen_port));
+            }
+            break;
+        case MatchMode::LocalClient:
+            if (!net_transport.connect(net_cfg.host_address)) {
+                client.console().log("[net] failed to connect; falling back to local play");
+            } else {
+                std::printf("[net] connecting (skeleton) to %s\n",
+                            net_cfg.host_address.c_str());
+            }
+            break;
+    }
+
     const float    sim_dt        = 1.0f / 30.0f;
     double         accumulator   = 0.0;
     MatchOutcome   outcome       = MatchOutcome::WindowClosed;
@@ -327,6 +382,16 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save) {
         // Auto-pause when window loses focus -- keeps CPU/GPU/audio quiet in the
         // background and stops the sim from accumulating real time the player can't see.
         client.setAutoPaused(!IsWindowFocused());
+
+        // Network pump (skeleton: no-op). Real impl will drain ENet events here and
+        // populate the transport's inbound queues for the rest of the frame.
+        if (mode != MatchMode::SinglePlayer) {
+            net_transport.poll();
+            // TODO(net): LocalClient -- drain net_transport.pollSnapshot()/pollEvent()
+            //                            into client.onSnapshot() / client.onEvents().
+            //            LocalHost  -- broadcast sim.buildSnapshot() via
+            //                            net_transport.sendSnapshot() after each tick.
+        }
 
         client.pollFrame(screen_w, screen_h, sim.currentTick());
 
@@ -436,6 +501,8 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save) {
     // Pull updated progression + lifetime stats + settings out of the client so the
     // outer loop has fresh data for the menu display and the on-disk save.
     save = client.snapshotForSave();
+    // Tear down the transport before returning so the next match starts clean.
+    net_transport.disconnect();
     return outcome;
 }
 
@@ -493,6 +560,8 @@ int runWindow(uint64_t initial_seed) {
     }
 
     cr::MainMenu       menu;
+    cr::RoyaleMenu     royale_menu;
+    cr::LocalLobby     local_lobby;
     cr::SettingsScreen settings;
     // Push the loaded accessibility state into the renderer-side globals so the
     // menu's bg cells (and the first match before applyLoadedSave runs) use them.
@@ -501,7 +570,20 @@ int runWindow(uint64_t initial_seed) {
     cr::setHighContrast(save.high_contrast);
     cr::setHudTextScale(save.hud_text_scale);
 
-    enum class AppPhase { Intro, Menu, Settings, Match, Quit };
+    enum class AppPhase {
+        Intro,
+        Menu,
+        RoyaleMenu,
+        LocalLobby,
+        Settings,
+        Match,
+        Quit,
+    };
+    // What kind of match the outer loop should launch the next time it enters
+    // AppPhase::Match. The lobby code writes this when it hands off, and we read it
+    // (then reset to SinglePlayer) inside the Match branch.
+    MatchMode          next_match_mode = MatchMode::SinglePlayer;
+    MatchNetworkConfig next_match_net{};
     // First-run intro plays before the menu if this is a brand-new save (or a v1/v2/v3
     // save being migrated to v4 -- they all default first_run_complete to false on load
     // since the field didn't exist in their format).
@@ -543,7 +625,12 @@ int runWindow(uint64_t initial_seed) {
             if (action == cr::MenuAction::Quit) {
                 phase = AppPhase::Quit;
             } else if (action == cr::MenuAction::StartVsAI) {
+                next_match_mode = MatchMode::SinglePlayer;
+                next_match_net  = {};
                 phase = AppPhase::Match;
+                cr::swallowNextClick();
+            } else if (action == cr::MenuAction::ShowRoyaleMenu) {
+                phase = AppPhase::RoyaleMenu;
                 cr::swallowNextClick();
             } else if (action == cr::MenuAction::ShowSettings) {
                 phase = AppPhase::Settings;
@@ -555,7 +642,56 @@ int runWindow(uint64_t initial_seed) {
                 phase = AppPhase::Intro;
                 cr::swallowNextClick();
             }
-            // StartRoyalePlaceholder: menu itself shows the toast, we stay in Menu.
+        } else if (phase == AppPhase::RoyaleMenu) {
+            float dt = GetFrameTime();
+            int   sw = GetScreenWidth();
+            int   sh = GetScreenHeight();
+            royale_menu.update(dt, sw, sh);
+
+            BeginDrawing();
+            ClearBackground(Color{18, 22, 30, 255});
+            cr::RoyaleMenuAction ra = royale_menu.render(sw, sh);
+            EndDrawing();
+
+            if (ra == cr::RoyaleMenuAction::Quit) {
+                phase = AppPhase::Quit;
+            } else if (ra == cr::RoyaleMenuAction::BackToMainMenu) {
+                phase = AppPhase::Menu;
+                cr::swallowNextClick();
+            } else if (ra == cr::RoyaleMenuAction::ShowLocalLobby) {
+                local_lobby.reset();
+                phase = AppPhase::LocalLobby;
+                cr::swallowNextClick();
+            }
+        } else if (phase == AppPhase::LocalLobby) {
+            float dt = GetFrameTime();
+            int   sw = GetScreenWidth();
+            int   sh = GetScreenHeight();
+            local_lobby.update(dt, sw, sh);
+
+            BeginDrawing();
+            ClearBackground(Color{18, 22, 30, 255});
+            cr::LocalLobbyAction la = local_lobby.render(sw, sh);
+            EndDrawing();
+
+            if (la == cr::LocalLobbyAction::Quit) {
+                phase = AppPhase::Quit;
+            } else if (la == cr::LocalLobbyAction::BackToRoyaleMenu) {
+                phase = AppPhase::RoyaleMenu;
+                cr::swallowNextClick();
+            } else if (la == cr::LocalLobbyAction::StartLocalHost) {
+                next_match_mode               = MatchMode::LocalHost;
+                next_match_net                = {};
+                next_match_net.listen_port    = 7456;
+                phase = AppPhase::Match;
+                cr::swallowNextClick();
+            } else if (la == cr::LocalLobbyAction::StartLocalJoin) {
+                next_match_mode             = MatchMode::LocalClient;
+                next_match_net              = {};
+                next_match_net.host_address = local_lobby.joinTargetAddress();
+                phase = AppPhase::Match;
+                cr::swallowNextClick();
+            }
         } else if (phase == AppPhase::Settings) {
             int sw = GetScreenWidth();
             int sh = GetScreenHeight();
@@ -571,16 +707,33 @@ int runWindow(uint64_t initial_seed) {
                 cr::swallowNextClick();
             }
         } else { // Match
-            MatchOutcome outcome = runMatch(next_match_seed, tuning, save);
+            // Capture which mode this match runs under and reset to single-player for
+            // the next launch so a follow-up VS-AI from the main menu doesn't keep a
+            // stale LocalHost flag.
+            MatchMode          mode_now = next_match_mode;
+            MatchNetworkConfig net_now  = next_match_net;
+            next_match_mode = MatchMode::SinglePlayer;
+            next_match_net  = {};
+
+            MatchOutcome outcome = runMatch(next_match_seed, tuning, save,
+                                            mode_now, net_now);
             ++next_match_seed; // new seed per match for variety across the session
-            phase = (outcome == MatchOutcome::ReturnToMenu)
-                        ? AppPhase::Menu
-                        : AppPhase::Quit;
-            if (phase == AppPhase::Menu) {
+            if (outcome == MatchOutcome::ReturnToMenu) {
+                // After a Local match we drop the user back to the lobby; after a
+                // SinglePlayer match they go all the way back to the main menu.
+                phase = (mode_now == MatchMode::SinglePlayer)
+                            ? AppPhase::Menu
+                            : AppPhase::LocalLobby;
+                if (phase == AppPhase::LocalLobby) {
+                    local_lobby.reset();
+                }
                 // The exit from match was triggered by a MAIN MENU button click. The
                 // mouse-release event is still "fresh" for raylib this frame; swallow
-                // it so it doesn't leak into the menu's button under the cursor.
+                // it so it doesn't leak into a button under the cursor in the new
+                // screen.
                 cr::swallowNextClick();
+            } else {
+                phase = AppPhase::Quit;
             }
         }
     }
