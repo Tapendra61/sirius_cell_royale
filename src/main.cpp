@@ -552,6 +552,19 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
         return chosen;
     };
 
+    // ---- Client-side prediction (LocalClient only) ----
+    // Tracks the locally-predicted position of the watched cell so motion is
+    // visible the moment the player moves the cursor -- instead of waiting for
+    // the host's ack to arrive (~50ms RTT). Each frame the prediction advances
+    // toward the latest MoveCmd target at the same seek speed the host's sim
+    // uses. When a snapshot lands we reconcile (small drift -> lerp toward
+    // authoritative pos; large drift -> snap, e.g. after a split / virus / blast).
+    bool     predict_active   = false;
+    cr::Vec2 predict_pos{0.0f, 0.0f};
+    cr::Vec2 predict_target{0.0f, 0.0f};
+    float    predict_mass     = tuning.start_mass;
+    cr::EntityId predict_cell = cr::INVALID_ENTITY;
+
     const float    sim_dt        = 1.0f / 30.0f;
     double         accumulator   = 0.0;
     MatchOutcome   outcome       = MatchOutcome::WindowClosed;
@@ -628,9 +641,36 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
             // Send up to the host instead; the host queues into its sim.
             if (mode == MatchMode::LocalClient) {
                 net_transport.sendCommand(c);
+                // Capture move targets for client-side prediction. The next-frame
+                // advance step pushes predict_pos toward predict_target at the
+                // same cellSpeed the host's sim uses.
+                if (auto* m = std::get_if<cr::MoveCmd>(&c.payload)) {
+                    predict_target = m->target;
+                }
             } else {
                 sim.queueCommand(c);
                 if (replay_recording) live_replay.recordCommand(c);
+            }
+        }
+
+        // Advance the client-side prediction toward the latest move target. Matches
+        // rules::stepCells's seek + anti-jitter clamp so the predicted position
+        // tracks the host's authoritative motion bit-for-bit when there's no
+        // launch_vel involved (splits / blasts are reconciled when the snapshot
+        // arrives -- the prediction snaps to the new pos if drift exceeds the
+        // threshold below).
+        if (mode == MatchMode::LocalClient && predict_active
+            && client.phase() == cr::GamePhase::Playing) {
+            cr::Vec2 to_target = predict_target - predict_pos;
+            float dist = cr::length(to_target);
+            if (dist > 1e-3f) {
+                cr::Vec2 dir   = to_target * (1.0f / dist);
+                float    r     = std::max(1.0f, cr::cellRadius(predict_mass));
+                float    speed = tuning.base_speed
+                               * std::pow(30.0f / r, tuning.speed_falloff);
+                float    step  = speed * frame_dt;
+                if (step > dist) step = dist; // don't overshoot
+                predict_pos = predict_pos + dir * step;
             }
         }
 
@@ -693,6 +733,48 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
             int snaps_received = 0;
             cr::Snapshot snap;
             while (net_transport.pollSnapshot(snap)) {
+                // Client-side prediction reconciliation. Find the watched cell
+                // in this snapshot; the snap's pos is the host's authoritative
+                // truth. We compare against our local prediction:
+                //   * If we haven't initialised the predictor yet, accept the
+                //     snap's pos and mass verbatim.
+                //   * If drift is "small" (< 80 px), blend toward the host
+                //     gently so a tiny perpetual offset doesn't accumulate.
+                //   * If drift is "large" (>= 80 px), snap to the host -- a
+                //     split / virus / blast just rearranged things in a way
+                //     our linear seek couldn't predict.
+                // After reconciling we overwrite the snap's watched-cell pos
+                // with predict_pos so the Interpolator + camera see the
+                // predicted (lag-free) position uniformly.
+                if (player_cell != cr::INVALID_ENTITY) {
+                    for (auto& cs : snap.cells) {
+                        if (cs.id != player_cell) continue;
+                        // Re-init whenever we're tracking a fresh cell -- the
+                        // welcome -> respawn-adoption flow can change
+                        // player_cell without going through our explicit reset.
+                        if (!predict_active || predict_cell != cs.id) {
+                            predict_pos    = cs.pos;
+                            predict_target = cs.pos;
+                            predict_mass   = cs.mass;
+                            predict_cell   = cs.id;
+                            predict_active = true;
+                        } else {
+                            cr::Vec2 drift = cs.pos - predict_pos;
+                            float dsq = cr::lengthSq(drift);
+                            constexpr float kSnapDistSq = 80.0f * 80.0f;
+                            if (dsq > kSnapDistSq) {
+                                predict_pos = cs.pos; // snap hard
+                            } else {
+                                // 25%/frame correction = barely visible drift
+                                // washout over a few frames.
+                                predict_pos = cr::lerp(predict_pos, cs.pos, 0.25f);
+                            }
+                            predict_mass = cs.mass;
+                        }
+                        cs.pos = predict_pos;
+                        break;
+                    }
+                }
                 client.onSnapshot(snap);
                 ++snaps_received;
             }
@@ -765,6 +847,12 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                 player_cell = best;
                 client.setWatchedCell(best);
                 client.onPlayerRespawned(GetTime());
+                // Reset prediction so the next snapshot re-initialises it for the
+                // freshly-spawned cell. Without this, predict_pos would still be
+                // pinned to the death location and the new cell would visibly
+                // teleport into place once the snap reconciliation runs.
+                predict_active = false;
+                predict_cell   = best;
                 std::printf("[net] client respawn complete (new cell=%u)\n",
                             static_cast<unsigned>(best));
             }

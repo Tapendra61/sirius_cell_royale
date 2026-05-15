@@ -289,9 +289,15 @@ All channels are reliable. Default port: **UDP 7456**.
 - The camera follows the **interpolated** cell position (`Interpolator::cellPos
   (id, alpha)`), so the rendered cell stays locked to screen centre rather than
   trailing one tick behind.
-- Expected end-to-end input lag on loopback / LAN: ~50–80 ms (one host tick
-  worth of "wait for next tick" plus the one-tick interpolation buffer).
-  Acceptable for a sandbox; lag compensation / prediction is a follow-up.
+- **Client-side prediction** for your own cell: the watched cell advances toward
+  the latest move target every frame using the same seek + speed math the host
+  runs. The host's snapshot is the authoritative truth — drift < 80 px lerps
+  toward it (25% per frame, near-invisible drift washout); drift ≥ 80 px snaps
+  hard (a split / virus / blast just rearranged things). The renderer + camera
+  both see the predicted position, so cursor moves translate to visible motion
+  with zero round-trip lag.
+- Other cells (bots, peers) remain server-authoritative + interpolated; only
+  the local player's own watched cell is predicted.
 
 ### Respawn flow
 
