@@ -208,11 +208,13 @@ struct BlackHoleGfx {
     bool       failed      = false;
 };
 
-// Procedural fire-ball shader for the crashing-comet head. Two layers of FBM noise
-// give the surface a flickering plasma look; radial gradient blends a white-hot core
-// through yellow, orange, and red, with the edge dissolving into the alpha channel
-// for the soft halo. Trail rendering is handled separately by the particle system --
-// keeps this shader focused on a single quad covering the comet's head.
+// Procedural fire-ball shader for the crashing-comet head. The previous version
+// composited three discrete intensity bands (core / mid / outer) and ended up looking
+// like layered images. This rewrite uses a single continuous blackbody-style gradient
+// where temperature decreases smoothly with distance from the centre; FBM noise warps
+// the radial distance so the silhouette flickers, but the *colour curve* stays
+// continuous. No mix() between palette stops -- the channels are independent smooth
+// power functions, which is how real hot-body radiation actually behaves.
 const char* const kCometHeadFS = R"GLSL(
 #version 330
 
@@ -227,65 +229,152 @@ float vnoise(vec2 p) {
     vec2 i = floor(p);
     vec2 f = fract(p);
     f = f * f * (3.0 - 2.0 * f);
-    float a = hash(i);
-    float b = hash(i + vec2(1.0, 0.0));
-    float c = hash(i + vec2(0.0, 1.0));
-    float d = hash(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    return mix(mix(hash(i),               hash(i + vec2(1.0, 0.0)), f.x),
+               mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
 }
 float fbm(vec2 p) {
     float s = 0.0, a = 0.5;
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         s += a * vnoise(p);
-        p *= 2.02;
+        p *= 2.03;
         a *= 0.5;
     }
     return s;
+}
+
+// Blackbody-radiator-ish curve. `t` is temperature inverted: 0 = white-hot,
+// 1 = nearly cool. Channels fall off at different rates: blue earliest (only the
+// hottest part is bluish-white), green next, red latest. Subtle red dim at very high
+// `t` makes the deep tail go to dark cherry instead of glowing pink.
+vec3 firePalette(float t) {
+    t = clamp(t, 0.0, 1.0);
+    float R = 1.0 - 0.30 * pow(t, 3.0);
+    float G = pow(1.0 - t, 1.5) - 0.05 * t;
+    float B = pow(1.0 - t, 5.0);
+    return vec3(max(0.0, R), max(0.0, G), max(0.0, B));
 }
 
 void main() {
     // uv ranges -1..1 across the quad; r is distance from centre.
     vec2  uv = fragTexCoord * 2.0 - 1.0;
     float r  = length(uv);
-    if (r > 1.0) discard;
+    if (r > 1.05) discard;
 
-    // Two slightly offset noise layers, animated in opposite directions so the surface
-    // boils rather than scrolls. The +uv*3 frequency gives ~3 plume cells across the
-    // visible disc.
-    vec2  np1 = uv * 3.0 + vec2( u_time * 1.3, -u_time * 0.9);
-    vec2  np2 = uv * 5.0 + vec2(-u_time * 0.7,  u_time * 1.1);
-    float n   = fbm(np1) * 0.6 + fbm(np2) * 0.4;
+    // Two FBM layers moving in opposite directions to make the surface boil rather
+    // than scroll. Slightly different frequencies keep the result aperiodic.
+    vec2  p1 = uv * 2.3 + vec2( u_time * 0.65, -u_time * 0.45);
+    vec2  p2 = uv * 5.8 + vec2(-u_time * 1.15,  u_time * 0.85);
+    float n  = fbm(p1) * 0.65 + fbm(p2) * 0.35;
 
-    // Radial thresholds, perturbed by noise so the silhouette ripples like flame.
-    float core_t = 0.18 + 0.04 * n;
-    float halo_t = 0.55 + 0.18 * n;
+    // Warp the radial distance with the noise: flame tongues push out, voids pull in.
+    // The 0.40 amplitude is enough to make the silhouette visibly flicker without
+    // turning it into a blob.
+    float warp = (n - 0.5) * 0.40;
+    float t    = clamp(r - warp, 0.0, 1.0); // temperature: 0 hottest, 1 coldest
 
-    float core  = smoothstep(core_t, 0.0, r);            // bright white centre
-    float mid   = smoothstep(halo_t, core_t, r);         // yellow band
-    float outer = smoothstep(1.0,    halo_t, r) * (0.55 + 0.6 * n); // wispy red tendrils
+    vec3  rgb = firePalette(t);
 
-    vec3 col_core   = vec3(1.0, 1.0, 0.92);
-    vec3 col_mid    = vec3(1.0, 0.72, 0.22);
-    vec3 col_outer  = vec3(1.0, 0.32, 0.06);
+    // Add a faint core boost so the centre punches harder than a pure inverse-r curve.
+    rgb *= 1.0 + 0.45 * exp(-r * 4.0);
 
-    vec3  rgb = col_core * core + col_mid * mid + col_outer * outer;
-    float a   = core + mid * 0.95 + outer * 0.78;
-    a = clamp(a, 0.0, 1.0);
+    // Smooth alpha falloff. pow keeps the core fully opaque while the edge dissolves.
+    float alpha = pow(1.0 - clamp(r * 0.95 - warp * 0.6, 0.0, 1.0), 1.4);
+    alpha = clamp(alpha * 1.25, 0.0, 1.0);
+    alpha *= u_telegraph;
 
-    // Telegraph fade-in: during the warning window the comet is faint and translucent.
-    a *= u_telegraph;
+    finalColor = vec4(rgb, alpha);
+}
+)GLSL";
 
-    finalColor = vec4(rgb, a);
+// Trail shader: paints a long, smooth fire streak behind the comet. The quad is drawn
+// once per frame with one end anchored at the comet's position and the other end
+// extending backwards along -vel for `kCometTrailLengthMul * comet.radius` world units.
+// fragTexCoord.x = 0 at the tail, 1 at the head; fragTexCoord.y = 0..1 across the
+// trail's width. Animated noise scrolls toward the tail so the trail "flows".
+const char* const kCometTrailFS = R"GLSL(
+#version 330
+
+in  vec2 fragTexCoord;
+out vec4 finalColor;
+
+uniform float u_time;
+uniform float u_telegraph;
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i),               hash(i + vec2(1.0, 0.0)), f.x),
+               mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+float fbm(vec2 p) {
+    float s = 0.0, a = 0.5;
+    for (int i = 0; i < 5; ++i) {
+        s += a * vnoise(p);
+        p *= 2.03;
+        a *= 0.5;
+    }
+    return s;
+}
+
+vec3 firePalette(float t) {
+    t = clamp(t, 0.0, 1.0);
+    float R = 1.0 - 0.30 * pow(t, 3.0);
+    float G = pow(1.0 - t, 1.5) - 0.05 * t;
+    float B = pow(1.0 - t, 5.0);
+    return vec3(max(0.0, R), max(0.0, G), max(0.0, B));
+}
+
+void main() {
+    float u = fragTexCoord.x; // 0 = tail, 1 = head
+    float v = fragTexCoord.y; // 0..1 across width
+
+    // Cone shape: trail is narrow at the tail and wide at the head. Quadratic so the
+    // taper is gentle near the head and pinches off cleanly at the tail.
+    float half_w = mix(0.04, 0.48, u * u);
+    float off    = abs(v - 0.5);
+    if (off > half_w) discard;
+    // Width-direction intensity: 1 at centerline, 0 at the cone edge.
+    float across = 1.0 - off / half_w;
+
+    // Length-direction intensity: bright at the head, dim at the tail. The pow shapes
+    // the falloff so most of the brightness is concentrated near the head.
+    float along  = pow(u, 1.6);
+
+    // Animated noise that scrolls along the trail length. Higher frequency on the
+    // width axis so the flame has visible vertical detail.
+    vec2  np  = vec2(u * 5.5 - u_time * 1.8, (v - 0.5) * 8.0);
+    float n   = fbm(np);
+    // Second slower layer adds large rolling waves.
+    vec2  np2 = vec2(u * 2.2 - u_time * 0.8, (v - 0.5) * 3.5);
+    n = 0.65 * n + 0.35 * fbm(np2);
+
+    // Combine: width falloff * length falloff * noise modulation.
+    float intensity = across * along * (0.55 + 0.85 * n);
+    intensity = clamp(intensity, 0.0, 1.0);
+
+    // Temperature ramp: hotter (more opaque, whiter) at high intensity.
+    float temp = 1.0 - intensity;
+    vec3  rgb  = firePalette(temp);
+
+    float alpha = pow(intensity, 1.1) * u_telegraph;
+    alpha = clamp(alpha, 0.0, 1.0);
+
+    finalColor = vec4(rgb, alpha);
 }
 )GLSL";
 
 struct CometGfx {
-    Shader    shader{};
+    Shader    head_shader{};
+    Shader    trail_shader{};
     Texture2D white{};
-    int       loc_time      = -1;
-    int       loc_telegraph = -1;
-    bool      initialized   = false;
-    bool      failed        = false;
+    int       loc_head_time      = -1;
+    int       loc_head_telegraph = -1;
+    int       loc_trail_time      = -1;
+    int       loc_trail_telegraph = -1;
+    bool      initialized        = false;
+    bool      failed             = false;
 };
 
 BlackHoleGfx g_bh_gfx;
@@ -330,13 +419,18 @@ void unloadBlackHoleGfx() {
 
 void ensureCometGfx() {
     if (g_comet_gfx.initialized || g_comet_gfx.failed) return;
-    g_comet_gfx.shader = LoadShaderFromMemory(nullptr, kCometHeadFS);
-    if (g_comet_gfx.shader.id == 0) {
+    g_comet_gfx.head_shader  = LoadShaderFromMemory(nullptr, kCometHeadFS);
+    g_comet_gfx.trail_shader = LoadShaderFromMemory(nullptr, kCometTrailFS);
+    if (g_comet_gfx.head_shader.id == 0 || g_comet_gfx.trail_shader.id == 0) {
         g_comet_gfx.failed = true;
+        if (g_comet_gfx.head_shader.id  != 0) UnloadShader(g_comet_gfx.head_shader);
+        if (g_comet_gfx.trail_shader.id != 0) UnloadShader(g_comet_gfx.trail_shader);
         return;
     }
-    g_comet_gfx.loc_time      = GetShaderLocation(g_comet_gfx.shader, "u_time");
-    g_comet_gfx.loc_telegraph = GetShaderLocation(g_comet_gfx.shader, "u_telegraph");
+    g_comet_gfx.loc_head_time       = GetShaderLocation(g_comet_gfx.head_shader,  "u_time");
+    g_comet_gfx.loc_head_telegraph  = GetShaderLocation(g_comet_gfx.head_shader,  "u_telegraph");
+    g_comet_gfx.loc_trail_time      = GetShaderLocation(g_comet_gfx.trail_shader, "u_time");
+    g_comet_gfx.loc_trail_telegraph = GetShaderLocation(g_comet_gfx.trail_shader, "u_telegraph");
 
     Image img = GenImageColor(1, 1, WHITE);
     g_comet_gfx.white = LoadTextureFromImage(img);
@@ -348,58 +442,121 @@ void ensureCometGfx() {
 void unloadCometGfx() {
     if (g_comet_gfx.initialized) {
         UnloadTexture(g_comet_gfx.white);
-        UnloadShader(g_comet_gfx.shader);
+        UnloadShader(g_comet_gfx.head_shader);
+        UnloadShader(g_comet_gfx.trail_shader);
         g_comet_gfx = CometGfx{};
-    } else if (g_comet_gfx.failed && g_comet_gfx.shader.id != 0) {
-        UnloadShader(g_comet_gfx.shader);
+    } else if (g_comet_gfx.failed) {
+        // Defensive: if compile failed but ids snuck through anyway, free them.
+        if (g_comet_gfx.head_shader.id  != 0) UnloadShader(g_comet_gfx.head_shader);
+        if (g_comet_gfx.trail_shader.id != 0) UnloadShader(g_comet_gfx.trail_shader);
         g_comet_gfx = CometGfx{};
     }
 }
 
-// Render a single comet -- telegraph line + fire head + (if active) screen-space halo.
-// Called from drawWorld inside BeginMode2D so coordinates are in world space. The
-// renderer applies a faint glow ring under the head via additive blending so the
-// comet still pops over the dark background once the shader pass dims with distance.
+// Trail length is `kCometTrailLengthMul * radius` world units. With radius=440 and
+// mul=8 that's a 3520 px trail -- substantial against the 16000 px world.
+constexpr float kCometTrailLengthMul = 8.0f;
+// Trail width at the head end is `kCometTrailWidthMul * radius`. The shader cone
+// tapers from this down to a thin point at the tail.
+constexpr float kCometTrailWidthMul  = 1.05f;
+
+// Render a single comet -- telegraph line + fire trail + fire head. Called from
+// drawWorld inside BeginMode2D so coordinates are in world space. Order matters:
+// trail draws FIRST so the head occludes its hot end cleanly; the trail's shader is
+// already alpha-shaped to fade in toward the head so seams are invisible.
 void drawComet(const CometSnap& cm, double now_sec) {
     ensureCometGfx();
     const float t = static_cast<float>(now_sec);
 
-    // ---- Telegraph line ----
-    // Drawn during the warning window only (telegraph_norm < 1). Two layers: a thick
-    // soft glow underneath, a thin sharp line on top, both pulsing in intensity.
+    // ---- Telegraph line (warning window only) ----
+    // Drawn under everything so the comet head clearly lands on top once it crosses.
     if (cm.telegraph_norm < 1.0f) {
         float pulse = 0.5f + 0.5f * std::sin(t * 9.0f);
-        // Fade IN over the warning so it doesn't suddenly disappear at the strike.
         float vis   = std::clamp(cm.telegraph_norm * 1.3f, 0.0f, 1.0f);
-        unsigned char a_glow = static_cast<unsigned char>(60 + pulse * 90 * vis);
+        unsigned char a_glow = static_cast<unsigned char>(60  + pulse * 90 * vis);
         unsigned char a_line = static_cast<unsigned char>(140 + pulse * 90 * vis);
         Vector2 a{cm.telegraph_start.x, cm.telegraph_start.y};
         Vector2 b{cm.telegraph_end.x,   cm.telegraph_end.y};
         DrawLineEx(a, b, 18.0f, Color{255, 120, 40, a_glow});
         DrawLineEx(a, b,  4.0f, Color{255, 220, 130, a_line});
-        // Strike marker at the impact origin: pulsing crosshair on the entry edge.
         float ring_r = cm.radius * (0.6f + 0.25f * pulse);
         DrawCircleLinesV(a, ring_r, Color{255, 180, 80,
                                           static_cast<unsigned char>(180 * vis)});
     }
 
+    // Pick a direction for the trail. While active, use the comet's actual velocity
+    // (so the trail trails behind motion). During telegraph, fall back to the
+    // telegraph direction so a faint pre-trail hints at the strike line.
+    Vec2  vel       = cm.vel;
+    float vel_len   = std::sqrt(vel.x * vel.x + vel.y * vel.y);
+    Vec2  unit_vel{1.0f, 0.0f};
+    if (vel_len > 1e-3f) {
+        unit_vel = Vec2{vel.x / vel_len, vel.y / vel_len};
+    } else {
+        Vec2 tdir{cm.telegraph_end.x - cm.telegraph_start.x,
+                  cm.telegraph_end.y - cm.telegraph_start.y};
+        float td = std::sqrt(tdir.x * tdir.x + tdir.y * tdir.y);
+        if (td > 1e-3f) unit_vel = Vec2{tdir.x / td, tdir.y / td};
+    }
+
+    // ---- Trail ----
+    // Build a rotated rectangle whose RIGHT-CENTER (the head-end of the cone) sits at
+    // the comet's position and whose body extends in the -vel direction. raylib's
+    // DrawTexturePro rotation is in degrees, clockwise (its Y axis points down).
+    // atan2(-vel.y, -vel.x) gives the angle whose direction is -vel; converting to
+    // degrees aligns the rect's local +X axis with -vel direction... but our chosen
+    // origin makes the rect extend LEFT of the pivot (i.e. in the rect's local -X
+    // direction). So we want -X to align with -vel, i.e. +X to align with +vel. The
+    // angle of +vel is atan2(vel.y, vel.x). Convert to degrees for raylib.
+    if (cm.telegraph_norm > 0.05f && g_comet_gfx.initialized) {
+        const float trail_len   = cm.radius * kCometTrailLengthMul;
+        const float trail_w     = cm.radius * kCometTrailWidthMul * 2.0f; // full width
+        const float angle_rad   = std::atan2(unit_vel.y, unit_vel.x);
+        const float angle_deg   = angle_rad * (180.0f / kPi);
+
+        // Telegraph: trail is faint and short. We pre-multiply the shader's u_telegraph
+        // by an extra ramp so the trail blooms into existence as the strike approaches.
+        float tg = std::min(1.0f, cm.telegraph_norm * cm.telegraph_norm * 1.4f);
+        if (cm.telegraph_norm >= 1.0f) tg = 1.0f;
+
+        // The rect is drawn with its top-LEFT in world space (pre-rotation), so we set
+        // origin to (trail_len, trail_w/2) -- the right-center of the rect -- and place
+        // the rect at the comet's position. Rotation around that origin pivots the rect
+        // such that the head stays anchored at the comet and the body sweeps to align
+        // with -vel direction.
+        const Rectangle dst{cm.pos.x, cm.pos.y, trail_len, trail_w};
+        const Vector2   origin{trail_len, trail_w * 0.5f};
+
+        BeginShaderMode(g_comet_gfx.trail_shader);
+        SetShaderValue(g_comet_gfx.trail_shader, g_comet_gfx.loc_trail_time,
+                       &t, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(g_comet_gfx.trail_shader, g_comet_gfx.loc_trail_telegraph,
+                       &tg, SHADER_UNIFORM_FLOAT);
+        // BLEND_ADDITIVE gives the trail a glowy bloom that reads as fire rather than
+        // a flat painted streak. Restore the default blend mode after.
+        BeginBlendMode(BLEND_ADDITIVE);
+        DrawTexturePro(g_comet_gfx.white,
+                       Rectangle{0, 0, 1, 1},
+                       dst,
+                       origin,
+                       angle_deg,
+                       WHITE);
+        EndBlendMode();
+        EndShaderMode();
+    }
+
     // ---- Head ----
-    // The shader does the heavy lifting. We pre-multiply telegraph_norm so the comet
-    // fades IN during the warning (faintly visible at telegraph_start) and is fully
-    // opaque while active.
     const Vector2 c{cm.pos.x, cm.pos.y};
-    const float   draw_r = cm.radius * 1.35f; // overshoot so the noisy edge isn't clipped
+    const float   draw_r = cm.radius * 1.35f;
     if (g_comet_gfx.initialized) {
         const Rectangle dst{c.x - draw_r, c.y - draw_r, draw_r * 2.0f, draw_r * 2.0f};
-        // During telegraph the head is barely visible (0..0.35 of full intensity); when
-        // active it's full intensity with a tiny shimmer from the noise layers.
         float intensity = (cm.telegraph_norm < 1.0f)
-                            ? (cm.telegraph_norm * 0.35f)
+                            ? (cm.telegraph_norm * 0.40f)
                             : 1.0f;
-        BeginShaderMode(g_comet_gfx.shader);
-        SetShaderValue(g_comet_gfx.shader, g_comet_gfx.loc_time,
+        BeginShaderMode(g_comet_gfx.head_shader);
+        SetShaderValue(g_comet_gfx.head_shader, g_comet_gfx.loc_head_time,
                        &t, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(g_comet_gfx.shader, g_comet_gfx.loc_telegraph,
+        SetShaderValue(g_comet_gfx.head_shader, g_comet_gfx.loc_head_telegraph,
                        &intensity, SHADER_UNIFORM_FLOAT);
         DrawTexturePro(g_comet_gfx.white,
                        Rectangle{0, 0, 1, 1},
@@ -409,8 +566,7 @@ void drawComet(const CometSnap& cm, double now_sec) {
                        WHITE);
         EndShaderMode();
     } else {
-        // Fallback: bright orange core + red halo. Loses the boiling fire but keeps
-        // the entity readable.
+        // Fallback: bright orange core + red halo (no boiling fire).
         if (cm.telegraph_norm >= 1.0f) {
             DrawCircleV(c, cm.radius * 0.85f, Color{255, 230, 120, 230});
             DrawCircleV(c, cm.radius * 0.55f, Color{255, 250, 200, 255});
@@ -419,8 +575,6 @@ void drawComet(const CometSnap& cm, double now_sec) {
     }
 
     // ---- Additive shock ring (active only) ----
-    // A faint expanding ring just outside the kill radius -- helps players read the
-    // exact danger boundary at a glance.
     if (cm.telegraph_norm >= 1.0f) {
         float pulse = 0.5f + 0.5f * std::sin(t * 3.5f);
         DrawCircleLinesV(c, cm.radius * (1.05f + 0.04f * pulse),

@@ -465,13 +465,9 @@ void Client::updateFrame(float frame_dt, double now_sec, const Tuning& tuning) {
         for (const auto& b : interp_.curr().blackholes) {
             particles_.spawnBlackHoleBubble(b.pos, b.pull_radius);
         }
-        // Crashing-comet trail. Same per-frame cadence as the black-hole bubbles;
-        // only active comets (telegraph_norm >= 1.0) emit sparks. Telegraphed comets
-        // are dormant -- their warning line is enough.
-        for (const auto& cm : interp_.curr().comets) {
-            if (cm.telegraph_norm < 1.0f) continue;
-            particles_.spawnCometTrail(cm.pos, cm.vel, cm.radius);
-        }
+        // Comet trail is now rendered as a shader-driven stretched cone (see
+        // drawComet in Renderer.cpp). The earlier particle-based trail was choppy and
+        // capped at the pool size; the shader version is smooth, long, and free.
     }
 
     if (death_cam_.active) {
