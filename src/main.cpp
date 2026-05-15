@@ -158,7 +158,7 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
     };
 
     if (cmd == "help") {
-        con.log("commands: spawn_food N, set_mass N, god, slowmo F, pause,");
+        con.log("commands: spawn_food N, set_mass N, god, slowmo F, pause, comet,");
         con.log("          reload_tuning, replay_save FILE, replay_load FILE,");
         con.log("          set_hold_to_move 0|1, set_invert_thumbs 0|1, force_touch 0|1,");
         con.log("          vol_master F, vol_sfx F, vol_music F, music_on, music_off, mute,");
@@ -228,6 +228,12 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
     } else if (cmd == "pause") {
         s.client->togglePause();
         con.log(s.client->isPaused() ? "paused" : "unpaused");
+    } else if (cmd == "comet") {
+        // Force-spawns a crashing-comet world event on the next sim tick. Useful for
+        // demoing the effect without waiting for the regular cadence. Spawn point /
+        // direction are still RNG-driven and deterministic.
+        s.sim->triggerCometSpawn();
+        con.log("comet scheduled for next tick");
     } else if (cmd == "vol_master" && needs(2)) {
         float v = static_cast<float>(std::atof(args[1].c_str()));
         s.client->audio().setMasterVolume(v);

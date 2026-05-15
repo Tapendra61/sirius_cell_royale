@@ -82,7 +82,7 @@ struct Tuning {
     float comet_event_interval_sec = 75.0f;  // mean time between comet spawns
     float comet_interval_jitter    = 0.30f;  // +/- this fraction of the interval (RNG)
     float comet_telegraph_sec      = 3.0f;   // warning window before the strike
-    float comet_radius             = 220.0f; // kill radius / visual half-size
+    float comet_radius             = 440.0f; // kill radius / visual half-size
     float comet_speed              = 900.0f; // world units per second
     float comet_first_after_sec    = 45.0f;  // delay before the first comet of a match
 

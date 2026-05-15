@@ -43,6 +43,14 @@ public:
     const std::vector<GameEvent>& events() const { return events_; }
     std::vector<GameEvent>        takeEvents();
 
+    // Dev / cheat hook: force the next crashing-comet world event to fire on the
+    // *next* tick (regardless of the regular cadence). Subsequent comets still respect
+    // the normal interval. The actual spawn still happens deterministically inside
+    // processComets so replay round-trips remain valid as long as the same forced
+    // trigger sequence is replayed -- the dev console doesn't record commands so this
+    // is intentionally a cheat hook, not a gameplay command.
+    void triggerCometSpawn() { next_comet_spawn_tick_ = world_.currentTick(); }
+
 private:
     void applyCommand(const Command& cmd);
 
