@@ -247,6 +247,18 @@ Snapshot Simulation::buildSnapshot() const {
         } else {
             cs.dash_cooldown_norm = 1.0f;
         }
+        // Blast cooldown is normalised the same way but against the blast tuning's
+        // own cooldown_sec -- so the HUD bar fills consistently regardless of
+        // whether dash and blast share a cooldown duration.
+        const float blast_cd_ticks =
+            std::max(1.0f, tuning_.blast_cooldown_sec * kSimHz);
+        if (c.blast_cooldown_until > now) {
+            float remaining = static_cast<float>(c.blast_cooldown_until - now);
+            cs.blast_cooldown_norm =
+                std::clamp(1.0f - remaining / blast_cd_ticks, 0.0f, 1.0f);
+        } else {
+            cs.blast_cooldown_norm = 1.0f;
+        }
         // personality_tag + is_elite are stored on the Cell at bot spawn; the only
         // bot-side value that still needs a scan is the Hunter dash-windup telegraph
         // (it changes every tick so writing it back to Cell would cost the same as

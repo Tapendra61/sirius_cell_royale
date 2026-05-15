@@ -667,24 +667,25 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
     }
 
     // ---- Q-ability (Mass Blast) cooldown bar, top-right corner ----
-    // Reads the player's effective blast cooldown (max blast_cooldown_until across
-    // all their cells -- the cooldown sits on whichever cell was the source) and
-    // draws a filling bar. The fill colour shifts red -> orange -> yellow as the
-    // bar approaches ready, with a steady-state bright glow when ready. Dimmed
-    // when the player's biggest cell is below the min-cast mass threshold.
-    if (phase_ == GamePhase::Playing) {
-        Tick   max_cd_until = 0;
-        float  biggest_mass = 0.0f;
-        for (const auto& c : world.cells()) {
-            if (c.owner != watched_player_) continue;
-            max_cd_until = std::max(max_cd_until, c.blast_cooldown_until);
-            biggest_mass = std::max(biggest_mass, c.mass);
-        }
-        const float cooldown_ticks = std::max(1.0f, tuning.blast_cooldown_sec * kSimHz);
-        float fill_norm = 1.0f;
-        if (max_cd_until > tick) {
-            const float remaining = static_cast<float>(max_cd_until - tick);
-            fill_norm = std::clamp(1.0f - remaining / cooldown_ticks, 0.0f, 1.0f);
+    // Reads the player's effective blast cooldown from the latest snapshot (works
+    // uniformly across SinglePlayer / LocalHost / LocalClient -- the local world
+    // is empty in the client path, but the snapshot always carries authoritative
+    // state). The fill colour shifts red -> orange -> yellow as the bar approaches
+    // ready, with a steady-state bright glow when ready. Dimmed when the player's
+    // biggest cell is below the min-cast mass threshold.
+    (void)tick;     // current code derives fill_norm from snapshot, not local tick
+    (void)world;    // see comment above -- the snapshot is authoritative for HUD
+    if (phase_ == GamePhase::Playing && interp_.hasCurr()) {
+        float fill_norm   = 1.0f;
+        float biggest_mass = 0.0f;
+        for (const auto& cs : interp_.curr().cells) {
+            if (cs.owner != watched_player_) continue;
+            // Player has multiple cells: the effective cooldown is the *smallest*
+            // norm (i.e. the longest-remaining cooldown) since blast can only be
+            // cast from the largest cell, and any cell whose blast is still
+            // counting down blocks the ability.
+            fill_norm    = std::min(fill_norm, cs.blast_cooldown_norm);
+            biggest_mass = std::max(biggest_mass, cs.mass);
         }
         const bool ready          = (fill_norm >= 1.0f);
         const bool below_min_mass = (biggest_mass < tuning.blast_min_mass);
@@ -797,7 +798,30 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         DrawText(msg, x,     y,     fs, tint);
     }
 
+    // LocalClient runs without a populated sim world; the latest snapshot is the
+    // only place to find our watched cell's mass / hiding state / pos. When the
+    // world lookup fails we synthesize a minimal Cell from the matching CellSnap
+    // so the HUD doesn't need to know which mode we're in.
     const Cell* watched = world.findCell(watched_cell_);
+    Cell        synth_watched_storage;
+    if (!watched && interp_.hasCurr()) {
+        for (const auto& cs : interp_.curr().cells) {
+            if (cs.id != watched_cell_) continue;
+            synth_watched_storage.id    = cs.id;
+            synth_watched_storage.owner = cs.owner;
+            synth_watched_storage.pos   = cs.pos;
+            synth_watched_storage.vel   = cs.vel;
+            synth_watched_storage.mass  = cs.mass;
+            // The HUD only reads these state fields from a Cell*; mirror them out
+            // of the snapshot. Anything not represented in CellSnap defaults to
+            // the Cell ctor's value, which is benign for the HUD.
+            synth_watched_storage.hiding_in =
+                cs.hiding ? cs.hiding_in_id : INVALID_ENTITY;
+            synth_watched_storage.blackhole_stamina = cs.blackhole_stamina_norm;
+            watched = &synth_watched_storage;
+            break;
+        }
+    }
     const MatchSummary* summary_ptr =
         (phase_ == GamePhase::Summary) ? &summary_ : nullptr;
     SummaryAction sa = hud_.render(screen_w, screen_h, watched, tick, GetFPS(),

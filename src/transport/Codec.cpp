@@ -69,6 +69,7 @@ void writeCell(Writer& w, const CellSnap& c) {
         (c.hiding         ? 0x80 : 0));
     w.writePOD(flags);
     w.writePOD(c.dash_cooldown_norm);
+    w.writePOD(c.blast_cooldown_norm);
     w.writePOD(c.personality_tag);
     w.writePOD(c.dash_telegraph_norm);
     w.writePOD(c.shield_norm);
@@ -96,6 +97,7 @@ bool readCell(Reader& r, CellSnap& c) {
     c.stealth_active = (flags & 0x40) != 0;
     c.hiding         = (flags & 0x80) != 0;
     r.readPOD(c.dash_cooldown_norm);
+    r.readPOD(c.blast_cooldown_norm);
     r.readPOD(c.personality_tag);
     r.readPOD(c.dash_telegraph_norm);
     r.readPOD(c.shield_norm);
@@ -469,6 +471,28 @@ bool encodeEvent(const GameEvent& e, std::vector<uint8_t>& out) {
     }
     out.clear();
     return false;
+}
+
+// ---- Welcome ----
+
+bool encodeWelcome(const WelcomeMsg& m, std::vector<uint8_t>& out) {
+    out.clear();
+    out.reserve(16);
+    Writer w{out};
+    w.writePOD(kWelcomeVersion);
+    w.writePOD(m.player_id);
+    w.writePOD(m.cell_id);
+    return true;
+}
+
+bool decodeWelcome(const uint8_t* data, size_t len, WelcomeMsg& m) {
+    Reader r{data, len};
+    uint8_t version = 0;
+    if (!r.readPOD(version) || version != kWelcomeVersion) return false;
+    m = WelcomeMsg{};
+    r.readPOD(m.player_id);
+    r.readPOD(m.cell_id);
+    return !r.failed;
 }
 
 bool decodeEvent(const uint8_t* data, size_t len, GameEvent& e) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Codec.h"  // codec::WelcomeMsg
 #include "ITransport.h"
 
 #include <cstdint>
@@ -83,6 +84,32 @@ public:
     void sendEvent(GameEvent ev) override;
     bool pollEvent(GameEvent& out) override;
 
+    // --- Handshake (host <-> just-connected client) ---
+
+    // Opaque per-peer handle. Identifies a remote peer in the host-side flow so
+    // the host can send messages addressed to a single connection. Returned by
+    // pollNewPeer / consumed by sendWelcomeTo. Comparing handles by `enet_peer`
+    // pointer is stable for the lifetime of the connection.
+    struct PeerHandle {
+        void* enet_peer = nullptr;
+        bool  isValid() const { return enet_peer != nullptr; }
+    };
+
+    // Host-side: drains the queue of peers that connected since the last call.
+    // Returns true and fills `out` when a new peer was popped; false when the
+    // queue is empty. The host loop calls this each frame to learn about new
+    // joiners and spawn their cell + send their welcome.
+    bool pollNewPeer(PeerHandle& out);
+
+    // Host-side: ship the welcome message to a specific peer. No-op (or queue
+    // for loopback) if !CR_NETWORK.
+    void sendWelcomeTo(PeerHandle peer, const codec::WelcomeMsg& msg);
+
+    // Client-side: returns true exactly once after a welcome arrives from the
+    // host, filling `out`. Subsequent calls return false until another welcome
+    // is received (which shouldn't happen in the normal single-handshake flow).
+    bool consumeWelcome(codec::WelcomeMsg& out);
+
 private:
     Role        role_         = Role::Idle;
     uint16_t    host_port_    = 0;
@@ -104,6 +131,11 @@ private:
     // ENetPeer*. Null when CR_NETWORK is undefined OR before host()/connect().
     void* enet_host_  = nullptr;  // ENetHost*  (server listener OR client socket)
     void* enet_peer_  = nullptr;  // ENetPeer*  (client only -- the host peer)
+
+    // Handshake queues. new_peers_ collects host-side CONNECT events for the host
+    // loop to drain; welcomes_ collects client-side decoded codec::WelcomeMsgs.
+    std::deque<PeerHandle> new_peers_;
+    std::deque<codec::WelcomeMsg> welcomes_;
 };
 
 } // namespace cr

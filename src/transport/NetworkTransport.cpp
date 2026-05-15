@@ -62,7 +62,8 @@ void enetGlobalRelease() {
 constexpr enet_uint8 CHAN_COMMAND  = 0;
 constexpr enet_uint8 CHAN_SNAPSHOT = 1;
 constexpr enet_uint8 CHAN_EVENT    = 2;
-constexpr size_t     kChannelCount = 3;
+constexpr enet_uint8 CHAN_CONTROL  = 3; // handshake / welcome / future room mgmt
+constexpr size_t     kChannelCount = 4;
 
 // Wrap a byte buffer in an ENet packet. RELIABLE = guaranteed-delivery + ordered.
 // We move the bytes in -- ENet copies internally so the caller's vector can be reused
@@ -236,6 +237,8 @@ void NetworkTransport::disconnect() {
     commands_.clear();
     snapshots_.clear();
     events_.clear();
+    new_peers_.clear();
+    welcomes_.clear();
 }
 
 void NetworkTransport::poll() {
@@ -250,6 +253,14 @@ void NetworkTransport::poll() {
             case ENET_EVENT_TYPE_CONNECT: {
                 ++peer_count_;
                 std::printf("[net] peer connected (peers=%d)\n", peer_count_);
+                // Host-side: surface the peer pointer so the match loop can spawn
+                // a cell for them and send their welcome packet. The client side
+                // also gets a CONNECT (against the host) but ignores new_peers_.
+                if (role_ == Role::Host) {
+                    PeerHandle ph;
+                    ph.enet_peer = static_cast<void*>(ev.peer);
+                    new_peers_.push_back(ph);
+                }
                 break;
             }
             case ENET_EVENT_TYPE_DISCONNECT: {
@@ -294,6 +305,18 @@ void NetworkTransport::poll() {
                             events_.push_back(std::move(e));
                         } else {
                             std::fprintf(stderr, "[net] decodeEvent failed (%zu bytes)\n", len);
+                        }
+                        break;
+                    }
+                    case CHAN_CONTROL: {
+                        codec::WelcomeMsg w;
+                        if (codec::decodeWelcome(data, len, w)) {
+                            welcomes_.push_back(w);
+                            std::printf("[net] welcome: player_id=%u cell_id=%u\n",
+                                        static_cast<unsigned>(w.player_id),
+                                        static_cast<unsigned>(w.cell_id));
+                        } else {
+                            std::fprintf(stderr, "[net] decodeWelcome failed (%zu bytes)\n", len);
                         }
                         break;
                     }
@@ -383,6 +406,39 @@ bool NetworkTransport::pollEvent(GameEvent& out) {
     if (events_.empty()) return false;
     out = std::move(events_.front());
     events_.pop_front();
+    return true;
+}
+
+bool NetworkTransport::pollNewPeer(PeerHandle& out) {
+    if (new_peers_.empty()) return false;
+    out = new_peers_.front();
+    new_peers_.pop_front();
+    return true;
+}
+
+void NetworkTransport::sendWelcomeTo(PeerHandle peer, const codec::WelcomeMsg& msg) {
+#ifdef CR_NETWORK
+    if (!peer.isValid()) return;
+    if (role_ != Role::Host) return;
+    std::vector<uint8_t> buf;
+    if (!codec::encodeWelcome(msg, buf)) return;
+    auto* ep = static_cast<ENetPeer*>(peer.enet_peer);
+    enet_peer_send(ep, CHAN_CONTROL, makePacket(buf));
+    std::printf("[net] sent welcome to peer (player_id=%u cell_id=%u)\n",
+                static_cast<unsigned>(msg.player_id),
+                static_cast<unsigned>(msg.cell_id));
+#else
+    (void)peer;
+    // Without ENet, push the welcome straight into the local welcomes_ queue so a
+    // same-process test (or a future loopback transport) can still observe it.
+    welcomes_.push_back(msg);
+#endif
+}
+
+bool NetworkTransport::consumeWelcome(codec::WelcomeMsg& out) {
+    if (welcomes_.empty()) return false;
+    out = welcomes_.front();
+    welcomes_.pop_front();
     return true;
 }
 

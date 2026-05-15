@@ -37,6 +37,9 @@ public:
     std::vector<Command> takeCommands();
 
     void onSnapshot(Snapshot s) { interp_.push(std::move(s)); }
+    // Exposed so the outer loop can read the latest received snapshot for paths
+    // that bypass the local sim (LocalClient camera follow / status lookups).
+    const Interpolator& interpolator() const { return interp_; }
 
     // Convert sim events into juice + HUD updates. Called once per sim tick by main.
     void onEvents(const std::vector<GameEvent>& events, World& world,
@@ -92,6 +95,11 @@ public:
     EntityId watchedCell() const { return watched_cell_; }
     void     setWatchedCell(EntityId id) { watched_cell_ = id; }
     PlayerId watchedPlayer() const { return watched_player_; }
+    // Set the player slot the client cares about. Used by the multiplayer path when
+    // the host's welcome packet tells the client which slot they own. Don't call
+    // mid-match for singleplayer (it'd reset combo / kill-feed coloring tied to the
+    // local slot).
+    void     setWatchedPlayer(PlayerId p) { watched_player_ = p; }
 
     CameraController&       camera() { return camera_; }
     const CameraController& camera() const { return camera_; }

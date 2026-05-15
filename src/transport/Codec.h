@@ -11,12 +11,24 @@
 namespace cr::codec {
 
 // Wire-format versions. Bump the relevant constant whenever a field layout changes;
-// decoders use them to reject incompatible packets cleanly. The three streams version
+// decoders use them to reject incompatible packets cleanly. Each stream versions
 // independently because Snapshot is the largest (and most likely to evolve) and
-// Command/Event are small enough that a bump rarely costs anything.
-constexpr uint8_t kSnapshotVersion = 1;
+// Command/Event/Welcome are small enough that a bump rarely costs anything.
+constexpr uint8_t kSnapshotVersion = 2; // v2 adds CellSnap::blast_cooldown_norm
 constexpr uint8_t kCommandVersion  = 1;
 constexpr uint8_t kEventVersion    = 1;
+constexpr uint8_t kWelcomeVersion  = 1;
+
+// Host -> just-connected-peer handshake. Carries the player slot the host has
+// allocated for this peer + the EntityId of the cell the host spawned for them. The
+// client uses these to populate watched_player_ and watched_cell_ before the first
+// gameplay frame. Sent once per connection on CHAN_CONTROL.
+struct WelcomeMsg {
+    PlayerId player_id = INVALID_PLAYER;
+    EntityId cell_id   = INVALID_ENTITY;
+
+    bool operator==(const WelcomeMsg&) const = default;
+};
 
 // Byte-buffer codec for the three stream types that flow over the wire between host
 // and clients:
@@ -42,5 +54,8 @@ bool decodeCommand(const uint8_t* data, size_t len, Command& out);
 
 bool encodeEvent(const GameEvent& e, std::vector<uint8_t>& out);
 bool decodeEvent(const uint8_t* data, size_t len, GameEvent& out);
+
+bool encodeWelcome(const WelcomeMsg& m, std::vector<uint8_t>& out);
+bool decodeWelcome(const uint8_t* data, size_t len, WelcomeMsg& out);
 
 } // namespace cr::codec

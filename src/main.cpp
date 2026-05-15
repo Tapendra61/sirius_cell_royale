@@ -302,33 +302,49 @@ struct MatchNetworkConfig {
 MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                       MatchMode mode = MatchMode::SinglePlayer,
                       MatchNetworkConfig net_cfg = {}) {
-    cr::Simulation     sim(seed, tuning);
-    const cr::PlayerId player = 1;
-    cr::EntityId       player_cell = sim.world().spawnCell(
-        player,
-        cr::Vec2{static_cast<float>(tuning.world_width)  * 0.5f,
-                 static_cast<float>(tuning.world_height) * 0.5f},
-        tuning.start_mass);
+    cr::Simulation sim(seed, tuning);
 
-    cr::Client client(player_cell, player);
+    // Player slot + initial cell. SinglePlayer / LocalHost spawn locally; LocalClient
+    // defers the spawn to the host -- the welcome packet will tell us our slot + cell.
+    cr::PlayerId player      = 1;
+    cr::EntityId player_cell = cr::INVALID_ENTITY;
+    if (mode != MatchMode::LocalClient) {
+        player_cell = sim.world().spawnCell(
+            player,
+            cr::Vec2{static_cast<float>(tuning.world_width)  * 0.5f,
+                     static_cast<float>(tuning.world_height) * 0.5f},
+            tuning.start_mass);
+    }
+
+    cr::Client client(player_cell,
+                      mode == MatchMode::LocalClient ? cr::INVALID_PLAYER : player);
     client.camera().snapTo(
         cr::Vec2{static_cast<float>(tuning.world_width)  * 0.5f,
                  static_cast<float>(tuning.world_height) * 0.5f},
         tuning.start_mass);
-    client.onSnapshot(sim.buildSnapshot());
+    // SinglePlayer / LocalHost can prime the renderer with an initial snapshot from
+    // the local sim. LocalClient waits for the host's first snapshot to arrive.
+    if (mode != MatchMode::LocalClient) {
+        client.onSnapshot(sim.buildSnapshot());
+    }
 
     // Push lifetime stats + settings into the new client so volume/input prefs and
     // best-ever counters are visible from frame 1.
     client.applyLoadedSave(save);
 
-    // Live replay recording starts at match begin.
+    // Live replay recording: only the authoritative sim writes a replay. Clients
+    // would record their own (partial) command history but it'd never replay the
+    // host's RNG / world state, so skip.
     cr::Replay                live_replay;
-    std::vector<cr::CellSnap> initial;
-    for (const auto& c : sim.world().cells()) {
-        initial.push_back(cr::CellSnap{c.id, c.owner, c.pos, c.vel, c.mass});
+    bool                      replay_recording = (mode != MatchMode::LocalClient);
+    if (replay_recording) {
+        std::vector<cr::CellSnap> initial;
+        for (const auto& c : sim.world().cells()) {
+            initial.push_back(cr::CellSnap{c.id, c.owner, c.pos, c.vel, c.mass});
+        }
+        live_replay.recordSetup(seed, tuning.world_width, tuning.world_height,
+                                std::move(initial));
     }
-    live_replay.recordSetup(seed, tuning.world_width, tuning.world_height, std::move(initial));
-    bool replay_recording = true;
 
     WindowState state{&sim, &client, &live_replay, &tuning,
                       &replay_recording, &player_cell, player};
@@ -336,33 +352,65 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
         [&state](const std::vector<std::string>& args) { runDevCommand(state, args); });
     client.console().log("Cell Royale v0.2.0 -- press ~ for console, 'help' for commands");
 
-    // ---- Network skeleton ----
-    // Allocated for every match for now (cheap) so the lobby's mode flag can flow
-    // straight through. LocalHost binds the listener; LocalClient resolves and
-    // connects. Both calls are no-ops in the skeleton, so SinglePlayer is unaffected
-    // and the network modes currently play out exactly like single-player.
+    // ---- Network setup ----
     cr::NetworkTransport net_transport;
+    // Host-side: the next PlayerId to assign to a joining peer. Starts at 2 because
+    // the host itself owns slot 1. Bumped per accepted CONNECT event.
+    cr::PlayerId next_peer_player_id = 2;
     switch (mode) {
         case MatchMode::SinglePlayer:
             // No transport setup needed.
             break;
         case MatchMode::LocalHost:
             if (!net_transport.host(net_cfg.listen_port)) {
-                client.console().log("[net] failed to bind host port; falling back to local play");
-            } else {
-                std::printf("[net] hosting (skeleton) on port %u\n",
-                            static_cast<unsigned>(net_cfg.listen_port));
+                client.console().log("[net] failed to bind host port; running solo");
             }
             break;
         case MatchMode::LocalClient:
             if (!net_transport.connect(net_cfg.host_address)) {
-                client.console().log("[net] failed to connect; falling back to local play");
-            } else {
-                std::printf("[net] connecting (skeleton) to %s\n",
-                            net_cfg.host_address.c_str());
+                client.console().log("[net] failed to connect; check host address");
             }
             break;
     }
+
+    // Helper: find the watched cell in the snapshot (used by camera follow on
+    // LocalClient, where the local sim's world is empty).
+    auto findCellPosMassInSnap = [](const cr::Snapshot& s, cr::EntityId id,
+                                     cr::Vec2& out_pos, float& out_mass) -> bool {
+        for (const auto& c : s.cells) {
+            if (c.id == id) {
+                out_pos  = c.pos;
+                out_mass = c.mass;
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // Host-side helper: pick a clear spawn position for a fresh cell. Same algorithm
+    // as the local respawn path lower in this function; duplicated here so peer-join
+    // spawning doesn't have to wait for the main loop's respawn block.
+    auto pickClearSpawn = [&]() -> cr::Vec2 {
+        constexpr float kMargin = 500.0f;
+        cr::Vec2 chosen{tuning.world_width * 0.5f, tuning.world_height * 0.5f};
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            cr::Vec2 candidate{
+                sim.world().rng().rangeFloat(kMargin,
+                                             static_cast<float>(sim.world().width())  - kMargin),
+                sim.world().rng().rangeFloat(kMargin,
+                                             static_cast<float>(sim.world().height()) - kMargin),
+            };
+            bool clear = true;
+            for (const auto& c : sim.world().cells()) {
+                if (cr::distance(c.pos, candidate)
+                    < cr::cellRadius(c.mass) + 400.0f) {
+                    clear = false; break;
+                }
+            }
+            if (clear) { chosen = candidate; break; }
+        }
+        return chosen;
+    };
 
     const float    sim_dt        = 1.0f / 30.0f;
     double         accumulator   = 0.0;
@@ -390,18 +438,53 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
             net_transport.poll();
         }
 
+        // ---- Host: accept new peers ----
+        // For each peer that just connected, allocate a PlayerId, spawn a cell at a
+        // clear spot, and ship a welcome so they know which cell to watch.
+        if (mode == MatchMode::LocalHost) {
+            cr::NetworkTransport::PeerHandle ph;
+            while (net_transport.pollNewPeer(ph)) {
+                cr::PlayerId new_pid  = next_peer_player_id++;
+                cr::Vec2     spawn_at = pickClearSpawn();
+                cr::EntityId new_cell = sim.world().spawnCell(
+                    new_pid, spawn_at, tuning.start_mass);
+                net_transport.sendWelcomeTo(ph, cr::codec::WelcomeMsg{new_pid, new_cell});
+                std::printf("[net] spawned cell for new peer (player=%u, cell=%u)\n",
+                            static_cast<unsigned>(new_pid),
+                            static_cast<unsigned>(new_cell));
+            }
+        }
+
+        // ---- Client: consume welcome ----
+        // After the welcome arrives we know our PlayerId + cell id. Until then the
+        // client has placeholder watched values; the world is empty so input
+        // commands fire harmlessly (they target INVALID_PLAYER which the host
+        // ignores).
+        if (mode == MatchMode::LocalClient) {
+            cr::codec::WelcomeMsg w;
+            if (net_transport.consumeWelcome(w)) {
+                client.setWatchedCell(w.cell_id);
+                client.setWatchedPlayer(w.player_id);
+                player        = w.player_id;
+                player_cell   = w.cell_id;
+                std::printf("[net] client received welcome: player_id=%u cell_id=%u\n",
+                            static_cast<unsigned>(w.player_id),
+                            static_cast<unsigned>(w.cell_id));
+            }
+        }
+
         client.pollFrame(screen_w, screen_h, sim.currentTick());
 
         // Drain commands queued by Client and forward to sim + replay tape.
         auto cmds = client.takeCommands();
         for (const auto& c : cmds) {
-            sim.queueCommand(c);
-            if (replay_recording) live_replay.recordCommand(c);
-            // LocalClient: also forward this command to the host so the authoritative
-            // sim sees the client's input. NetworkTransport::sendCommand routes
-            // appropriately based on its role.
+            // LocalClient: don't queue into the local sim (we're not ticking it).
+            // Send up to the host instead; the host queues into its sim.
             if (mode == MatchMode::LocalClient) {
                 net_transport.sendCommand(c);
+            } else {
+                sim.queueCommand(c);
+                if (replay_recording) live_replay.recordCommand(c);
             }
         }
 
@@ -419,12 +502,13 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
         // Per-frame feel layer update (shake decay, particles, popups, HUD, death cam).
         client.updateFrame(frame_dt, GetTime(), tuning);
 
-        // Sim ticks -- skipped entirely while hitstop is freezing time. LocalHost
-        // ticks the authoritative sim AND broadcasts the resulting snapshot/events
-        // each tick. LocalClient still ticks locally for now (deterministic with
-        // host given same seed + replicated commands) -- in a follow-up we'll
-        // replace this with snapshot-driven rendering and stop running a local sim.
-        if (!client.isHitstopActive()) {
+        // ---- Sim advancement ----
+        // SinglePlayer / LocalHost: tick the authoritative sim and (for host)
+        //                           broadcast the resulting snapshot + events.
+        // LocalClient            : DO NOT tick the local sim; the world state comes
+        //                           from received snapshots which we feed straight
+        //                           into the Interpolator below.
+        if (mode != MatchMode::LocalClient && !client.isHitstopActive()) {
             accumulator += static_cast<double>(frame_dt) * client.effectiveDtMultiplier();
             int safety = 0;
             while (accumulator >= sim_dt && safety < 8) {
@@ -446,34 +530,35 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
             }
         }
 
-        // LocalClient: drain decoded snapshots/events from the host. For now we just
-        // log the count and discard -- the local sim is still authoritative on the
-        // client side. Replacing the local sim with received state is the next
-        // increment.
+        // LocalClient: feed every received snapshot to the renderer's Interpolator.
+        // Same for events -- they drive particles / audio / killfeed / etc. The
+        // local sim is empty so onEvents path that looks up world cells will return
+        // null for most fields; the visual-only paths still fire because they rely
+        // on event data not world state.
         if (mode == MatchMode::LocalClient) {
-            cr::Snapshot dummy_snap;
-            int snaps_received = 0;
-            while (net_transport.pollSnapshot(dummy_snap)) ++snaps_received;
-            cr::GameEvent dummy_ev;
-            int events_received = 0;
-            while (net_transport.pollEvent(dummy_ev)) ++events_received;
-            // Throttle the log: only print when something actually arrived so the
-            // terminal isn't spammed during idle.
-            if (snaps_received > 0 || events_received > 0) {
-                static int log_throttle = 0;
-                if ((log_throttle++ & 31) == 0) {
-                    std::printf("[net] client received %d snapshots, %d events "
-                                "this frame (peers=%d)\n",
-                                snaps_received, events_received,
-                                net_transport.peerCount());
-                }
+            cr::Snapshot snap;
+            while (net_transport.pollSnapshot(snap)) {
+                client.onSnapshot(snap);
+            }
+            std::vector<cr::GameEvent> evs;
+            cr::GameEvent ev;
+            while (net_transport.pollEvent(ev)) {
+                evs.push_back(std::move(ev));
+            }
+            if (!evs.empty()) {
+                client.onEvents(evs, sim.world(), tuning);
             }
         }
 
         // Phase 8 respawn: when Client signals the player should come back, pick a clear
         // spot and spawn a fresh cell. Bots forget the player's previous peak mass so the
         // world doesn't keep dropping elite scaled threats while the player is at start_mass.
-        if (client.consumeRespawnRequest()) {
+        //
+        // LocalClient skips local respawn: the host owns spawning. The host's respawn
+        // protocol for remote players hasn't shipped yet, so a dead client just stays
+        // dead until the next match. TODO(net): per-peer respawn protocol so the host
+        // re-spawns a fresh cell + sends an updated Welcome.
+        if (client.consumeRespawnRequest() && mode != MatchMode::LocalClient) {
             cr::Vec2 spawn{0.0f, 0.0f};
             const float margin = 500.0f;
             for (int attempt = 0; attempt < 8; ++attempt) {
@@ -502,14 +587,59 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
 
         // Camera: death cam steals the camera target while it's active. Otherwise follow
         // the watched cell, retargeting to the player's largest piece if it died.
+        // Local sim path uses sim.world(); LocalClient reads from the renderer's
+        // current snapshot since its local sim is empty.
         if (client.deathCamActive()) {
             // For player-vs-player deaths the target is the killer cell. For comet
             // kills it's the comet's entity id; fall back to that if no cell matches.
             const cr::EntityId tgt = client.deathCamTarget();
-            if (auto* killer = sim.world().findCell(tgt)) {
-                client.camera().setTarget(killer->pos, killer->mass);
-            } else if (auto* comet = sim.world().findComet(tgt)) {
-                client.camera().setTarget(comet->pos, comet->radius * comet->radius / 9.0f);
+            if (mode == MatchMode::LocalClient && client.interpolator().hasCurr()) {
+                cr::Vec2 p; float m;
+                if (findCellPosMassInSnap(client.interpolator().curr(), tgt, p, m)) {
+                    client.camera().setTarget(p, m);
+                } else {
+                    // Maybe a comet in the snapshot
+                    for (const auto& cm : client.interpolator().curr().comets) {
+                        if (cm.id == tgt) {
+                            client.camera().setTarget(cm.pos,
+                                cm.radius * cm.radius / 9.0f);
+                            break;
+                        }
+                    }
+                }
+            } else {
+                if (auto* killer = sim.world().findCell(tgt)) {
+                    client.camera().setTarget(killer->pos, killer->mass);
+                } else if (auto* comet = sim.world().findComet(tgt)) {
+                    client.camera().setTarget(comet->pos,
+                        comet->radius * comet->radius / 9.0f);
+                }
+            }
+        } else if (mode == MatchMode::LocalClient) {
+            // Client-side follow via the latest snapshot. Find the watched cell; if
+            // it's gone (died on the host), fall back to the largest cell that
+            // belongs to our player slot and adopt that as the new watched.
+            if (client.interpolator().hasCurr()) {
+                const auto& snap = client.interpolator().curr();
+                cr::Vec2 p; float m;
+                if (!findCellPosMassInSnap(snap, player_cell, p, m)) {
+                    cr::EntityId best  = cr::INVALID_ENTITY;
+                    float    best_mass = 0.0f;
+                    for (const auto& c : snap.cells) {
+                        if (c.owner == player && c.mass > best_mass) {
+                            best_mass = c.mass;
+                            best      = c.id;
+                        }
+                    }
+                    if (best != cr::INVALID_ENTITY) {
+                        player_cell = best;
+                        client.setWatchedCell(best);
+                        findCellPosMassInSnap(snap, best, p, m);
+                    }
+                }
+                if (p.x != 0.0f || p.y != 0.0f) { // p was filled by the find above
+                    client.camera().setTarget(p, m);
+                }
             }
         } else {
             cr::Cell* watched = sim.world().findCell(player_cell);
