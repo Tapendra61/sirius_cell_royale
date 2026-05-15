@@ -238,6 +238,7 @@ void NetworkTransport::disconnect() {
     snapshots_.clear();
     events_.clear();
     new_peers_.clear();
+    departed_peers_.clear();
     welcomes_.clear();
 }
 
@@ -270,6 +271,13 @@ void NetworkTransport::poll() {
                 // future sends short-circuit instead of hitting a stale peer.
                 if (role_ == Role::Client && ev.peer == static_cast<ENetPeer*>(enet_peer_)) {
                     enet_peer_ = nullptr;
+                }
+                // Host-side: surface the departing peer so the match loop can
+                // despawn their cells + free their PlayerId slot.
+                if (role_ == Role::Host) {
+                    PeerHandle ph;
+                    ph.enet_peer = static_cast<void*>(ev.peer);
+                    departed_peers_.push_back(ph);
                 }
                 break;
             }
@@ -414,6 +422,28 @@ bool NetworkTransport::pollNewPeer(PeerHandle& out) {
     out = new_peers_.front();
     new_peers_.pop_front();
     return true;
+}
+
+bool NetworkTransport::pollDepartedPeer(PeerHandle& out) {
+    if (departed_peers_.empty()) return false;
+    out = departed_peers_.front();
+    departed_peers_.pop_front();
+    return true;
+}
+
+void NetworkTransport::disconnectPeer(PeerHandle peer) {
+#ifdef CR_NETWORK
+    if (role_ != Role::Host)  return;
+    if (!peer.isValid())      return;
+    auto* ep = static_cast<ENetPeer*>(peer.enet_peer);
+    enet_peer_disconnect(ep, 0);
+    std::printf("[net] kicked peer (graceful disconnect requested)\n");
+    // The DISCONNECT event will land in poll() shortly and queue this peer
+    // into departed_peers_, where the host loop will pick it up and despawn
+    // the leaving player's cells.
+#else
+    (void)peer;
+#endif
 }
 
 void NetworkTransport::sendWelcomeTo(PeerHandle peer, const codec::WelcomeMsg& msg) {

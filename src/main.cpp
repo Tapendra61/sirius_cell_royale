@@ -25,6 +25,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -153,14 +154,19 @@ enum class MatchMode {
 };
 
 struct WindowState {
-    cr::Simulation* sim;
-    cr::Client*     client;
-    cr::Replay*     live_replay;
-    cr::Tuning*     tuning;
-    bool*           replay_recording;
-    cr::EntityId*   player_cell_id;
-    cr::PlayerId    player_id;
-    MatchMode       mode = MatchMode::SinglePlayer;
+    cr::Simulation*       sim;
+    cr::Client*           client;
+    cr::Replay*           live_replay;
+    cr::Tuning*           tuning;
+    bool*                 replay_recording;
+    cr::EntityId*         player_cell_id;
+    cr::PlayerId          player_id;
+    MatchMode             mode = MatchMode::SinglePlayer;
+    // LocalHost-only: the network transport + the peer->player map so the
+    // dev console can issue host actions like `kick PID`. Null on SinglePlayer
+    // / LocalClient.
+    cr::NetworkTransport* net_transport   = nullptr;
+    std::unordered_map<void*, cr::PlayerId>* peer_to_player = nullptr;
 };
 
 void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
@@ -183,6 +189,7 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
         con.log("  comet             spawn a crashing-comet event now");
         con.log("  spawn_food N      drop N random food (food_target+=N)");
         con.log("  seed_food N [M]   drop N food, optional mass tier M (1,3,6,12,36)");
+        con.log("  kick PID          (LocalHost only) disconnect peer + despawn their cells");
         con.log("CLIENT-FRIENDLY commands (work in any mode):");
         con.log("  slowmo F          dt multiplier (1=normal, 0.25=slowmo)");
         con.log("  pause             toggle local pause");
@@ -351,6 +358,38 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
             s.sim->triggerCometSpawn();
             con.log("comet scheduled for next tick");
         }
+    } else if (cmd == "kick" && needs(2)) {
+        // Host-only: forcibly disconnect the peer that owns the given PlayerId.
+        // The departed-peer cleanup path then despawns their cells. Refuses for
+        // PlayerId=1 (the host's own slot) and for any PID with no matching peer
+        // (e.g. someone tried to kick a bot or themselves).
+        if (s.mode != MatchMode::LocalHost) {
+            con.log("kick: host-only (only meaningful in LocalHost mode)");
+        } else {
+            int pid_in = std::atoi(args[1].c_str());
+            if (pid_in <= 1) {
+                con.log("kick: refuse to kick player " + args[1]
+                      + " (1 is the host; bots aren't peers)");
+            } else {
+                cr::PlayerId target = static_cast<cr::PlayerId>(pid_in);
+                cr::NetworkTransport::PeerHandle to_kick{};
+                if (s.peer_to_player) {
+                    for (const auto& [peer, pid] : *s.peer_to_player) {
+                        if (pid == target) {
+                            to_kick.enet_peer = peer;
+                            break;
+                        }
+                    }
+                }
+                if (!to_kick.isValid()) {
+                    con.log("kick: no peer with player_id=" + args[1]);
+                } else {
+                    s.net_transport->disconnectPeer(to_kick);
+                    con.log("kick: requested disconnect for player_id=" + args[1]
+                          + " (cells will despawn when ENet confirms)");
+                }
+            }
+        }
     } else if (cmd == "bots" && needs(2)) {
         // Host-only: set the bot target count + immediately despawn excess bot
         // cells so the change reads on screen instantly. `bots 0` clears the world
@@ -486,17 +525,16 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                                 std::move(initial));
     }
 
-    WindowState state{&sim, &client, &live_replay, &tuning,
-                      &replay_recording, &player_cell, player, mode};
-    client.console().setHandler(
-        [&state](const std::vector<std::string>& args) { runDevCommand(state, args); });
-    client.console().log("Cell Royale v0.2.0 -- press ~ for console, 'help' for commands");
-
     // ---- Network setup ----
+    // Declared before WindowState so the state struct can take pointers to these.
     cr::NetworkTransport net_transport;
     // Host-side: the next PlayerId to assign to a joining peer. Starts at 2 because
     // the host itself owns slot 1. Bumped per accepted CONNECT event.
     cr::PlayerId next_peer_player_id = 2;
+    // Host-side: peer (ENetPeer*) -> PlayerId map so we can despawn the leaving
+    // peer's cells on DISCONNECT and so the `kick` console command can find the
+    // ENetPeer to call disconnectPeer on.
+    std::unordered_map<void*, cr::PlayerId> peer_to_player;
     switch (mode) {
         case MatchMode::SinglePlayer:
             // No transport setup needed.
@@ -512,6 +550,16 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
             }
             break;
     }
+
+    // Dev console state. Constructed AFTER the network bits so it can hold
+    // pointers to net_transport + peer_to_player for host-only commands like
+    // `kick`.
+    WindowState state{&sim, &client, &live_replay, &tuning,
+                      &replay_recording, &player_cell, player, mode,
+                      &net_transport, &peer_to_player};
+    client.console().setHandler(
+        [&state](const std::vector<std::string>& args) { runDevCommand(state, args); });
+    client.console().log("Cell Royale v0.2.0 -- press ~ for console, 'help' for commands");
 
     // Helper: find the watched cell in the snapshot (used by camera follow on
     // LocalClient, where the local sim's world is empty).
@@ -599,7 +647,9 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
 
         // ---- Host: accept new peers ----
         // For each peer that just connected, allocate a PlayerId, spawn a cell at a
-        // clear spot, and ship a welcome so they know which cell to watch.
+        // clear spot, and ship a welcome so they know which cell to watch. The
+        // peer pointer is also stored in peer_to_player so we can despawn their
+        // cells when they disconnect (or get kicked).
         if (mode == MatchMode::LocalHost) {
             cr::NetworkTransport::PeerHandle ph;
             while (net_transport.pollNewPeer(ph)) {
@@ -608,9 +658,34 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                 cr::EntityId new_cell = sim.world().spawnCell(
                     new_pid, spawn_at, tuning.start_mass);
                 net_transport.sendWelcomeTo(ph, cr::codec::WelcomeMsg{new_pid, new_cell});
+                peer_to_player[ph.enet_peer] = new_pid;
                 std::printf("[net] spawned cell for new peer (player=%u, cell=%u)\n",
                             static_cast<unsigned>(new_pid),
                             static_cast<unsigned>(new_cell));
+            }
+
+            // ---- Host: clean up departed peers ----
+            // Drain DISCONNECT events; for each one, look up the leaving PlayerId
+            // in our map and despawn every cell that player owns. Skipped if the
+            // peer never made it through the welcome flow (shouldn't happen, but
+            // map.find handles it cleanly).
+            while (net_transport.pollDepartedPeer(ph)) {
+                auto it = peer_to_player.find(ph.enet_peer);
+                if (it == peer_to_player.end()) continue;
+                const cr::PlayerId departing = it->second;
+                peer_to_player.erase(it);
+                auto& cells = sim.world().cellsMut();
+                int   removed = 0;
+                for (auto cit = cells.begin(); cit != cells.end();) {
+                    if (cit->owner == departing) {
+                        cit = cells.erase(cit);
+                        ++removed;
+                    } else {
+                        ++cit;
+                    }
+                }
+                std::printf("[net] cleaned up departed peer (player=%u, despawned %d cells)\n",
+                            static_cast<unsigned>(departing), removed);
             }
         }
 

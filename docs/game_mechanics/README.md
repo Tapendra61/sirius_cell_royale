@@ -317,10 +317,20 @@ Pausing the host would stop snapshots for clients; pausing a client would
 just freeze its local view. Both are confusing in multiplayer, so the
 shortcut and the command both refuse cleanly.
 
+### Disconnect cleanup
+
+- When a peer closes their window (or gets kicked), ENet fires a DISCONNECT
+  event on the host. The host maps the ENet peer back to its PlayerId via an
+  internal `peer_to_player` table, removes every cell owned by that player
+  from the world, and frees the PlayerId slot. Other peers see the leaving
+  cells vanish in the next snapshot.
+- The host can also issue a graceful kick from the dev console:
+  `kick <PlayerId>`. Behaviour is identical to a peer that left on their own.
+- Refuses to kick PlayerId 1 (the host's own slot) and any PID not currently
+  bound to a peer.
+
 ### Known limitations (current state, will fix)
 
-- Disconnect cleanup is partial: the host doesn't yet despawn a leaving peer's
-  cells. They linger as zombie cells.
 - LAN discovery (UDP broadcast) isn't implemented. Joiners must enter the host
   IP manually.
 - Lobby-time bind isn't implemented. The UDP socket opens at START, not in the
@@ -347,6 +357,7 @@ with a `host-only` log line.
 | `comet` | Force-spawn a crashing-comet event on the next sim tick. The spawn position + direction remain RNG-driven. |
 | `spawn_food N` | Drop N random-tier food at random positions. |
 | `seed_food N [mass]` | Drop N food. Optional second arg pins the mass tier to one of `1`, `3`, `6`, `12`, `36`. |
+| `kick PID` | **LocalHost only.** Gracefully disconnect the peer that owns `PID`, then despawn all of their cells. Refuses to kick `PID = 1` (the host) or any PID with no matching peer. |
 
 ### Client-friendly commands
 

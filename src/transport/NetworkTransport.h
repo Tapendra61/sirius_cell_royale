@@ -101,9 +101,22 @@ public:
     // joiners and spawn their cell + send their welcome.
     bool pollNewPeer(PeerHandle& out);
 
+    // Host-side: drains the queue of peers that disconnected since the last
+    // call. The host loop uses this to despawn the leaving peer's cells + free
+    // their PlayerId slot. NB: the PeerHandle in `out` references an ENetPeer
+    // that's already gone -- don't try to send to it; the pointer is just a
+    // stable identifier for the host's peer_to_player map.
+    bool pollDepartedPeer(PeerHandle& out);
+
     // Host-side: ship the welcome message to a specific peer. No-op (or queue
     // for loopback) if !CR_NETWORK.
     void sendWelcomeTo(PeerHandle peer, const codec::WelcomeMsg& msg);
+
+    // Host-side: gracefully disconnect a specific peer (used by `kick`). The
+    // peer's DISCONNECT event will land in pollDepartedPeer's queue just like
+    // a peer that closed their own window. No-op when !CR_NETWORK or the
+    // handle is null.
+    void disconnectPeer(PeerHandle peer);
 
     // Client-side: returns true exactly once after a welcome arrives from the
     // host, filling `out`. Subsequent calls return false until another welcome
@@ -132,9 +145,11 @@ private:
     void* enet_host_  = nullptr;  // ENetHost*  (server listener OR client socket)
     void* enet_peer_  = nullptr;  // ENetPeer*  (client only -- the host peer)
 
-    // Handshake queues. new_peers_ collects host-side CONNECT events for the host
-    // loop to drain; welcomes_ collects client-side decoded codec::WelcomeMsgs.
-    std::deque<PeerHandle> new_peers_;
+    // Handshake queues. new_peers_ collects host-side CONNECT events for the
+    // host loop to drain; departed_peers_ collects DISCONNECT events; welcomes_
+    // collects client-side decoded codec::WelcomeMsgs.
+    std::deque<PeerHandle>        new_peers_;
+    std::deque<PeerHandle>        departed_peers_;
     std::deque<codec::WelcomeMsg> welcomes_;
 };
 
