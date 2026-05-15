@@ -24,6 +24,23 @@ struct CellSnap {
     float    dash_telegraph_norm = 0.0f;
     // Phase 6: bot was scaled-up at spawn ("elite"); renderer draws a pulsing halo.
     bool     is_elite            = false;
+    // Power-up effect flags + countdowns. The renderer draws an aura per active effect
+    // and the AI / eating rules consult these. Norm fields are 0..1 (1 = full).
+    bool     shield_active       = false;
+    bool     magnet_active       = false;
+    bool     stealth_active      = false;
+    float    shield_norm         = 0.0f;
+    float    magnet_norm         = 0.0f;
+    float    stealth_norm        = 0.0f;
+    // Black-hole hiding state. `hiding` is true only when fully hidden (mid-entry
+    // and mid-exit animations are NOT hiding so the renderer still draws them).
+    // `blackhole_visual_scale` drives a cell-radius scaling: 1 = full size (open
+    // world), 0 = invisible (deep inside the hole), values in between during the
+    // entry/exit lerp animation.
+    bool     hiding                 = false;
+    EntityId hiding_in_id           = INVALID_ENTITY;
+    float    blackhole_stamina_norm = 1.0f;
+    float    blackhole_visual_scale = 1.0f;
 
     bool operator==(const CellSnap&) const = default;
 };
@@ -45,12 +62,34 @@ struct VirusSnap {
     bool operator==(const VirusSnap&) const = default;
 };
 
+struct PickupSnap {
+    EntityId   id   = INVALID_ENTITY;
+    Vec2       pos;
+    PickupKind kind = PickupKind::None;
+
+    bool operator==(const PickupSnap&) const = default;
+};
+
+struct BlackHoleSnap {
+    EntityId id          = INVALID_ENTITY;
+    Vec2     pos;
+    float    radius      = 0.0f;
+    float    pull_radius = 0.0f;
+    // Number of cells currently hiding inside, surfaced so the renderer can draw a
+    // small "occupied" tell on the vortex without scanning cells itself.
+    uint8_t  occupancy   = 0;
+
+    bool operator==(const BlackHoleSnap&) const = default;
+};
+
 struct Snapshot {
-    Tick                   tick      = 0;
-    uint64_t               rng_state = 0;
-    std::vector<CellSnap>  cells;
-    std::vector<FoodSnap>  food;
-    std::vector<VirusSnap> viruses;
+    Tick                       tick      = 0;
+    uint64_t                   rng_state = 0;
+    std::vector<CellSnap>      cells;
+    std::vector<FoodSnap>      food;
+    std::vector<VirusSnap>     viruses;
+    std::vector<PickupSnap>    pickups;
+    std::vector<BlackHoleSnap> blackholes;
 
     bool operator==(const Snapshot&) const = default;
 };

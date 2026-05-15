@@ -46,6 +46,16 @@ void Hud::onPlayerNearMissAttacker() { near_miss_red_  = std::max(near_miss_red_
 void Hud::onPlayerNearMissPrey()     { near_miss_gold_ = std::max(near_miss_gold_, 1.0f); }
 void Hud::onCrit()                   { crit_flash_     = std::max(crit_flash_,    1.0f); }
 
+void Hud::pushKillfeed(const KillfeedEntry& entry) {
+    // Shift older entries down (index 0 = most recent). Drop the oldest if full.
+    int keep = std::min(recent_kills_count_, kKillfeedMax - 1);
+    for (int i = keep; i > 0; --i) {
+        recent_kills_[i] = recent_kills_[i - 1];
+    }
+    recent_kills_[0] = entry;
+    recent_kills_count_ = std::min(recent_kills_count_ + 1, kKillfeedMax);
+}
+
 void Hud::update(float frame_dt, double now_sec, float combo_window_sec) {
     combo_flash_    = std::max(0.0f, combo_flash_    - frame_dt * 4.0f);
     near_miss_red_  = std::max(0.0f, near_miss_red_  - frame_dt * 1.8f);
@@ -93,6 +103,50 @@ SummaryAction Hud::render(int screen_w, int screen_h, const Cell* watched, Tick 
         DrawText(buf, screen_w - tw - 22 + 2, 22 + 2, fs, shadow);
         unsigned char g = static_cast<unsigned char>(std::max(80, 220 - combo_count_ * 10));
         DrawText(buf, screen_w - tw - 22, 22, fs, Color{255, g, 60, 255});
+    }
+
+    // ----- Killfeed (top-right, under the combo counter) -----
+    // Only rendered during play / death-cam, not under the summary or pause panels
+    // (those have their own focus).
+    if (phase == GamePhase::Playing || phase == GamePhase::DeathCam) {
+        renderKillfeed(screen_w, screen_h, GetTime());
+    }
+
+    // ----- Black hole stamina bar -----
+    // Shows only while the watched cell is hiding. Centered near the bottom so the
+    // player's eyes aren't competing with the worldview. Bar drains to the left as
+    // stamina runs out; auto-eject fires when it hits 0.
+    if (watched && watched->mass > 0.0f && phase == GamePhase::Playing) {
+        // We don't have direct access to CellSnap here, but the Cell struct in World
+        // carries shield_until / hiding_in plus blackhole_stamina. Pull both off the
+        // watched Cell pointer.
+        // (watched is `const Cell*` from Client::render -> hud_.render.)
+        if (watched->hiding_in != INVALID_ENTITY) {
+            const int bar_w = sc(360);
+            const int bar_h = sc(18);
+            const int bar_x = screen_w / 2 - bar_w / 2;
+            const int bar_y = screen_h - sc(72);
+            float stamina = std::clamp(watched->blackhole_stamina, 0.0f, 1.0f);
+            // Backdrop.
+            DrawRectangle(bar_x - 2, bar_y - 2, bar_w + 4, bar_h + 4,
+                          Color{0, 0, 0, 180});
+            DrawRectangle(bar_x, bar_y, bar_w, bar_h, Color{30, 18, 50, 230});
+            // Fill: shifts hue red as it nears empty.
+            float k = stamina; // 1 = purple, 0 = red
+            Color fill{
+                static_cast<unsigned char>(200 - k * 60),
+                static_cast<unsigned char>( 60 + k * 30),
+                static_cast<unsigned char>( 90 + k * 130),
+                255};
+            DrawRectangle(bar_x, bar_y, static_cast<int>(bar_w * stamina), bar_h, fill);
+            DrawRectangleLines(bar_x, bar_y, bar_w, bar_h, Color{220, 200, 240, 220});
+
+            const char* label = "HIDING -- move cursor away to exit";
+            int label_fs = sc(14);
+            int lw = MeasureText(label, label_fs);
+            DrawText(label, screen_w / 2 - lw / 2, bar_y - sc(20), label_fs,
+                     Color{230, 210, 255, 230});
+        }
     }
 
     // ----- Summary panel (Phase 8) -----
@@ -297,6 +351,65 @@ SummaryAction Hud::renderSummary(int sw, int sh, const MatchSummary& s) {
              Color{180, 190, 215, 200});
 
     return action;
+}
+
+void Hud::renderKillfeed(int sw, int /*sh*/, double now_sec) const {
+    if (recent_kills_count_ <= 0) return;
+
+    // Layout below the combo counter top-right corner. Per-line height stays fixed
+    // (not scaled by HUD text size) since this is more like a system feed than HUD
+    // call-out -- consistent sizing across runs.
+    constexpr int kLineHeight = 22;
+    constexpr int kRowGap     = 4;
+    constexpr int kMargin     = 22;
+    constexpr int kArrowFontSize = 14;
+    constexpr int kNameFontSize  = 16;
+    // Top Y: clear the combo counter's max footprint at scale 1.30 (~y=22 + 83px
+    // text) regardless of whether combo is showing -- the killfeed shouldn't shift
+    // around when combo enters/leaves visibility, and the small slack keeps the two
+    // from ever touching.
+    int y = 120;
+
+    for (int i = 0; i < recent_kills_count_; ++i) {
+        const KillfeedEntry& e = recent_kills_[i];
+        float age = static_cast<float>(now_sec - e.spawned_sec);
+        // Entries live for 4s: full opacity for the first 3s, then fade out 1s.
+        constexpr float kLifetime = 4.0f;
+        constexpr float kFadeStart = 3.0f;
+        if (age >= kLifetime) continue;
+        float alpha = (age < kFadeStart) ? 1.0f : 1.0f - (age - kFadeStart);
+        alpha = std::clamp(alpha, 0.0f, 1.0f);
+        unsigned char a = static_cast<unsigned char>(alpha * 230.0f);
+
+        // "PRED -> PREY" with the arrow in a neutral tint between the two names.
+        const char* arrow = "ate";
+        int arrow_w = MeasureText(arrow, kArrowFontSize);
+        int pred_w  = MeasureText(e.predator, kNameFontSize);
+        int prey_w  = MeasureText(e.prey,     kNameFontSize);
+        int line_w  = pred_w + 10 + arrow_w + 10 + prey_w;
+
+        int x = sw - line_w - kMargin;
+        int row_y = y + (kLineHeight - kNameFontSize) / 2;
+
+        // Slight dark backdrop so names read on busy worlds.
+        DrawRectangle(x - 8, y, line_w + 16, kLineHeight,
+                      Color{0, 0, 0, static_cast<unsigned char>(a * 0.35f)});
+
+        Color pred_c = e.pred_color; pred_c.a = a;
+        Color prey_c = e.prey_color; prey_c.a = a;
+        Color mid_c{200, 200, 210, a};
+
+        DrawText(e.predator, x,                       row_y,   kNameFontSize, pred_c);
+        DrawText(arrow,      x + pred_w + 10,         row_y + 1, kArrowFontSize, mid_c);
+        DrawText(e.prey,     x + pred_w + 10 + arrow_w + 10, row_y, kNameFontSize, prey_c);
+
+        // Mild bracket bar for the player-involved row so it stands out.
+        if (e.involves_player) {
+            DrawRectangle(x - 12, y + 2, 3, kLineHeight - 4,
+                          Color{255, 220, 130, a});
+        }
+        y += kLineHeight + kRowGap;
+    }
 }
 
 SummaryAction Hud::renderPauseOverlay(int sw, int sh) {

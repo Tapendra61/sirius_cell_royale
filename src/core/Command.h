@@ -23,13 +23,18 @@ struct DashCmd {
     bool operator==(const DashCmd&) const = default;
 };
 
-using CommandPayload = std::variant<MoveCmd, SplitCmd, EjectCmd, DashCmd>;
+struct BlastCmd {
+    bool operator==(const BlastCmd&) const = default;
+};
+
+using CommandPayload = std::variant<MoveCmd, SplitCmd, EjectCmd, DashCmd, BlastCmd>;
 
 enum class CommandTag : uint8_t {
     Move  = 0,
     Split = 1,
     Eject = 2,
     Dash  = 3,
+    Blast = 4,
 };
 
 struct Command {

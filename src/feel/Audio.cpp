@@ -103,6 +103,21 @@ float gNearMiss(float t) {
     return std::sin(t * freq * kTwoPi) * env * 0.55f;
 }
 
+float gBlast(float t) {
+    // Mass-blast 4th ability. Deep low-frequency thump with a brief high-frequency
+    // crack on the very first millisecond -- "WHUUUMP-tk" -- the low fundamental
+    // dominates so it reads as concussive rather than chirpy.
+    if (t > 0.40f) return 0.0f;
+    float env_low  = std::exp(-t * 6.5f);
+    float env_crack = (t < 0.012f) ? (1.0f - t / 0.012f) : 0.0f;
+    float freq_low = 60.0f * std::exp(-t * 3.5f);     // 60 Hz -> 14 Hz sub-bass slide
+    float freq_mid = 180.0f * std::exp(-t * 5.0f);    // tonal body
+    float low      = std::sin(t * freq_low * kTwoPi) * 0.75f;
+    float mid      = std::sin(t * freq_mid * kTwoPi) * 0.30f * env_low;
+    float crack    = std::sin(t * 3200.0f * kTwoPi) * env_crack * 0.35f;
+    return (low * env_low + mid + crack) * 0.85f;
+}
+
 float gCrit(float t) {
     // Rising harmonics sting (original design, dropped one octave). Two sine partials
     // sweep up over the duration with a slow exp decay -- same character as the first
@@ -155,6 +170,7 @@ AudioSystem::AudioSystem() {
     split_       = generateSound(180,   gSplit);
     eject_       = generateSound(110,   gEject);
     dash_        = generateSound(220,   gDash);
+    blast_       = generateSound(420,   gBlast);
     virus_       = generateSound(300,   gVirus);
     death_       = generateSound(450,   gDeath);
     near_miss_   = generateSound(180,   gNearMiss);
@@ -175,6 +191,7 @@ AudioSystem::~AudioSystem() {
     UnloadSound(split_);
     UnloadSound(eject_);
     UnloadSound(dash_);
+    UnloadSound(blast_);
     UnloadSound(virus_);
     UnloadSound(death_);
     UnloadSound(near_miss_);
@@ -275,6 +292,12 @@ void AudioSystem::playDash() {
     if (!device_ready_) return;
     SetSoundVolume(dash_, 0.95f * sfx_);
     PlaySound(dash_);
+}
+
+void AudioSystem::playBlast() {
+    if (!device_ready_) return;
+    SetSoundVolume(blast_, 1.0f * sfx_);
+    PlaySound(blast_);
 }
 
 void AudioSystem::playVirusPop() {

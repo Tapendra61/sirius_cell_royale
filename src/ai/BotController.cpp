@@ -116,6 +116,15 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
 
     for (const auto& c : world.cells()) {
         if (c.id == self.id || c.owner == self.owner) continue;
+        // Stealth pickup: the holder is invisible to bot AI. Bots can't target them
+        // as prey *or* avoid them as a threat -- the player can sneak past safely or
+        // bait bots into running into a much larger stealthed cell.
+        if (c.stealth_until > now) continue;
+        // Cells hiding in a black hole don't exist for AI purposes either, and
+        // neither do cells mid-eject (the exit animation grants prey immunity and
+        // ends in ~0.35s; bots wasting attention chasing them is just noise).
+        if (c.hiding_in != INVALID_ENTITY) continue;
+        if (c.exit_anim_until > now) continue;
         float dx  = c.pos.x - self.pos.x;
         float dy  = c.pos.y - self.pos.y;
         float dsq = dx * dx + dy * dy;

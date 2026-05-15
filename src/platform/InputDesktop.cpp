@@ -21,6 +21,7 @@ InputState pollInputDesktop(const Camera2D& cam, int /*sw*/, int /*sh*/,
     s.dashPressed  = IsKeyPressed(KEY_LEFT_SHIFT)
                   || IsKeyPressed(KEY_RIGHT_SHIFT)
                   || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
+    s.blastPressed = IsKeyPressed(KEY_Q);
     s.pausePressed = IsKeyPressed(KEY_ESCAPE);
 
     return s;

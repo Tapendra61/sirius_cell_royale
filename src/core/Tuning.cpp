@@ -60,6 +60,13 @@ bool LoadTuningFromFile(Tuning& out, const std::string& path) {
     readFloat(ini, "dash", "cost_percent",            out.cost_percent);
     readFloat(ini, "dash", "cooldown_sec",            out.cooldown_sec);
 
+    readFloat(ini, "blast", "min_mass",               out.blast_min_mass);
+    readFloat(ini, "blast", "cost_percent",           out.blast_cost_percent);
+    readFloat(ini, "blast", "radius",                 out.blast_radius);
+    readFloat(ini, "blast", "push_speed",             out.blast_push_speed);
+    readFloat(ini, "blast", "food_push_scale",        out.blast_food_push_scale);
+    readFloat(ini, "blast", "cooldown_sec",           out.blast_cooldown_sec);
+
     readFloat(ini, "crit", "chance_per_absorb",       out.chance_per_absorb);
     readFloat(ini, "crit", "bonus_multiplier",        out.bonus_multiplier);
     readFloat(ini, "crit", "near_miss_threshold",     out.near_miss_threshold);
@@ -68,6 +75,23 @@ bool LoadTuningFromFile(Tuning& out, const std::string& path) {
     readInt(ini, "world", "height",                   out.world_height);
     readInt(ini, "world", "food_target",              out.food_target);
     readInt(ini, "world", "virus_count",              out.virus_count);
+
+    readInt  (ini, "pickups", "target",                   out.pickup_target);
+    readFloat(ini, "pickups", "shield_duration_sec",      out.pickup_shield_duration_sec);
+    readFloat(ini, "pickups", "magnet_duration_sec",      out.pickup_magnet_duration_sec);
+    readFloat(ini, "pickups", "stealth_duration_sec",     out.pickup_stealth_duration_sec);
+    readFloat(ini, "pickups", "magnet_radius",            out.pickup_magnet_radius);
+    readFloat(ini, "pickups", "magnet_speed",             out.pickup_magnet_speed);
+
+    readInt  (ini, "blackholes", "count",                 out.blackhole_count);
+    readFloat(ini, "blackholes", "radius",                out.blackhole_radius);
+    readFloat(ini, "blackholes", "pull_radius",           out.blackhole_pull_radius);
+    readFloat(ini, "blackholes", "pull_speed",            out.blackhole_pull_speed);
+    readFloat(ini, "blackholes", "pull_min_speed",        out.blackhole_pull_min_speed);
+    readFloat(ini, "blackholes", "min_separation",        out.blackhole_min_separation);
+    readFloat(ini, "blackholes", "stamina_drain_sec",     out.blackhole_stamina_drain_sec);
+    readFloat(ini, "blackholes", "stamina_refill_sec",    out.blackhole_stamina_refill_sec);
+    readFloat(ini, "blackholes", "transition_sec",        out.blackhole_transition_sec);
 
     readInt  (ini, "bots", "target_count",            out.bot_target_count);
     readFloat(ini, "bots", "spawn_interval_sec",      out.bot_spawn_interval_sec);
@@ -97,8 +121,9 @@ void PrintTuning(const Tuning& t) {
                 t.cost_percent, t.cooldown_sec);
     std::printf("  [crit]    chance=%.2f  bonus=%.2f  near_miss=%.2f\n",
                 t.chance_per_absorb, t.bonus_multiplier, t.near_miss_threshold);
-    std::printf("  [world]   %dx%d  food_target=%d  viruses=%d\n",
-                t.world_width, t.world_height, t.food_target, t.virus_count);
+    std::printf("  [world]   %dx%d  food_target=%d  viruses=%d  pickups=%d  blackholes=%d\n",
+                t.world_width, t.world_height, t.food_target, t.virus_count,
+                t.pickup_target, t.blackhole_count);
     std::printf("  [bots]    target=%d  spawn_interval=%.2fs  difficulty=%.2f\n",
                 t.bot_target_count, t.bot_spawn_interval_sec, t.difficulty_scaling);
     std::printf("  [feel]    shake_max=%.1f  hitstop>%.0f@%.2fs  particles=%d/%d\n",

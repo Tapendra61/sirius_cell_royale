@@ -29,7 +29,9 @@ ParticleSystem::ParticleSystem(size_t pool_size)
       c0_(pool_size),
       c1_(pool_size),
       s0_(pool_size, 0.0f),
-      s1_(pool_size, 0.0f) {}
+      s1_(pool_size, 0.0f),
+      target_(pool_size),
+      accel_(pool_size, 0.0f) {}
 
 float ParticleSystem::frand() {
     rng_ ^= rng_ << 13;
@@ -43,7 +45,8 @@ float ParticleSystem::frand(float lo, float hi) {
 }
 
 void ParticleSystem::spawn(Vec2 pos, Vec2 vel, float lifetime,
-                           Color c_start, Color c_end, float size_start, float size_end) {
+                           Color c_start, Color c_end, float size_start, float size_end,
+                           Vec2 target, float accel) {
     const size_t i = next_;
     next_ = (next_ + 1) % pool_size_;
     pos_[i]      = pos;
@@ -54,17 +57,37 @@ void ParticleSystem::spawn(Vec2 pos, Vec2 vel, float lifetime,
     c1_[i]       = c_end;
     s0_[i]       = size_start;
     s1_[i]       = size_end;
+    target_[i]   = target;  // (0,0) for linear particles
+    accel_[i]    = accel;   // 0 for linear particles
 }
 
 void ParticleSystem::update(float frame_dt) {
     for (size_t i = 0; i < pool_size_; ++i) {
         if (age_[i] >= lifetime_[i]) continue;
         age_[i] += frame_dt;
-        pos_[i].x += vel_[i].x * frame_dt;
-        pos_[i].y += vel_[i].y * frame_dt;
-        // Soft drag.
-        vel_[i].x *= 0.94f;
-        vel_[i].y *= 0.94f;
+        if (accel_[i] > 0.0f) {
+            // Gravity mode: accelerate toward target from rest, no drag. Velocity
+            // builds up over time, so the particle starts slow and ends fast --
+            // a classic "sucked into the singularity" arc.
+            float dx = target_[i].x - pos_[i].x;
+            float dy = target_[i].y - pos_[i].y;
+            float dsq = dx * dx + dy * dy;
+            if (dsq > 1.0f) {
+                float d    = std::sqrt(dsq);
+                float dirx = dx / d;
+                float diry = dy / d;
+                vel_[i].x += dirx * accel_[i] * frame_dt;
+                vel_[i].y += diry * accel_[i] * frame_dt;
+            }
+            pos_[i].x += vel_[i].x * frame_dt;
+            pos_[i].y += vel_[i].y * frame_dt;
+        } else {
+            // Linear mode: constant velocity with per-frame soft drag.
+            pos_[i].x += vel_[i].x * frame_dt;
+            pos_[i].y += vel_[i].y * frame_dt;
+            vel_[i].x *= 0.94f;
+            vel_[i].y *= 0.94f;
+        }
     }
 }
 
@@ -166,6 +189,68 @@ void ParticleSystem::spawnDashTrail(Vec2 pos, Vec2 vel, Color color) {
               frand(0.20f, 0.40f), color, faded,
               frand(5.0f, 9.0f), 1.0f);
     }
+}
+
+void ParticleSystem::spawnBlastBurst(Vec2 center, float radius, Color color) {
+    // 1) Outward ring -- 36 particles evenly distributed, all moving outward at a
+    //    speed that lands them near `radius` over the lifetime. The drag in the
+    //    linear path naturally decelerates them so the ring expands and slows.
+    constexpr int   kRingCount = 36;
+    const     float lifetime   = 0.55f;
+    // distance ≈ initial_speed / 60 * (1 - 0.94^N) / 0.06 where N = lifetime * 60.
+    // Empirically, initial_speed ≈ radius * 2.0 lands the ring near the desired
+    // outer radius with the existing drag.
+    const float ring_speed = radius * 2.0f;
+    Color faded = color; faded.a = 0;
+    for (int i = 0; i < kRingCount; ++i) {
+        float a = (i * 2.0f * kPi) / kRingCount;
+        Vec2  v{std::cos(a) * ring_speed, std::sin(a) * ring_speed};
+        spawn(center, v, lifetime,
+              Color{255, 255, 255, 230}, faded,
+              /*size_start=*/6.0f, /*size_end=*/1.0f);
+    }
+    // 2) Central energy burst -- 24 particles flying outward at varied angles +
+    //    speeds in the tinted player color.
+    for (int i = 0; i < 24; ++i) {
+        float a    = frand(0.0f, 2.0f * kPi);
+        float spd  = frand(radius * 1.2f, radius * 2.5f);
+        Vec2  v{std::cos(a) * spd, std::sin(a) * spd};
+        spawn(center, v, frand(0.35f, 0.55f),
+              color, faded,
+              /*size_start=*/frand(5.0f, 9.0f), /*size_end=*/1.0f);
+    }
+}
+
+void ParticleSystem::spawnBlackHoleBubble(Vec2 center, float ring_radius) {
+    // Spawn just outside the pull-ring edge, at a random angle, with zero initial
+    // velocity. The gravity branch in update() then accelerates the bubble toward
+    // the centre -- slow at first, fast at the end, like proper infall physics.
+    const float angle   = frand(0.0f, 2.0f * kPi);
+    const float spawn_r = ring_radius * frand(0.92f, 1.05f);
+    const Vec2  pos {center.x + std::cos(angle) * spawn_r,
+                     center.y + std::sin(angle) * spawn_r};
+
+    // Constant acceleration tuned so the bubble covers spawn_r in `lifetime`
+    // seconds starting from rest: distance = 0.5 * a * t^2  =>  a = 2 d / t^2.
+    // The 1.10 multiplier is a small overshoot so the bubble arrives a touch
+    // past the centre (where the BH shader's pure black core hides it cleanly).
+    const float lifetime = frand(1.30f, 1.70f);
+    const float accel    = 1.10f * 2.0f * spawn_r / (lifetime * lifetime);
+
+    // Dark red gradient with a true alpha-zero end so the bubble fades cleanly.
+    Color c_start{
+        static_cast<unsigned char>(160 + frand(-15.0f, 15.0f)),
+        static_cast<unsigned char>( 25 + frand(-10.0f, 10.0f)),
+        static_cast<unsigned char>( 40 + frand(-10.0f, 10.0f)),
+        230};
+    Color c_end{20, 0, 10, 0};
+
+    spawn(pos, /*vel=*/Vec2{0.0f, 0.0f}, lifetime,
+          c_start, c_end,
+          /*size_start=*/frand(5.5f, 9.5f),
+          /*size_end=*/1.0f,
+          /*target=*/center,
+          /*accel=*/accel);
 }
 
 } // namespace cr

@@ -24,6 +24,7 @@ public:
     void playSplit();
     void playEject();
     void playDash();
+    void playBlast();
     void playVirusPop();
     void playPlayerDeath();
     void playNearMiss();
@@ -68,6 +69,7 @@ private:
     Sound split_{};
     Sound eject_{};
     Sound dash_{};
+    Sound blast_{};
     Sound virus_{};
     Sound death_{};
     Sound near_miss_{};

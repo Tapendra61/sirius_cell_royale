@@ -33,6 +33,15 @@ struct Tuning {
     float cost_percent = 0.08f;
     float cooldown_sec = 4.0f;
 
+    // [blast] -- 4th ability. The largest player cell spends a fraction of its mass
+    // to emit a radial shockwave that pushes enemy cells (and food, weaker) outward.
+    float blast_min_mass        = 300.0f;  // must be at least this big to cast
+    float blast_cost_percent    = 0.20f;   // fraction of source cell's mass consumed
+    float blast_radius          = 600.0f;  // push reach
+    float blast_push_speed      = 1200.0f; // peak outward velocity at the blast centre
+    float blast_food_push_scale = 0.5f;    // food gets a weaker push than cells
+    float blast_cooldown_sec    = 4.0f;
+
     // [crit]
     float chance_per_absorb = 0.05f;
     float bonus_multiplier = 1.5f;
@@ -43,6 +52,29 @@ struct Tuning {
     int world_height = 8000;
     int food_target = 1200;
     int virus_count = 30;
+
+    // [pickups] -- power-up drops. Target count is the steady-state population the
+    // world tries to maintain (similar to food_target). Each pickup respawns at a
+    // random position after collection.
+    int   pickup_target = 8;
+    float pickup_shield_duration_sec  = 4.0f;
+    float pickup_magnet_duration_sec  = 5.0f;
+    float pickup_stealth_duration_sec = 4.0f;
+    float pickup_magnet_radius        = 800.0f; // attraction reach
+    float pickup_magnet_speed         = 500.0f; // world units/sec velocity applied to food
+
+    // [blackholes] -- map-scattered safe-haven / hazards. Spawned ONCE at world
+    // construction; no respawn. Cells within pull_radius of one are accelerated
+    // toward its centre, and snap to "hiding" upon crossing the inner radius.
+    int   blackhole_count             = 5;
+    float blackhole_radius            = 70.0f;   // visual + entry threshold
+    float blackhole_pull_radius       = 220.0f;  // outer reach of the pull
+    float blackhole_pull_speed        = 600.0f;  // peak pull acceleration near the inner edge
+    float blackhole_pull_min_speed    = 150.0f;  // pull at the outer-ring edge (gentle suck)
+    float blackhole_min_separation    = 4000.0f; // minimum centre-to-centre distance
+    float blackhole_stamina_drain_sec = 9.0f;    // 1.0 -> 0 inside the hole
+    float blackhole_stamina_refill_sec = 15.0f;  // 0 -> 1 while outside
+    float blackhole_transition_sec     = 0.35f;  // entry / exit animation duration
 
     // [bots]
     int   bot_target_count = 22;

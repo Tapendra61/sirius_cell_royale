@@ -3,6 +3,7 @@
 #include "core/Types.h"
 #include "meta/Missions.h"
 #include "sim/World.h"
+#include "raylib.h"
 
 #include <cstdint>
 
@@ -43,6 +44,18 @@ enum class SummaryAction : uint8_t {
     ResumeFromPause,
 };
 
+// Killfeed line. Lives in Hud's recent_kills_ list and fades out after a few seconds.
+// Names are pre-rendered to a small buffer at push time so the Hud doesn't need to look
+// anything up later (predator/prey cells may be long gone by the time the entry fades).
+struct KillfeedEntry {
+    char     predator[24] = {0};  // e.g. "P1", "Hunter#7"
+    char     prey[24]     = {0};
+    Color    pred_color   = {255, 255, 255, 255};
+    Color    prey_color   = {255, 255, 255, 255};
+    double   spawned_sec  = 0.0;
+    bool     involves_player = false; // bolded + slightly larger
+};
+
 class Hud {
 public:
     void onPlayerAbsorb(float mass_gained, double now_sec, float combo_window_sec);
@@ -51,6 +64,9 @@ public:
     void onPlayerNearMissAttacker();
     void onPlayerNearMissPrey();
     void onCrit();
+    // Push a kill into the killfeed. Older entries fall off automatically once we hit
+    // the visible limit; everything fades after ~4s.
+    void pushKillfeed(const KillfeedEntry& entry);
 
     void update(float frame_dt, double now_sec, float combo_window_sec);
 
@@ -68,6 +84,7 @@ public:
 private:
     SummaryAction renderSummary(int screen_w, int screen_h, const MatchSummary& s);
     SummaryAction renderPauseOverlay(int screen_w, int screen_h);
+    void          renderKillfeed(int screen_w, int screen_h, double now_sec) const;
 
     int    combo_count_         = 0;
     int    best_combo_          = 0;
@@ -77,6 +94,10 @@ private:
     float  near_miss_gold_      = 0.0f;
     float  crit_flash_          = 0.0f;
     bool   player_dead_         = false;
+
+    static constexpr int kKillfeedMax = 5;
+    KillfeedEntry recent_kills_[kKillfeedMax] = {};
+    int           recent_kills_count_         = 0; // active entries in [0, kKillfeedMax)
 };
 
 } // namespace cr

@@ -49,6 +49,21 @@ inline Vec2  lerp(Vec2 a, Vec2 b, float t) { return a + (b - a) * t; }
 // Cell radius derived from mass: at mass=100, radius=30 (matches tuning comment).
 inline float cellRadius(float mass) { return 3.0f * std::sqrt(mass); }
 
+// Power-up pickup kinds. Spawned sparsely across the world, consumed by overlap with
+// a cell (like food). Each kind applies a timed effect via a corresponding `*_until`
+// field on Cell.
+enum class PickupKind : uint8_t {
+    None    = 0,
+    Shield  = 1, // brief invulnerability -- you can't be absorbed
+    Magnet  = 2, // food within radius drifts toward you
+    Stealth = 3, // bot AI stops targeting you (you read as a virus to them)
+};
+
+constexpr int kPickupKindCount = 3;
+
+// Pickup visual radius (same size for all three kinds so they read as one "category").
+inline float pickupRadius() { return 18.0f; }
+
 // Food radius -- discrete tiers so common food is uniform while bigger drops stand out
 // without being so large they read as "tiny cell". Capped well below cell radius.
 inline float foodRadius(float mass) {

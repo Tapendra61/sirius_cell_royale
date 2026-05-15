@@ -45,6 +45,7 @@ bool writeCommand(std::FILE* f, const Command& cmd) {
         case static_cast<uint8_t>(CommandTag::Split):
         case static_cast<uint8_t>(CommandTag::Eject):
         case static_cast<uint8_t>(CommandTag::Dash):
+        case static_cast<uint8_t>(CommandTag::Blast):
             return true; // no payload
         default:
             return false;
@@ -71,6 +72,9 @@ bool readCommand(std::FILE* f, Command& cmd) {
             return true;
         case static_cast<uint8_t>(CommandTag::Dash):
             cmd.payload = DashCmd{};
+            return true;
+        case static_cast<uint8_t>(CommandTag::Blast):
+            cmd.payload = BlastCmd{};
             return true;
         default:
             return false;

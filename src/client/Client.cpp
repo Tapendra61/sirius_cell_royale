@@ -91,6 +91,11 @@ void Client::pollFrame(int screen_w, int screen_h, Tick current_tick) {
         queued_.push_back(Command{watched_player_, current_tick, DashCmd{}});
         audio_.playDash();
     }
+    if (s.blastPressed) {
+        // The sim's doBlast handles min-mass + cooldown gating; we just queue. The
+        // BlastEvent it emits drives the local feel layer (particles / shake / audio).
+        queued_.push_back(Command{watched_player_, current_tick, BlastCmd{}});
+    }
 }
 
 std::vector<Command> Client::takeCommands() {
@@ -251,6 +256,30 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                     bumpMissionProgress(MissionKind::EatFood, match_food_eaten_);
                 }
             } else if constexpr (std::is_same_v<T, DeathEvent>) {
+                // Killfeed entry first -- show every inter-player kill so the world
+                // feels populated; player-involved kills get a gold bracket accent
+                // (set via involves_player) so they stand out among bot-vs-bot rows.
+                {
+                    auto fmtName = [](char* buf, size_t n, PlayerId pid, uint8_t tag) {
+                        static const char kLetters[] = {'P', 'G', 'C', 'H', 'h', 'R'};
+                        char letter = (tag < sizeof(kLetters)) ? kLetters[tag] : '?';
+                        std::snprintf(buf, n, "%c%u", letter, static_cast<unsigned>(pid));
+                    };
+                    const bool involves_player =
+                        (e.predator_player == watched_player_)
+                     || (e.player          == watched_player_);
+                    KillfeedEntry kf;
+                    fmtName(kf.predator, sizeof(kf.predator),
+                            e.predator_player, e.predator_personality);
+                    fmtName(kf.prey,     sizeof(kf.prey),
+                            e.player,          e.prey_personality);
+                    kf.pred_color      = colorForPlayer(e.predator_player);
+                    kf.prey_color      = colorForPlayer(e.player);
+                    kf.spawned_sec     = now_sec;
+                    kf.involves_player = involves_player;
+                    hud_.pushKillfeed(kf);
+                }
+
                 // e.player is the OWNER of the cell that just died. DeathEvent fires
                 // PER CELL, not per player -- with multi-cell splits the player can
                 // lose one piece and still be in the match. Only treat it as a real
@@ -345,6 +374,43 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                     ++match_crits_landed_;
                     bumpMissionProgress(MissionKind::LandCrits, match_crits_landed_);
                 }
+            } else if constexpr (std::is_same_v<T, BlastEvent>) {
+                // Shockwave from the 4th ability. Big particle burst + ring at the
+                // blast origin, screen shake + chroma flash if it's the player's blast.
+                const Color color = colorForPlayer(e.player);
+                particles_.spawnBlastBurst(e.at, e.radius, color);
+                if (e.player == watched_player_) {
+                    shake_.addTrauma(0.6f);
+                    chroma_.addShift(0.45f);
+                    audio_.playBlast();
+                    popups_.spawn(e.at, "BLAST!", color, 28.0f);
+                } else if (within_earshot(e.at)) {
+                    // Enemy blast nearby -- audible but no shake.
+                    audio_.playBlast();
+                }
+            } else if constexpr (std::is_same_v<T, PickupCollectedEvent>) {
+                // Visual + audio confirmation, only for the watched player so the
+                // world isn't littered with toast popups from 50 bots also grabbing
+                // pickups. Bots get the effect but no player-facing notification.
+                if (e.player != watched_player_) return;
+
+                const char* label = "PICKUP";
+                Color       hue   = Color{255, 255, 255, 255};
+                switch (e.kind) {
+                    case PickupKind::Shield:
+                        label = "SHIELD!"; hue = Color{120, 220, 255, 255}; break;
+                    case PickupKind::Magnet:
+                        label = "MAGNET!"; hue = Color{255, 170,  80, 255}; break;
+                    case PickupKind::Stealth:
+                        label = "STEALTH!"; hue = Color{200, 130, 240, 255}; break;
+                    case PickupKind::None: return;
+                }
+                particles_.spawnAbsorbBurst(e.at, 40.0f, hue);
+                popups_.spawn(e.at, label, hue, 26.0f);
+                // Reuse the crit sting for now -- distinct enough to feel rewarding
+                // without needing a new procedural sound.
+                audio_.playCrit();
+                chroma_.addShift(0.25f);
             }
         }, ev);
     }
@@ -358,6 +424,16 @@ void Client::updateFrame(float frame_dt, double now_sec, const Tuning& tuning) {
     chroma_.update(frame_dt);
     hud_.update(frame_dt, now_sec, tuning.combo_window_sec);
     audio_.update();
+
+    // Continuous black-hole bubble particle spray. Each frame, each hole emits one
+    // dark-red bubble at a random point on its pull-ring edge with velocity toward
+    // the centre. Purely visual -- particles_ has its own RNG so this doesn't touch
+    // sim determinism.
+    if (interp_.hasCurr()) {
+        for (const auto& b : interp_.curr().blackholes) {
+            particles_.spawnBlackHoleBubble(b.pos, b.pull_radius);
+        }
+    }
 
     if (death_cam_.active) {
         death_cam_.remaining -= frame_dt;

@@ -132,7 +132,14 @@ void BotDirector::respawnBots(World& world, const Tuning& t) {
             }
         }
 
-        world.spawnCell(pid, pos, spawn_mass);
+        EntityId cell_id = world.spawnCell(pid, pos, spawn_mass);
+        // Tag the cell with the personality so Rules-level code (e.g. DeathEvent
+        // emission for the killfeed) can identify the bot type without reaching back
+        // into the director. Mirrors the encoding used by the snapshot: 0 = player,
+        // N+1 = personality enum value.
+        if (auto* c = world.findCell(cell_id)) {
+            c->personality_tag = static_cast<uint8_t>(personality) + 1;
+        }
 
         BotMind mind;
         mind.player        = pid;

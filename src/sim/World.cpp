@@ -87,6 +87,25 @@ EntityId World::spawnVirus(Vec2 pos, float mass) {
     return v.id;
 }
 
+EntityId World::spawnPickup(Vec2 pos, PickupKind kind) {
+    Pickup p;
+    p.id   = next_id_++;
+    p.pos  = pos;
+    p.kind = kind;
+    pickups_.push_back(p);
+    return p.id;
+}
+
+EntityId World::spawnBlackHole(Vec2 pos, float radius, float pull_radius) {
+    BlackHole b;
+    b.id          = next_id_++;
+    b.pos         = pos;
+    b.radius      = radius;
+    b.pull_radius = pull_radius;
+    blackholes_.push_back(b);
+    return b.id;
+}
+
 Cell* World::findCell(EntityId id) {
     for (auto& c : cells_) {
         if (c.id == id) return &c;
@@ -125,6 +144,34 @@ const Food* World::findFood(EntityId id) const {
 const Virus* World::findVirus(EntityId id) const {
     for (const auto& v : viruses_) {
         if (v.id == id) return &v;
+    }
+    return nullptr;
+}
+
+Pickup* World::findPickup(EntityId id) {
+    for (auto& p : pickups_) {
+        if (p.id == id) return &p;
+    }
+    return nullptr;
+}
+
+const Pickup* World::findPickup(EntityId id) const {
+    for (const auto& p : pickups_) {
+        if (p.id == id) return &p;
+    }
+    return nullptr;
+}
+
+BlackHole* World::findBlackHole(EntityId id) {
+    for (auto& b : blackholes_) {
+        if (b.id == id) return &b;
+    }
+    return nullptr;
+}
+
+const BlackHole* World::findBlackHole(EntityId id) const {
+    for (const auto& b : blackholes_) {
+        if (b.id == id) return &b;
     }
     return nullptr;
 }

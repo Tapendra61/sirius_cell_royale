@@ -29,12 +29,24 @@ public:
     void spawnNearMissSparks(Vec2 pos, Color color);
     void spawnDashTrail(Vec2 pos, Vec2 vel, Color color);
 
+    // Continuous "sucked-in bubble" spawned at a random angle on the pull-ring edge,
+    // velocity pointing at the black hole's centre. Caller invokes this once per
+    // frame per black hole; the particle's lifetime is sized so it visually
+    // reaches the centre around the time it dies (size shrinks to zero).
+    void spawnBlackHoleBubble(Vec2 center, float ring_radius);
+
+    // One-shot shockwave: an expanding ring of particles flying outward at constant
+    // speed for the duration of the ring, plus a central bright burst. Used by the
+    // 4th-ability (Mass Blast).
+    void spawnBlastBurst(Vec2 center, float radius, Color color);
+
     size_t poolSize() const { return pool_size_; }
     size_t liveCount() const;
 
 private:
     void spawn(Vec2 pos, Vec2 vel, float lifetime,
-               Color c_start, Color c_end, float size_start, float size_end);
+               Color c_start, Color c_end, float size_start, float size_end,
+               Vec2 target = Vec2{0.0f, 0.0f}, float accel = 0.0f);
     float frand();              // [0, 1)
     float frand(float lo, float hi);
 
@@ -42,13 +54,18 @@ private:
     size_t              next_  = 0;
     uint64_t            rng_   = 0xC0FFEE12345678ull;
 
-    // SoA storage.
+    // SoA storage. target_ + accel_ are gravity-mode fields: when accel_[i] > 0, the
+    // particle accelerates from rest toward target_[i] (no drag). When accel_[i] == 0
+    // the particle uses the classic linear-velocity-with-drag motion. Both groups
+    // share the same pool slots.
     std::vector<Vec2>   pos_;
     std::vector<Vec2>   vel_;
     std::vector<float>  age_;
     std::vector<float>  lifetime_;
     std::vector<Color>  c0_, c1_;
     std::vector<float>  s0_, s1_;
+    std::vector<Vec2>   target_;
+    std::vector<float>  accel_;
 };
 
 } // namespace cr

@@ -142,6 +142,152 @@ void drawWorldGrid(int world_w, int world_h, Vec2 view_min, Vec2 view_max) {
                          4.0f, Color{90, 100, 115, 255});
 }
 
+// Procedural black-hole shader. Drawn onto a 1x1 white texture scaled to fit each
+// hole's disc-extent square. The fragment shader receives fragTexCoord in [0,1],
+// remaps to centered [-1,1], and produces a swirling accretion disc + dark core.
+// One global Shader + Texture loaded lazily on first call (after raylib's window is
+// up). raylib auto-cleans both on CloseWindow().
+const char* const kBlackHoleFS = R"GLSL(
+#version 330
+
+in vec2 fragTexCoord;
+out vec4 finalColor;
+
+uniform float u_time;
+uniform float u_horizon;   // 0..1, event horizon radius
+
+void main() {
+    vec2  uv = (fragTexCoord - 0.5) * 2.0;
+    float r  = length(uv);
+    if (r > 1.0) discard;
+
+    float theta = atan(uv.y, uv.x);
+
+    // Frame-dragging swirl: angular shift grows toward the centre, so streamlines
+    // wind tighter near the horizon. Time term is the slow rotation rate.
+    float swirl = 4.5 * pow(1.0 - r, 1.4);
+    float spin  = theta + u_time * 0.22 + swirl;
+
+    // Two-armed spiral pattern, sharpened so the arms read crisp.
+    float arms = 0.5 + 0.5 * sin(spin * 2.0 + r * 5.0);
+    arms = pow(arms, 2.5);
+
+    // Accretion brightness: peaks just outside the horizon, falls off both inward
+    // (into the void) and outward (into the pull halo).
+    float horizon_edge   = smoothstep(u_horizon * 0.95, u_horizon * 1.08, r);
+    float outer_falloff  = 1.0 - smoothstep(u_horizon * 1.2, 0.95, r);
+    float disc_brightness = horizon_edge * outer_falloff;
+
+    // Palette: deep indigo void -> dark red disc dust -> hot orange inner.
+    vec3 col_void  = vec3(0.06, 0.02, 0.12);
+    vec3 col_dust  = vec3(0.45, 0.06, 0.18);
+    vec3 col_blaze = vec3(1.00, 0.55, 0.18);
+
+    float depth = smoothstep(1.0, u_horizon * 1.1, r); // 0 at edge, 1 near horizon
+    vec3  base  = mix(col_void, col_dust, depth);
+    vec3  color = mix(base, col_blaze, disc_brightness * arms);
+
+    // Event horizon: pure black inside the inner radius with a thin smoothed edge.
+    color *= smoothstep(u_horizon * 0.95, u_horizon * 1.02, r);
+
+    // Outer alpha: soft fade so the disc blends into the world background.
+    float alpha = smoothstep(1.0, 0.55, r);
+
+    finalColor = vec4(color, alpha);
+}
+)GLSL";
+
+struct BlackHoleGfx {
+    Shader     shader{};
+    Texture2D  white{};
+    int        loc_time    = -1;
+    int        loc_horizon = -1;
+    bool       initialized = false;
+    bool       failed      = false;
+};
+
+BlackHoleGfx g_bh_gfx;
+
+void ensureBlackHoleGfx() {
+    if (g_bh_gfx.initialized || g_bh_gfx.failed) return;
+
+    g_bh_gfx.shader = LoadShaderFromMemory(nullptr, kBlackHoleFS);
+    if (g_bh_gfx.shader.id == 0) {
+        g_bh_gfx.failed = true;
+        return;
+    }
+    g_bh_gfx.loc_time    = GetShaderLocation(g_bh_gfx.shader, "u_time");
+    g_bh_gfx.loc_horizon = GetShaderLocation(g_bh_gfx.shader, "u_horizon");
+
+    // 1x1 white texture for the shader pass. We avoid raylib's built-in shapes
+    // texture because we want predictable UVs (DrawTexturePro maps source 0..1
+    // across the destination, so fragTexCoord interpolates cleanly across the quad).
+    Image img = GenImageColor(1, 1, WHITE);
+    g_bh_gfx.white = LoadTextureFromImage(img);
+    UnloadImage(img);
+
+    g_bh_gfx.initialized = true;
+}
+
+void drawBlackHole(const BlackHoleSnap& b, double now_sec) {
+    const Vector2 c{b.pos.x, b.pos.y};
+    const float   t = static_cast<float>(now_sec);
+
+    ensureBlackHoleGfx();
+
+    // Outer pull-ring tell -- soft purple disc + thin ring. Shows the player the
+    // danger zone without dominating the screen. Drawn before the shader pass so
+    // the accretion disc sits on top of it.
+    {
+        float pulse = 0.5f + 0.5f * std::sin(t * 0.9f);
+        unsigned char a = static_cast<unsigned char>(24 + pulse * 20);
+        DrawCircleV(c, b.pull_radius, Color{110, 40, 175, a});
+        DrawCircleLinesV(c, b.pull_radius,
+                         Color{170, 80, 220, static_cast<unsigned char>(a * 2)});
+    }
+
+    if (g_bh_gfx.initialized) {
+        // Shader pass: draw a 1x1 white texture stretched to a square covering the
+        // disc. The fragment shader does the visual work. Disc extent is ~2.2x the
+        // event horizon so the accretion glow has fade-out room.
+        const float disc_extent = b.radius * 2.2f;
+        const Rectangle dst{c.x - disc_extent, c.y - disc_extent,
+                            disc_extent * 2.0f, disc_extent * 2.0f};
+        // Event horizon in shader UV space (uv is [-1, 1] across dst):
+        const float horizon_norm = b.radius / disc_extent;
+
+        BeginShaderMode(g_bh_gfx.shader);
+        SetShaderValue(g_bh_gfx.shader, g_bh_gfx.loc_time,    &t,            SHADER_UNIFORM_FLOAT);
+        SetShaderValue(g_bh_gfx.shader, g_bh_gfx.loc_horizon, &horizon_norm, SHADER_UNIFORM_FLOAT);
+        DrawTexturePro(g_bh_gfx.white,
+                       Rectangle{0, 0, 1, 1},
+                       dst,
+                       Vector2{0, 0},
+                       0.0f,
+                       WHITE);
+        EndShaderMode();
+    } else {
+        // Fallback path if shader compilation failed (e.g. driver weirdness): a
+        // plain dark core + red ring. Loses the swirl but keeps the entity visible.
+        DrawCircleV(c, b.radius * 1.15f, Color{50, 10, 30, 200});
+        DrawCircleV(c, b.radius,         Color{ 0,  0,  0, 255});
+        DrawCircleLinesV(c, b.radius * 1.05f, Color{200, 50, 60, 220});
+    }
+
+    // Occupancy orbit dots -- drawn on top of the swirl so they read clearly. Slow
+    // rotation so they don't fight the shader's animation.
+    if (b.occupancy > 0) {
+        const int   n       = std::min<int>(b.occupancy, 6);
+        const float orbit_r = b.radius * 0.62f;
+        const float omega   = 0.6f;
+        for (int i = 0; i < n; ++i) {
+            float a = i * (2.0f * kPi / n) + t * omega;
+            Vector2 p{c.x + std::cos(a) * orbit_r, c.y + std::sin(a) * orbit_r};
+            DrawCircleV(p, 2.5f, Color{240, 215, 255, 230});
+        }
+    }
+}
+
 void drawVirus(const VirusSnap& v) {
     const float r       = cellRadius(v.mass);
     const float inner_r = r * 0.85f;
@@ -165,10 +311,124 @@ void drawVirus(const VirusSnap& v) {
     DrawCircleLinesV(Vector2{v.pos.x, v.pos.y}, r, Color{20, 80, 30, 255});
 }
 
+// ---- Pickup colors + draw helper ----
+struct PickupVisual {
+    Color core;       // central body
+    Color glow;       // halo color
+    Color accent;     // decoration / icon
+};
+
+PickupVisual pickupVisual(PickupKind kind) {
+    switch (kind) {
+        case PickupKind::Shield:  return {Color{ 90, 200, 255, 255},
+                                          Color{ 70, 180, 255, 255},
+                                          Color{220, 245, 255, 255}};
+        case PickupKind::Magnet:  return {Color{255, 150,  60, 255},
+                                          Color{255, 120,  40, 255},
+                                          Color{255, 230, 180, 255}};
+        case PickupKind::Stealth: return {Color{170,  90, 220, 255},
+                                          Color{120,  60, 200, 255},
+                                          Color{220, 200, 245, 255}};
+        case PickupKind::None:
+        default:                  return {Color{200, 200, 200, 255},
+                                          Color{160, 160, 160, 255},
+                                          Color{240, 240, 240, 255}};
+    }
+}
+
+void drawPickup(const PickupSnap& p, double now_sec) {
+    const float r     = pickupRadius();
+    PickupVisual vis  = pickupVisual(p.kind);
+
+    // Slow halo pulse so pickups read as "valuable" from across the world.
+    float phase = static_cast<float>(p.id % 64) * 0.07f;
+    float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(now_sec) * 3.2f + phase);
+
+    // Outer halo (very translucent).
+    unsigned char halo_a = static_cast<unsigned char>(40.0f + pulse * 60.0f);
+    DrawCircleV(Vector2{p.pos.x, p.pos.y}, r * 2.4f,
+                Color{vis.glow.r, vis.glow.g, vis.glow.b, halo_a});
+
+    // Mid halo.
+    DrawCircleV(Vector2{p.pos.x, p.pos.y}, r * 1.6f,
+                Color{vis.glow.r, vis.glow.g, vis.glow.b,
+                      static_cast<unsigned char>(80 + pulse * 60.0f)});
+
+    // Body.
+    DrawCircleV(Vector2{p.pos.x, p.pos.y}, r, vis.core);
+    DrawCircleLinesV(Vector2{p.pos.x, p.pos.y}, r,
+                     Color{255, 255, 255, 200});
+
+    // Per-kind decoration so the three powerups read distinctly without text labels.
+    switch (p.kind) {
+        case PickupKind::Shield: {
+            // Buckler look: inner ring + 4 stud dots at cardinal directions.
+            DrawCircleLinesV(Vector2{p.pos.x, p.pos.y}, r * 0.55f, vis.accent);
+            for (int i = 0; i < 4; ++i) {
+                float a = i * (kPi * 0.5f);
+                Vector2 d{p.pos.x + std::cos(a) * r * 0.78f,
+                          p.pos.y + std::sin(a) * r * 0.78f};
+                DrawCircleV(d, 2.5f, vis.accent);
+            }
+            break;
+        }
+        case PickupKind::Magnet: {
+            // Two opposing "poles" -- horizontal bars on either side.
+            const float bw = r * 0.55f;
+            const float bh = r * 0.30f;
+            DrawRectangleRounded(
+                Rectangle{p.pos.x - bw - 1.0f, p.pos.y - bh * 0.5f, bw, bh},
+                0.45f, 4, vis.accent);
+            DrawRectangleRounded(
+                Rectangle{p.pos.x + 1.0f,      p.pos.y - bh * 0.5f, bw, bh},
+                0.45f, 4, vis.accent);
+            break;
+        }
+        case PickupKind::Stealth: {
+            // Wispy shimmer: three concentric thin rings whose phase shifts with time,
+            // so the icon feels "unstable" / about to vanish.
+            for (int i = 0; i < 3; ++i) {
+                float t = (now_sec * 1.4f + i * 0.4f);
+                float k = 0.5f + 0.5f * std::sin(t);
+                float rr = r * (0.30f + 0.20f * k);
+                unsigned char a = static_cast<unsigned char>(80 + k * 120);
+                DrawCircleLinesV(Vector2{p.pos.x, p.pos.y}, rr,
+                                 Color{vis.accent.r, vis.accent.g, vis.accent.b, a});
+            }
+            break;
+        }
+        case PickupKind::None: break;
+    }
+}
+
 void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec, bool flair_star) {
-    float r       = cellRadius(c.mass);
-    Color fill    = colorForPlayer(c.owner);
-    Color outline = outlineFor(fill);
+    // Fully hidden -- BH occupancy dots represent the cell; the body/label aren't
+    // drawn at the pinned centre. Cells mid-entry-anim and mid-exit-anim DO render
+    // (with a shrunken radius via blackhole_visual_scale).
+    if (c.hiding || c.blackhole_visual_scale < 0.02f) return;
+
+    const float scale = std::clamp(c.blackhole_visual_scale, 0.02f, 1.0f);
+    float r           = cellRadius(c.mass) * scale;
+    Color fill        = colorForPlayer(c.owner);
+    Color outline     = outlineFor(fill);
+
+    // Mid-animation cells also fade slightly so the shrink reads as "being
+    // absorbed by the void" rather than just resizing.
+    if (scale < 1.0f) {
+        unsigned char a = static_cast<unsigned char>(scale * 255.0f);
+        fill.a    = a;
+        outline.a = a;
+    }
+
+    // Stealth visual: the cell fades to translucent so the player sees they've gone
+    // "ghostly". Bots can't perceive them; the player still needs feedback.
+    if (c.stealth_active) {
+        // Pulse the alpha low-high low-high so stealth reads as "active" not "broken".
+        float k = 0.5f + 0.5f * std::sin(static_cast<float>(now_sec) * 2.4f);
+        unsigned char a = static_cast<unsigned char>(70 + k * 70);
+        fill.a    = a;
+        outline.a = a;
+    }
 
     if (c.invuln) {
         float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(now_sec * 18.0));
@@ -239,6 +499,37 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec, bool fl
                          Color{255, 255, 255, 200});
     }
 
+    // ---- Power-up effect auras ----
+    // Shield: pulsing cyan double-ring around the cell. Strong enough to read at a
+    // glance so the player and other bots can both tell the cell is uneatable.
+    if (c.shield_active) {
+        float k = 0.5f + 0.5f * std::sin(static_cast<float>(now_sec) * 4.0f);
+        unsigned char a_inner = static_cast<unsigned char>(160 + k * 80);
+        unsigned char a_outer = static_cast<unsigned char>( 80 + k * 60);
+        DrawCircleLinesV(Vector2{pos.x, pos.y}, r + 4.0f,
+                         Color{120, 220, 255, a_inner});
+        DrawCircleLinesV(Vector2{pos.x, pos.y}, r + 7.0f,
+                         Color{ 90, 200, 255, a_outer});
+        DrawCircleLinesV(Vector2{pos.x, pos.y}, r + 10.0f,
+                         Color{ 70, 180, 255,
+                                static_cast<unsigned char>(a_outer * 0.6f)});
+    }
+    // Magnet: short radial spokes pulsing outward to read as "pulling".
+    if (c.magnet_active) {
+        float k = static_cast<float>(now_sec) * 3.0f;
+        for (int i = 0; i < 8; ++i) {
+            float a   = i * (kPi * 0.25f);
+            float ph  = 0.5f + 0.5f * std::sin(k + i * 0.6f);
+            float inn = r + 4.0f;
+            float out = r + 12.0f + ph * 8.0f;
+            Vector2 a0{pos.x + std::cos(a) * inn, pos.y + std::sin(a) * inn};
+            Vector2 a1{pos.x + std::cos(a) * out, pos.y + std::sin(a) * out};
+            DrawLineEx(a0, a1, 2.0f,
+                       Color{255, 150, 60,
+                             static_cast<unsigned char>(100 + ph * 130)});
+        }
+    }
+
     static const char kPersonalityLetters[] = {'P', 'G', 'C', 'H', 'h', 'R'};
     char letter = (c.personality_tag < sizeof(kPersonalityLetters))
                       ? kPersonalityLetters[c.personality_tag]
@@ -307,6 +598,14 @@ void Renderer::drawWorld(const Interpolator& interp,
     // Single GetTime() call for the whole frame; used by halo pulses, invuln flashes, etc.
     const double now_sec = GetTime();
 
+    // Black holes: drawn before food/viruses/cells so the swirling visuals appear
+    // as a backdrop, with cells layered on top -- except hiding cells, which the
+    // black hole's occupancy dots represent instead.
+    for (const auto& b : curr.blackholes) {
+        if (!circleInView(b.pos, b.pull_radius, view_min, view_max)) continue;
+        drawBlackHole(b, now_sec);
+    }
+
     // Food: frustum-cull first (3600 entries × 16k² world means typically <1% on-screen).
     // High-tier ambient food gets a pulsing halo so rare drops stand out from far away.
     for (const auto& f : curr.food) {
@@ -355,6 +654,13 @@ void Renderer::drawWorld(const Interpolator& interp,
         DrawCircleV(Vector2{pos.x, pos.y}, r, c);
     }
 
+    // Power-up pickups. They don't move, so no interpolation needed. Drawn before
+    // viruses and cells so big cells visually overlap them (cells eat pickups).
+    for (const auto& p : curr.pickups) {
+        if (!circleInView(p.pos, pickupRadius() * 2.6f, view_min, view_max)) continue;
+        drawPickup(p, now_sec);
+    }
+
     // Viruses (drift if pushed; interpolate to smooth that motion).
     for (const auto& v : curr.viruses) {
         float vr = cellRadius(v.mass);
@@ -385,11 +691,18 @@ void Renderer::drawWorld(const Interpolator& interp,
         // Cull by interpolated position (use curr; close enough -- entity won't move more
         // than a few px during interp). Generous radius margin because of halos.
         if (!circleInView(c.pos, r + 24.0f, view_min, view_max)) continue;
-        Vec2 pos = c.pos;
+        // Interpolate position AND visual scale between prev/curr so the smooth
+        // black-hole transition reads smoothly at 60+ fps render while the sim
+        // ticks at 30 Hz.
+        Vec2  pos          = c.pos;
+        float interp_scale = c.blackhole_visual_scale;
         if (have_prev) {
             for (const auto& prev_c : prev.cells) {
                 if (prev_c.id == c.id) {
-                    pos = lerp(prev_c.pos, c.pos, alpha);
+                    pos          = lerp(prev_c.pos, c.pos, alpha);
+                    interp_scale = prev_c.blackhole_visual_scale
+                                 + (c.blackhole_visual_scale
+                                    - prev_c.blackhole_visual_scale) * alpha;
                     break;
                 }
             }
@@ -397,7 +710,12 @@ void Renderer::drawWorld(const Interpolator& interp,
         const bool flair = (watched_player != INVALID_PLAYER)
                           && (c.owner == watched_player)
                           && (watched_player_level >= 20);
-        drawCell(pos, c, /*watched=*/c.id == watched_cell, now_sec, flair);
+        // Temporarily swap the snap's visual_scale with the interpolated value so
+        // drawCell uses smooth motion (we can't pass it separately without changing
+        // the signature, and the snap is local to this loop).
+        CellSnap c_local = c;
+        c_local.blackhole_visual_scale = interp_scale;
+        drawCell(pos, c_local, /*watched=*/c.id == watched_cell, now_sec, flair);
     }
 }
 

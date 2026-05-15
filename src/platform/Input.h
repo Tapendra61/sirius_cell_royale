@@ -13,6 +13,7 @@ struct InputState {
     bool splitPressed = false;
     bool ejectPressed = false;
     bool dashPressed  = false;
+    bool blastPressed = false; // 4th ability: mass-spend radial shockwave
     bool pausePressed = false;
 };
 
