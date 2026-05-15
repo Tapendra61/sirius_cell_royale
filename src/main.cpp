@@ -429,7 +429,13 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
 
         // Auto-pause when window loses focus -- keeps CPU/GPU/audio quiet in the
         // background and stops the sim from accumulating real time the player can't see.
-        client.setAutoPaused(!IsWindowFocused());
+        // We DON'T auto-pause in multiplayer modes: the host has to keep ticking so
+        // peers receive snapshots, and the client has to keep polling so the
+        // host's snapshots don't queue up in ENet's recv buffer indefinitely. This
+        // also makes two-instances-on-one-machine loopback testing work (otherwise
+        // whichever window has focus would pause the other).
+        const bool skip_auto_pause = (mode != MatchMode::SinglePlayer);
+        client.setAutoPaused(skip_auto_pause ? false : !IsWindowFocused());
 
         // Drain ENet events (CONNECT/DISCONNECT/RECEIVE) and decode any inbound
         // packets into the transport's typed queues. Cheap when no peers are
