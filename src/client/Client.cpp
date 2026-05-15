@@ -465,9 +465,14 @@ void Client::updateFrame(float frame_dt, double now_sec, const Tuning& tuning) {
         for (const auto& b : interp_.curr().blackholes) {
             particles_.spawnBlackHoleBubble(b.pos, b.pull_radius);
         }
-        // Comet trail is now rendered as a shader-driven stretched cone (see
-        // drawComet in Renderer.cpp). The earlier particle-based trail was choppy and
-        // capped at the pool size; the shader version is smooth, long, and free.
+        // Active-comet ember spray. The shader trail draws the long smooth streak;
+        // this layer adds 6 fiery bubble particles per frame at the comet's surface
+        // so the body of the fireball reads as actively shedding sparks. Skipped
+        // during the telegraph window (the comet hasn't begun travelling yet).
+        for (const auto& cm : interp_.curr().comets) {
+            if (cm.telegraph_norm < 1.0f) continue;
+            particles_.spawnCometEmber(cm.pos, cm.vel, cm.radius);
+        }
     }
 
     if (death_cam_.active) {

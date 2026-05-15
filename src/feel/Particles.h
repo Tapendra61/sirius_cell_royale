@@ -40,6 +40,14 @@ public:
     // 4th-ability (Mass Blast).
     void spawnBlastBurst(Vec2 center, float radius, Color color);
 
+    // Fiery ember bubbles shed by the crashing-comet as it travels. Each call spawns
+    // a small burst of short-lived particles around the comet's surface with
+    // velocities pointing outward (sparks flying off) plus a small backward drift so
+    // they appear to peel off the trail. Caller invokes once per frame per active
+    // comet; the shader trail covers the body of the streak, this layer adds the
+    // motion-blur shimmer of particles being shed mid-flight.
+    void spawnCometEmber(Vec2 pos, Vec2 vel, float radius);
+
     size_t poolSize() const { return pool_size_; }
     size_t liveCount() const;
 

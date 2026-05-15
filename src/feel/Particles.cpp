@@ -253,5 +253,57 @@ void ParticleSystem::spawnBlackHoleBubble(Vec2 center, float ring_radius) {
           /*accel=*/accel);
 }
 
+void ParticleSystem::spawnCometEmber(Vec2 pos, Vec2 vel, float radius) {
+    // Unit "backwards" vector so embers carry a fraction of the comet's velocity in
+    // reverse (peels them off the trail). Falls back to a sensible default if the
+    // comet is briefly stationary -- shouldn't happen in practice but keeps the
+    // function safe.
+    const float speed = std::sqrt(vel.x * vel.x + vel.y * vel.y);
+    const Vec2  back  = (speed > 1.0f)
+                          ? Vec2{-vel.x / speed, -vel.y / speed}
+                          : Vec2{-1.0f, 0.0f};
+
+    // 6 embers per call. At 60fps that's 360/sec per comet; with 0.7s avg lifetime
+    // ~250 in flight -- well under the pool size and visually dense.
+    constexpr int kPerCall = 6;
+    for (int i = 0; i < kPerCall; ++i) {
+        // Random point on the comet's surface (slightly inside, so embers appear to
+        // tear off the body rather than spawn in empty air).
+        const float angle = frand(0.0f, 2.0f * kPi);
+        const Vec2  out{std::cos(angle), std::sin(angle)};
+        const float surface_r = radius * frand(0.45f, 0.92f);
+        Vec2 spawn_pos{pos.x + out.x * surface_r,
+                       pos.y + out.y * surface_r};
+
+        // Velocity: outward from the comet's centre (the ejecta motion) plus a
+        // backward drift of `0.10..0.30` of the comet's speed so embers visibly
+        // peel off as the comet moves forward.
+        const float out_speed  = frand(45.0f, 130.0f);
+        const float back_drift = speed * frand(0.10f, 0.30f);
+        Vec2 v{out.x * out_speed + back.x * back_drift,
+               out.y * out_speed + back.y * back_drift};
+
+        // Blackbody-style colour: bright pale-yellow at birth, fading through orange
+        // to near-black. Random brightness per ember adds flicker without needing
+        // animated noise (the trail shader already provides that).
+        const float bright = frand(0.85f, 1.0f);
+        Color c_start{
+            static_cast<unsigned char>(255 * bright),
+            static_cast<unsigned char>((200 + frand(-25.0f, 20.0f)) * bright),
+            static_cast<unsigned char>(( 80 + frand(-25.0f, 30.0f)) * bright),
+            245};
+        Color c_end{45, 8, 4, 0};
+
+        // Lifetime + size: longer-lived embers are smaller and dimmer (drop further
+        // from the comet, fade slower). Size shrinks to a small but non-zero end so
+        // the ember "winks out" rather than disappearing mid-frame.
+        const float lifetime = frand(0.45f, 0.90f);
+        const float size0    = radius * frand(0.09f, 0.18f);
+        const float size1    = radius * frand(0.015f, 0.040f);
+
+        spawn(spawn_pos, v, lifetime, c_start, c_end, size0, size1);
+    }
+}
+
 
 } // namespace cr
