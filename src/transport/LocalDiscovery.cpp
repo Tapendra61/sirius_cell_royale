@@ -64,26 +64,30 @@ bool LocalDiscovery::startHost(uint16_t game_port,
     stop();
     ENetSocket s = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
     if (s == ENET_SOCKET_NULL) {
-        std::fprintf(stderr, "[discovery] socket_create failed (host)\n");
+        std::fprintf(stderr, "[discovery] socket_create failed (host) errno=%d (%s)\n",
+                     errno, std::strerror(errno));
         return false;
     }
     if (enet_socket_set_option(s, ENET_SOCKOPT_BROADCAST, 1) < 0) {
-        std::fprintf(stderr, "[discovery] enable BROADCAST failed (host)\n");
+        std::fprintf(stderr, "[discovery] enable BROADCAST failed (host) errno=%d (%s)\n",
+                     errno, std::strerror(errno));
         enet_socket_destroy(s);
         return false;
     }
     if (enet_socket_set_option(s, ENET_SOCKOPT_NONBLOCK, 1) < 0) {
         // Non-fatal: announcing is fire-and-forget so a blocking sendto is
         // also fine. Log + continue.
-        std::fprintf(stderr, "[discovery] enable NONBLOCK failed (host)\n");
+        std::fprintf(stderr, "[discovery] enable NONBLOCK failed (host) errno=%d (%s)\n",
+                     errno, std::strerror(errno));
     }
     socket_    = fromSock(s);
     game_port_ = game_port;
     std::memset(name_, 0, sizeof(name_));
     std::strncpy(name_, display_name.c_str(), kNameSize - 1);
     mode_ = Mode::Host;
-    std::printf("[discovery] host announces on udp/%u for game port %u\n",
-                static_cast<unsigned>(kDiscoveryPort),
+    std::printf("[discovery] host announces on udp/%u..%u for game port %u\n",
+                static_cast<unsigned>(kDiscoveryPortBase),
+                static_cast<unsigned>(kDiscoveryPortBase + kDiscoveryPortCount - 1),
                 static_cast<unsigned>(game_port));
     return true;
 #else
@@ -96,49 +100,60 @@ bool LocalDiscovery::startHost(uint16_t game_port,
 bool LocalDiscovery::startClient() {
 #ifdef CR_NETWORK
     stop();
-    ENetSocket s = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
-    if (s == ENET_SOCKET_NULL) {
-        std::fprintf(stderr, "[discovery] socket_create failed (client) errno=%d (%s)\n",
-                     errno, std::strerror(errno));
-        return false;
-    }
-    // Reuse the port so a second instance on the same machine can also
-    // listen. Without this, two simultaneous JOIN screens on one box can't
-    // both discover (the second startClient fails to bind). Cross-platform
-    // via ENet's REUSEADDR socket option.
-    if (enet_socket_set_option(s, ENET_SOCKOPT_REUSEADDR, 1) < 0) {
-        // Not fatal -- log and try the bind anyway. Single-instance JOIN
-        // will still work.
-        std::fprintf(stderr, "[discovery] enable REUSEADDR failed (client) errno=%d (%s)\n",
-                     errno, std::strerror(errno));
-    }
-    if (enet_socket_set_option(s, ENET_SOCKOPT_NONBLOCK, 1) < 0) {
-        std::fprintf(stderr, "[discovery] enable NONBLOCK failed (client) errno=%d (%s)\n",
-                     errno, std::strerror(errno));
+    // We try each port in the range [base, base+count). EADDRINUSE on the
+    // first port is common (some background daemon snagged it); falling back
+    // to the next one usually wins. We create a fresh socket per attempt so
+    // we don't have to undo prior setsockopt state.
+    for (int i = 0; i < kDiscoveryPortCount; ++i) {
+        const uint16_t port = static_cast<uint16_t>(kDiscoveryPortBase + i);
+        ENetSocket s = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
+        if (s == ENET_SOCKET_NULL) {
+            std::fprintf(stderr, "[discovery] socket_create failed (client) errno=%d (%s)\n",
+                         errno, std::strerror(errno));
+            return false;
+        }
+        if (enet_socket_set_option(s, ENET_SOCKOPT_REUSEADDR, 1) < 0) {
+            std::fprintf(stderr, "[discovery] enable REUSEADDR failed (client) errno=%d (%s)\n",
+                         errno, std::strerror(errno));
+        }
+        if (enet_socket_set_option(s, ENET_SOCKOPT_NONBLOCK, 1) < 0) {
+            std::fprintf(stderr, "[discovery] enable NONBLOCK failed (client) errno=%d (%s)\n",
+                         errno, std::strerror(errno));
+            enet_socket_destroy(s);
+            return false;
+        }
+        ENetAddress bind_addr{};
+        bind_addr.host = ENET_HOST_ANY;
+        bind_addr.port = port;
+        if (enet_socket_bind(s, &bind_addr) == 0) {
+            socket_ = fromSock(s);
+            mode_   = Mode::Client;
+            std::printf("[discovery] client listens on udp/%u\n",
+                        static_cast<unsigned>(port));
+            return true;
+        }
+        // EADDRINUSE on this port is expected if a daemon owns it. Try the
+        // next one. Log the first failure so the user knows what happened
+        // (subsequent retries are logged at full chain end if all fail).
+        if (i == 0) {
+            std::fprintf(stderr, "[discovery] bind failed on udp/%u errno=%d (%s); "
+                                  "trying next port...\n",
+                         static_cast<unsigned>(port),
+                         errno, std::strerror(errno));
+            if (errno == EADDRINUSE) {
+                std::fprintf(stderr, "[discovery] hint: `lsof -nP -iUDP:%u` will show "
+                                      "what's holding it.\n",
+                             static_cast<unsigned>(port));
+            }
+        }
         enet_socket_destroy(s);
-        return false;
     }
-    ENetAddress bind_addr{};
-    bind_addr.host = ENET_HOST_ANY;
-    bind_addr.port = kDiscoveryPort;
-    if (enet_socket_bind(s, &bind_addr) < 0) {
-        // errno here is the only clue we get back from the kernel about why
-        // the bind failed. EADDRINUSE = something else owns this port (often
-        // another cell_royale instance OR a previous run that didn't release
-        // it cleanly + SO_REUSEADDR couldn't override). EACCES = sandbox /
-        // root-required port (shouldn't apply to 7457 but possible if macOS
-        // Privacy Settings denied the binary network access).
-        std::fprintf(stderr, "[discovery] bind failed on udp/%u errno=%d (%s)\n",
-                     static_cast<unsigned>(kDiscoveryPort),
-                     errno, std::strerror(errno));
-        enet_socket_destroy(s);
-        return false;
-    }
-    socket_ = fromSock(s);
-    mode_   = Mode::Client;
-    std::printf("[discovery] client listens on udp/%u\n",
-                static_cast<unsigned>(kDiscoveryPort));
-    return true;
+    std::fprintf(stderr, "[discovery] all %d fallback ports busy (udp/%u..%u); "
+                          "manual host:port entry still works\n",
+                 kDiscoveryPortCount,
+                 static_cast<unsigned>(kDiscoveryPortBase),
+                 static_cast<unsigned>(kDiscoveryPortBase + kDiscoveryPortCount - 1));
+    return false;
 #else
     return false;
 #endif
@@ -166,31 +181,40 @@ void LocalDiscovery::announceNow() {
     buf.data       = packet;
     buf.dataLength = kPacketSize;
 
-    // Destination 1: limited broadcast (255.255.255.255). Reaches every host
-    // on the LAN via the default interface's broadcast address.
-    ENetAddress bcast{};
-    bcast.host = ENET_HOST_BROADCAST;
-    bcast.port = kDiscoveryPort;
-    int s1 = enet_socket_send(toSock(socket_), &bcast, &buf, 1);
+    // Fire to BOTH the LAN broadcast AND the loopback for each port in the
+    // fallback range. Client may be listening on any one of these depending
+    // on which ports were free when it bound. Total per call: at most
+    // 2 * kDiscoveryPortCount sends (~6 tiny UDP datagrams). Cheap.
+    int total_sent = 0;
+    for (int i = 0; i < kDiscoveryPortCount; ++i) {
+        const uint16_t port = static_cast<uint16_t>(kDiscoveryPortBase + i);
 
-    // Destination 2: 127.0.0.1 loopback. macOS (and a number of Linux distros
-    // with strict reverse-path filtering) DOESN'T deliver 255.255.255.255
-    // packets to a local listener bound to 0.0.0.0 -- the packet goes out the
-    // physical interface and never crosses back. For two-instances-on-one-
-    // machine testing we explicitly cc the loopback so the local JOIN screen
-    // also sees the announce.
-    ENetAddress loop{};
-    enet_address_set_host(&loop, "127.0.0.1");
-    loop.port = kDiscoveryPort;
-    int s2 = enet_socket_send(toSock(socket_), &loop, &buf, 1);
+        // LAN broadcast. Reaches every host on the subnet via the default
+        // interface's broadcast address.
+        ENetAddress bcast{};
+        bcast.host = ENET_HOST_BROADCAST;
+        bcast.port = port;
+        int s1 = enet_socket_send(toSock(socket_), &bcast, &buf, 1);
+        if (s1 > 0) ++total_sent;
+
+        // Loopback. macOS (and Linux configs with strict reverse-path
+        // filtering) doesn't deliver 255.255.255.255 to local listeners
+        // bound to 0.0.0.0, so we explicitly cc 127.0.0.1 for same-machine
+        // testing.
+        ENetAddress loop{};
+        enet_address_set_host(&loop, "127.0.0.1");
+        loop.port = port;
+        int s2 = enet_socket_send(toSock(socket_), &loop, &buf, 1);
+        if (s2 > 0) ++total_sent;
+    }
 
     // One-time confirmation print so it's obvious from the terminal whether
     // the host is actually shipping announces. After the first success we
     // shut up to avoid spamming.
     static bool logged_once = false;
-    if (!logged_once && (s1 > 0 || s2 > 0)) {
-        std::printf("[discovery] announce sent (bcast=%d bytes, loopback=%d bytes)\n",
-                    s1, s2);
+    if (!logged_once && total_sent > 0) {
+        std::printf("[discovery] announce sent (%d packets across %d ports)\n",
+                    total_sent, kDiscoveryPortCount);
         logged_once = true;
     }
 #endif

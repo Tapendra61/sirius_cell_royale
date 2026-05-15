@@ -331,13 +331,19 @@ shortcut and the command both refuse cleanly.
 
 ### LAN discovery
 
-- Host: while a match is running in LocalHost mode, a side UDP socket on port
-  `7457` broadcasts a tiny "I'm hosting on port N" announce packet to
-  `255.255.255.255` every ~1 second.
-- Client: the JOIN screen opens a listener on udp/7457 the moment you enter
-  it. Each received announce shows up in the discovered-hosts list as a
-  clickable row (click → connects to that host's game port). Entries older
-  than 5 seconds (host stopped announcing) drop off automatically.
+- Host: while a match is running in LocalHost mode, a side UDP socket
+  broadcasts a tiny "I'm hosting on port N" announce packet every ~1 second.
+  Sent to **both** the LAN broadcast address (`255.255.255.255`) AND the
+  loopback (`127.0.0.1`) so same-machine two-instance testing works on macOS
+  (where 255.255.255.255 doesn't loop back).
+- Client: the JOIN screen opens a listener the moment you enter it. Each
+  received announce shows up as a clickable row (click → connects to that
+  host's game port). Entries older than 5 seconds drop off automatically.
+- Ports: the host broadcasts to the range `udp/47457 .. udp/47459`. The
+  client tries to bind `47457` first; if that's taken by a background daemon
+  (`EADDRINUSE`) it falls back to `47458`, then `47459`. With three slots,
+  it's unlikely all three are busy. If all are: discovery silently fails and
+  manual host:port entry still works.
 - The announce packet is 39 bytes — magic `CRDS` + version + game port + a
   32-byte display name. Loss tolerant: the next 1 s broadcast repopulates.
 

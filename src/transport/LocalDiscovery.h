@@ -24,7 +24,15 @@ namespace cr {
 // Cross-platform via ENet's socket primitives (enet_socket_*); no per-platform
 // #ifdef. Discovery is intentionally unreliable -- a lost announce just means
 // the next 1s tick repopulates the list.
-constexpr uint16_t kDiscoveryPort = 7457; // 7456 is the default ENet game port
+//
+// Port range: we try kDiscoveryPortBase first, then +1 / +2 as fallbacks so a
+// single port being taken by a background daemon doesn't break discovery
+// entirely. Host broadcasts to ALL three each announce; client listens on
+// whichever it could successfully bind. Avoid 7457 because at least one
+// commonly-installed macOS daemon already holds it (mDNSResponder relatives,
+// some screen-sharing apps).
+constexpr uint16_t kDiscoveryPortBase  = 47457;
+constexpr int      kDiscoveryPortCount = 3; // tries base, base+1, base+2
 
 struct DiscoveredHostEntry {
     std::string address;     // dotted-quad of the sender (e.g. "192.168.1.42")
