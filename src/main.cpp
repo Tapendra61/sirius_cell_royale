@@ -15,6 +15,7 @@
 #include "platform/Input.h"
 #include "platform/Paths.h"
 #include "sim/Replay.h"
+#include "sim/Rules.h"           // rollFoodMass (used by seed_food dev command)
 #include "sim/Simulation.h"
 #include "transport/NetworkTransport.h"
 
@@ -173,38 +174,126 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
     };
 
     if (cmd == "help") {
-        con.log("commands: spawn_food N, set_mass N, god, slowmo F, pause, comet,");
-        con.log("          bots N  -- HOST-ONLY: set bot target count (0 = clear all),");
-        con.log("          reload_tuning, replay_save FILE, replay_load FILE,");
-        con.log("          set_hold_to_move 0|1, set_invert_thumbs 0|1, force_touch 0|1,");
-        con.log("          vol_master F, vol_sfx F, vol_music F, music_on, music_off, mute,");
-        con.log("          clear, help");
+        con.log("HOST-ONLY commands (refused on a multiplayer client):");
+        con.log("  bots N            set bot target count (0 = clear all)");
+        con.log("  tp X Y            teleport your cells to (X, Y)");
+        con.log("  set_mass N        set the watched cell's mass");
+        con.log("  god               toggle invuln on the watched cell");
+        con.log("  comet             spawn a crashing-comet event now");
+        con.log("  spawn_food N      drop N random food (food_target+=N)");
+        con.log("  seed_food N [M]   drop N food, optional mass tier M (1,3,6,12,36)");
+        con.log("CLIENT-FRIENDLY commands (work in any mode):");
+        con.log("  slowmo F          dt multiplier (1=normal, 0.25=slowmo)");
+        con.log("  pause             toggle local pause");
+        con.log("  reload_tuning     re-read tuning.ini");
+        con.log("  replay_save FILE  write the running replay tape to disk");
+        con.log("  set_hold_to_move 0|1   move-on-mouse-held vs always");
+        con.log("  set_invert_thumbs 0|1  swap left/right virtual sticks (touch)");
+        con.log("  force_touch 0|1   force touch UI on desktop builds");
+        con.log("  vol_master F      master volume (0..1)");
+        con.log("  vol_sfx    F      sfx volume (0..1)");
+        con.log("  vol_music  F      music volume (0..1)");
+        con.log("  music_on / music_off / mute");
+        con.log("  clear / help");
     } else if (cmd == "clear") {
         con.clearOutput();
     } else if (cmd == "spawn_food" && needs(2)) {
-        int n = std::atoi(args[1].c_str());
-        for (int i = 0; i < n; ++i) {
-            cr::Vec2 pos{s.sim->world().rng().rangeFloat(
-                             0.0f, static_cast<float>(s.sim->world().width())),
-                         s.sim->world().rng().rangeFloat(
-                             0.0f, static_cast<float>(s.sim->world().height()))};
-            s.sim->world().spawnFood(pos);
-        }
-        con.log("spawned " + std::to_string(n) + " food");
-    } else if (cmd == "set_mass" && needs(2)) {
-        float m = static_cast<float>(std::atof(args[1].c_str()));
-        if (auto* c = s.sim->world().findCell(*s.player_cell_id)) {
-            c->mass = m;
-            con.log("mass = " + args[1]);
+        if (s.mode == MatchMode::LocalClient) {
+            con.log("spawn_food: host-only (client doesn't own the sim)");
         } else {
-            con.log("no player cell tracked");
+            int n = std::atoi(args[1].c_str());
+            for (int i = 0; i < n; ++i) {
+                cr::Vec2 pos{s.sim->world().rng().rangeFloat(
+                                 0.0f, static_cast<float>(s.sim->world().width())),
+                             s.sim->world().rng().rangeFloat(
+                                 0.0f, static_cast<float>(s.sim->world().height()))};
+                s.sim->world().spawnFood(pos);
+            }
+            con.log("spawned " + std::to_string(n) + " food");
+        }
+    } else if (cmd == "set_mass" && needs(2)) {
+        // Host-only: mutates the authoritative sim. LocalClient's sim is empty so
+        // a no-op there would be silently confusing; refuse it loudly instead.
+        if (s.mode == MatchMode::LocalClient) {
+            con.log("set_mass: host-only (client doesn't own the sim)");
+        } else {
+            float m = static_cast<float>(std::atof(args[1].c_str()));
+            if (auto* c = s.sim->world().findCell(*s.player_cell_id)) {
+                c->mass = m;
+                con.log("mass = " + args[1]);
+            } else {
+                con.log("no player cell tracked");
+            }
         }
     } else if (cmd == "god") {
-        if (auto* c = s.sim->world().findCell(*s.player_cell_id)) {
+        if (s.mode == MatchMode::LocalClient) {
+            con.log("god: host-only (client doesn't own the sim)");
+        } else if (auto* c = s.sim->world().findCell(*s.player_cell_id)) {
             c->god = !c->god;
             con.log(std::string("god mode = ") + (c->god ? "on" : "off"));
         } else {
             con.log("no player cell to bless");
+        }
+    } else if (cmd == "tp" && needs(3)) {
+        // Host-only: teleport every cell the local player owns to (X, Y). Useful
+        // for jumping next to a black hole / comet / specific bot for testing.
+        if (s.mode == MatchMode::LocalClient) {
+            con.log("tp: host-only (client doesn't own the sim)");
+        } else {
+            float x = static_cast<float>(std::atof(args[1].c_str()));
+            float y = static_cast<float>(std::atof(args[2].c_str()));
+            // Clamp into the playfield so a typo doesn't fling cells into the void
+            // (the soft bounds would catch it, but explicit is friendlier).
+            x = std::clamp(x, 0.0f, static_cast<float>(s.sim->world().width()));
+            y = std::clamp(y, 0.0f, static_cast<float>(s.sim->world().height()));
+            int moved = 0;
+            for (auto& c : s.sim->world().cellsMut()) {
+                if (c.owner != s.player_id) continue;
+                c.pos        = cr::Vec2{x, y};
+                c.vel        = cr::Vec2{0.0f, 0.0f};
+                c.launch_vel = cr::Vec2{0.0f, 0.0f};
+                c.target     = cr::Vec2{x, y};
+                ++moved;
+            }
+            con.log("tp -> (" + std::to_string(static_cast<int>(x)) + ", "
+                  + std::to_string(static_cast<int>(y)) + ")  ("
+                  + std::to_string(moved) + " cells)");
+        }
+    } else if (cmd == "seed_food" && needs(2)) {
+        // Host-only: drop N food at random positions. Optional second arg is the
+        // mass tier (1, 3, 6, 12, or 36). Defaults to a tiered roll so the drop
+        // mix matches the natural food distribution.
+        if (s.mode == MatchMode::LocalClient) {
+            con.log("seed_food: host-only (client doesn't own the sim)");
+        } else {
+            int   n    = std::atoi(args[1].c_str());
+            float mass = (args.size() >= 3)
+                            ? static_cast<float>(std::atof(args[2].c_str()))
+                            : 0.0f; // 0 -> roll the tier per food
+            if (n < 0) n = 0;
+            // Cap the request so a stray typo (`seed_food 1000000`) doesn't
+            // blow up the food vector. 5000 is well above food_target so any
+            // sensible request fits.
+            n = std::min(n, 5000);
+            for (int i = 0; i < n; ++i) {
+                cr::Vec2 pos{
+                    s.sim->world().rng().rangeFloat(
+                        0.0f, static_cast<float>(s.sim->world().width())),
+                    s.sim->world().rng().rangeFloat(
+                        0.0f, static_cast<float>(s.sim->world().height())),
+                };
+                float m = (mass > 0.0f) ? mass
+                                        : cr::rules::rollFoodMass(s.sim->world().rng());
+                s.sim->world().spawnFood(pos, m, cr::Vec2{0.0f, 0.0f},
+                                         cr::INVALID_PLAYER);
+            }
+            char buf[96];
+            if (mass > 0.0f) {
+                std::snprintf(buf, sizeof(buf), "seeded %d food (mass %.0f)", n, mass);
+            } else {
+                std::snprintf(buf, sizeof(buf), "seeded %d food (mixed tiers)", n);
+            }
+            con.log(buf);
         }
     } else if (cmd == "slowmo" && needs(2)) {
         float m = static_cast<float>(std::atof(args[1].c_str()));
@@ -247,9 +336,13 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
     } else if (cmd == "comet") {
         // Force-spawns a crashing-comet world event on the next sim tick. Useful for
         // demoing the effect without waiting for the regular cadence. Spawn point /
-        // direction are still RNG-driven and deterministic.
-        s.sim->triggerCometSpawn();
-        con.log("comet scheduled for next tick");
+        // direction are still RNG-driven and deterministic. Host-only.
+        if (s.mode == MatchMode::LocalClient) {
+            con.log("comet: host-only (client doesn't own the sim)");
+        } else {
+            s.sim->triggerCometSpawn();
+            con.log("comet scheduled for next tick");
+        }
     } else if (cmd == "bots" && needs(2)) {
         // Host-only: set the bot target count + immediately despawn excess bot
         // cells so the change reads on screen instantly. `bots 0` clears the world
