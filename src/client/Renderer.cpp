@@ -1557,13 +1557,18 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec, bool fl
                             quad_half * 2.0f, quad_half * 2.0f};
 
         BeginShaderMode(g_blob_gfx.shader);
-        SetShaderValue   (g_blob_gfx.shader, g_blob_gfx.loc_time,    &t,       SHADER_UNIFORM_FLOAT);
-        SetShaderValueV  (g_blob_gfx.shader, g_blob_gfx.loc_color,   color3,   SHADER_UNIFORM_FLOAT, 3);
-        SetShaderValueV  (g_blob_gfx.shader, g_blob_gfx.loc_vel_dir, veldir2,  SHADER_UNIFORM_FLOAT, 2);
-        SetShaderValue   (g_blob_gfx.shader, g_blob_gfx.loc_stretch, &stretch, SHADER_UNIFORM_FLOAT);
-        SetShaderValue   (g_blob_gfx.shader, g_blob_gfx.loc_id_seed, &id_seed, SHADER_UNIFORM_FLOAT);
-        SetShaderValue   (g_blob_gfx.shader, g_blob_gfx.loc_alpha,   &a_col,   SHADER_UNIFORM_FLOAT);
-        SetShaderValue   (g_blob_gfx.shader, g_blob_gfx.loc_padding, &padval,  SHADER_UNIFORM_FLOAT);
+        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_time,    &t,       SHADER_UNIFORM_FLOAT);
+        // vec3 / vec2 uniforms need the VEC3 / VEC2 uniform type via
+        // SetShaderValue (singular), NOT SetShaderValueV(..., FLOAT, n).
+        // The latter uploads N separate floats into adjacent locations and
+        // a vec3 ends up reading uninitialised (= zero, hence "completely
+        // black") on most drivers.
+        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_color,   color3,   SHADER_UNIFORM_VEC3);
+        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_vel_dir, veldir2,  SHADER_UNIFORM_VEC2);
+        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_stretch, &stretch, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_id_seed, &id_seed, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_alpha,   &a_col,   SHADER_UNIFORM_FLOAT);
+        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_padding, &padval,  SHADER_UNIFORM_FLOAT);
         DrawTexturePro(g_blob_gfx.white,
                        Rectangle{0, 0, 1, 1},
                        dst,
