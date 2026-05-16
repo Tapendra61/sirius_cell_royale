@@ -100,6 +100,16 @@ bool LoadTuningFromFile(Tuning& out, const std::string& path) {
     readFloat(ini, "comet", "speed",              out.comet_speed);
     readFloat(ini, "comet", "first_after_sec",    out.comet_first_after_sec);
 
+    readFloat(ini, "comet_shower", "event_interval_sec",  out.comet_shower_event_interval_sec);
+    readFloat(ini, "comet_shower", "first_after_sec",     out.comet_shower_first_after_sec);
+    readFloat(ini, "comet_shower", "main_radius",         out.comet_shower_main_radius);
+    readInt  (ini, "comet_shower", "satellite_min",       out.comet_shower_satellite_min);
+    readInt  (ini, "comet_shower", "satellite_max",       out.comet_shower_satellite_max);
+    readFloat(ini, "comet_shower", "satellite_min_radius", out.comet_shower_satellite_min_radius);
+    readFloat(ini, "comet_shower", "satellite_max_radius", out.comet_shower_satellite_max_radius);
+    readFloat(ini, "comet_shower", "spread_perp",         out.comet_shower_spread_perp);
+    readFloat(ini, "comet_shower", "spread_along",        out.comet_shower_spread_along);
+
     readInt  (ini, "currents", "band_count",    out.tidal_band_count);
     readFloat(ini, "currents", "band_height",   out.tidal_band_height);
     readFloat(ini, "currents", "band_strength", out.tidal_band_strength);

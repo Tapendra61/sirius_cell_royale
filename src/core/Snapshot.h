@@ -88,13 +88,14 @@ struct BlackHoleSnap {
 // uses telegraph_norm < 1 to draw the predicted path line + fade the comet's own
 // visibility in.
 struct CometSnap {
-    EntityId id     = INVALID_ENTITY;
-    Vec2     pos;
-    Vec2     vel;
-    float    radius = 0.0f;
-    Vec2     telegraph_start;
-    Vec2     telegraph_end;
-    float    telegraph_norm = 1.0f; // 0..1; 1 = active (no longer telegraphed)
+    EntityId     id      = INVALID_ENTITY;
+    Vec2         pos;
+    Vec2         vel;
+    float        radius  = 0.0f;
+    Vec2         telegraph_start;
+    Vec2         telegraph_end;
+    float        telegraph_norm = 1.0f; // 0..1; 1 = active (no longer telegraphed)
+    CometVariant variant        = CometVariant::Orange;
 
     bool operator==(const CometSnap&) const = default;
 };

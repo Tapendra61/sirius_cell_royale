@@ -94,6 +94,32 @@ struct Tuning {
     float comet_speed              = 900.0f; // world units per second
     float comet_first_after_sec    = 45.0f;  // delay before the first comet of a match
 
+    // [comet_shower] -- separate world event: 1 main comet + 4..9 smaller satellites
+    // in formation, in red / blue color variants. Less frequent than singles so the
+    // shower stays a "holy crap" moment rather than ambient noise. Fires on its
+    // own cadence; can overlap with regular single comets.
+    float comet_shower_event_interval_sec = 180.0f; // mean time between showers
+    float comet_shower_first_after_sec    = 90.0f;  // delay before the first shower
+    float comet_shower_main_radius        = 1100.0f; // main comet's kill radius
+                                                     // (smaller than single-comet 1575
+                                                     // so the formation reads as a
+                                                     // swarm, not one giant + dust)
+    int   comet_shower_satellite_min      = 4;       // minimum satellite count
+    int   comet_shower_satellite_max      = 9;       // maximum satellite count
+                                                     // (5..10 comets total counting
+                                                     // the main one)
+    float comet_shower_satellite_min_radius = 350.0f; // smallest satellite radius
+    float comet_shower_satellite_max_radius = 700.0f; // biggest satellite radius
+    float comet_shower_spread_perp        = 1800.0f; // perpendicular scatter of
+                                                     // satellites around the main
+                                                     // path (each side)
+    float comet_shower_spread_along       = 1500.0f; // longitudinal scatter (along
+                                                     // the velocity axis). Causes
+                                                     // satellites to land earlier
+                                                     // / later than the main so it
+                                                     // feels like a sustained barrage
+                                                     // rather than a single wall.
+
     // [currents] -- horizontal tidal-current bands that stretch across the
     // entire map width. Cells whose y falls inside a band get pushed along
     // the band's direction (±x). With `count=2` (default) we get one band

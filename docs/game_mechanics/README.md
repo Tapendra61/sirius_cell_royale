@@ -214,6 +214,39 @@ Each effect has an aura ring around the cell while active.
 - Despawns once it exits the world. The kill is logged as **COMET** in the
   killfeed.
 
+### Comet shower (rare world event)
+
+A formation of comets — one big main + 4–9 smaller satellites — sweeps across
+the map together. Rarer than single comets (default first at 90s, then every
+~180s), but when it lands the whole map is a kill grid for a few seconds.
+
+- **Composition**: 1 **main** comet at radius 1100 (smaller than the
+  single-comet's 1575 — the formation should read as a swarm, not one giant
+  with sprinkles) + N **satellites** where N ∈ [4, 9] (so 5–10 comets total).
+  Satellite radius rolls uniformly in [350, 700].
+- **Color variants**: main is the original **Orange** fire palette.
+  Satellites are split 50/50 between **Red** (crimson body, near-white core)
+  and **Blue** (cobalt body, white-blue core). Telegraph lines + minimap dots
+  use matching palettes so the formation is legible from any view.
+- **Spread**: all comets share the same world-spanning velocity direction
+  (the formation flies in formation). Satellites scatter ±1800 units
+  perpendicular to the main path and −1500..+600 longitudinally, so they
+  arrive in a staggered wave rather than a wall.
+- **Telegraph + kill rules**: identical to the single comet — 3s telegraph
+  per comet, instant kill on contact for cells without Shield / Black-hole
+  hide. Each comet emits its own `CometEvent::Telegraph / Active /
+  Despawn`.
+- **Minimap**: rainbow fan of coloured telegraph lines during the warning,
+  one coloured dot per active comet.
+- **Bot AI**: bots compute a *combined* dodge vector across every threat
+  (active or telegraphed) instead of locking onto the first one — so they
+  steer for the gap rather than diving sideways into the next comet over.
+  In genuine sandwich situations (parallel threats from opposite sides)
+  they fall back to dodging the closest active threat.
+- **Tuning**: `[comet_shower]` section — `event_interval_sec`,
+  `first_after_sec`, `main_radius`, `satellite_min/max`,
+  `satellite_min/max_radius`, `spread_perp`, `spread_along`.
+
 ### Tidal current bands (ambient terrain)
 
 - **What they are**: 2 horizontal river-style bands (default
@@ -353,12 +386,19 @@ pellets after the fact). This creates natural contested zones around
 upcoming eruptions without any hand-written "cluster around an
 objective" behaviour.
 
-**Comet dodge** — every bot computes whether it's in the comet's
-forward kill lane (perpendicular distance < ~700 px, ahead of the
-comet by ≤ 7 radii). If so it abandons its current move target and
-darts perpendicular to the comet's velocity — picks the side it's
-already closer to so the exit is fastest. EMA smoothing is bypassed
-during the dodge so the swerve registers immediately.
+**Comet dodge** — every bot iterates **every active + telegraphed
+comet** and checks whether it sits in any of their forward kill lanes
+(perpendicular distance < 1.6× the comet's radius, ahead of the comet
+by ≤ 7 radii for active comets, full path range for telegraphed
+ones). Each threatening comet contributes a perpendicular unit-vector
+toward its closer escape side; the dodge target is `self + 1200 ×
+normalize(sum of those unit vectors)`. So one threat = perpendicular
+sprint, parallel threats from the same side = amplified perpendicular,
+threats from opposite sides cancel and the bot falls back to dodging
+the closest active threat individually. EMA smoothing is bypassed
+during the dodge so the swerve registers immediately. This logic is
+what keeps bots alive during a 10-comet shower instead of having them
+all dive sideways into the next comet over.
 
 ### Mutations (per-match world trait)
 
@@ -691,6 +731,7 @@ with a `host-only` log line.
 | `set_mass N` | Set your watched cell's mass to N. |
 | `god` | Toggle invuln on your watched cell (the cell can't be absorbed). |
 | `comet` | Force-spawn a crashing-comet event on the next sim tick. The spawn position + direction remain RNG-driven. |
+| `shower` | Force-spawn a comet-shower event (1 main + 4..9 satellites in red/blue) on the next sim tick. |
 | `spawn_food N` | Drop N random-tier food at random positions. |
 | `seed_food N [mass]` | Drop N food. Optional second arg pins the mass tier to one of `1`, `3`, `6`, `12`, `36`. |
 | `kick PID` | **LocalHost only.** Gracefully disconnect the peer that owns `PID`, then despawn all of their cells. Refuses to kick `PID = 1` (the host) or any PID with no matching peer. |
@@ -741,6 +782,13 @@ The full set is documented inline in `tuning.ini` itself. High-impact knobs:
 | `[comet]` | `event_interval_sec` | 75 | Mean time between comet events. |
 | `[comet]` | `radius` | 1575 | Comet kill radius + visual size. |
 | `[comet]` | `first_after_sec` | 45 | Delay before the first comet of a match. |
+| `[comet_shower]` | `event_interval_sec` | 180 | Mean time between comet-shower events (separate cadence from single comets). |
+| `[comet_shower]` | `first_after_sec` | 90 | Delay before the first shower of a match. |
+| `[comet_shower]` | `main_radius` | 1100 | Main (Orange) comet's kill radius during a shower. |
+| `[comet_shower]` | `satellite_min` / `satellite_max` | 4 / 9 | Inclusive range for the satellite count (5..10 comets total counting the main). |
+| `[comet_shower]` | `satellite_min_radius` / `satellite_max_radius` | 350 / 700 | Bounds on satellite kill radius. |
+| `[comet_shower]` | `spread_perp` | 1800 | Perpendicular scatter of satellites around the main's path (each side). |
+| `[comet_shower]` | `spread_along` | 1500 | Longitudinal scatter along the velocity axis (earlier / later landing than the main). |
 | `[currents]` | `band_count` | 2 | Horizontal tidal-current bands stretching across the world. 0 disables the feature. |
 | `[currents]` | `band_height` | 650 | Vertical half-reach of each band (total band height = 2× this). |
 | `[currents]` | `band_strength` | 360 | px/sec drift applied to a `start_mass` cell at the band centreline; scales as `1 / (mass/start_mass)^0.25` (4th-root attenuation) and feathers smoothly toward the rim. Cell position is translated directly each tick (the seek/velocity layer is independent). Tuned slightly above base_speed (~280) so small cells get swept but can still fight the current. The 4th-root curve keeps medium-mass cells (400-1600 mass) firmly in the current's grip rather than the sqrt attenuation that previously made the band irrelevant once you grew past starter size. |

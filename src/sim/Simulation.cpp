@@ -15,7 +15,11 @@ Simulation::Simulation(uint64_t seed, Tuning tuning)
     // Schedule the first crashing-comet event. Subsequent reschedules happen inside
     // processComets after each spawn. Using a concrete tick (not a sentinel) keeps
     // the cadence deterministic across save/load.
-    next_comet_spawn_tick_ = secondsToTicks(tuning_.comet_first_after_sec);
+    next_comet_spawn_tick_  = secondsToTicks(tuning_.comet_first_after_sec);
+    // Comet shower runs on its own cadence (independent of single-comet
+    // schedule). First shower lands later than the first single comet so the
+    // player doesn't see a screen-spanning swarm 45 s in with no warm-up.
+    next_shower_spawn_tick_ = secondsToTicks(tuning_.comet_shower_first_after_sec);
     // Initial food: tiered roll so the world spawns with a mix of common/uncommon/rare/epic.
     for (int i = 0; i < tuning_.food_target; ++i) {
         Vec2 pos{
@@ -227,6 +231,11 @@ void Simulation::tick(float dt) {
     //    that just got pinned into a black hole is safe (hiding cells are immune).
     rules::applyMagnetPulls(world_, tuning_);
     rules::processBlackHoles(world_, tuning_, dt);
+    // Shower spawn runs BEFORE processComets so newly-spawned shower comets
+    // get included in the same tick's motion + kill loop. The two functions
+    // share the world.comets() list; processComets handles motion / kill /
+    // despawn for ALL comets regardless of where they were spawned.
+    rules::processCometShowers(world_, tuning_, next_shower_spawn_tick_, events_);
     rules::processComets(world_, tuning_, dt, next_comet_spawn_tick_, events_);
     // Tidal currents must run BEFORE stepCells so the velocity bias they
     // apply gets integrated into position on this same tick. Order vs.
@@ -493,7 +502,8 @@ Snapshot Simulation::buildSnapshot() const {
         s.blackholes.push_back(BlackHoleSnap{b.id, b.pos, b.radius, b.pull_radius, occ});
     }
 
-    // Comets: 0..1 typically. telegraph_norm is 0 at spawn, 1 at start_at (and stays 1).
+    // Comets: 0..1 in single-comet windows, 5..10 during a comet-shower event.
+    // telegraph_norm is 0 at spawn, 1 at start_at (and stays 1).
     s.comets.reserve(world_.comets().size());
     for (const auto& c : world_.comets()) {
         CometSnap cs;
@@ -503,6 +513,7 @@ Snapshot Simulation::buildSnapshot() const {
         cs.radius          = c.radius;
         cs.telegraph_start = c.telegraph_start;
         cs.telegraph_end   = c.telegraph_end;
+        cs.variant         = c.variant;
         if (c.start_at > now) {
             const float total = std::max(1.0f,
                 static_cast<float>(c.start_at - c.spawned_at));

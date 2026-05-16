@@ -59,6 +59,20 @@ enum class PickupKind : uint8_t {
     Stealth = 3, // bot AI stops targeting you (you read as a virus to them)
 };
 
+// Color variant tag for crashing-comet world events. Originally there was only
+// one comet at a time, always orange/fire-tinted. The comet-shower event
+// introduces formations of comets where the main one keeps the original look
+// and the satellites use distinct red / blue palettes so the player + bots
+// can read the spread of the formation at a glance.
+//
+// Wire format: 1 byte (uint8_t). Append-only; never reorder values. Unknown
+// indices decode as Orange so old replays + forward-compat are safe.
+enum class CometVariant : uint8_t {
+    Orange = 0, // original fire-orange palette (single-comet event, shower's main comet)
+    Red    = 1, // shower satellite variant -- crimson palette
+    Blue   = 2, // shower satellite variant -- cobalt palette
+};
+
 constexpr int kPickupKindCount = 3;
 
 // Pickup visual radius (same size for all three kinds so they read as one "category").

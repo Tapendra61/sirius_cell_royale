@@ -1000,6 +1000,125 @@ void processComets(World& world, const Tuning& t, float dt,
 }
 
 // ---------------------------------------------------------------------------
+// Comet shower world event
+// ---------------------------------------------------------------------------
+
+void spawnCometShowerNow(World& world, const Tuning& t,
+                         std::vector<GameEvent>& events) {
+    Rng&        rng = world.rng();
+    const Tick  now = world.currentTick();
+    const float W   = static_cast<float>(world.width());
+    const float H   = static_cast<float>(world.height());
+
+    // Pick the formation's entry edge + exit point, same world-spanning logic
+    // as the single-comet path. The main comet flies along this axis; all
+    // satellites share the same velocity direction (with scatter in
+    // perpendicular + along directions only).
+    const int side = rng.rangeInt(0, 3);
+    Vec2      entry{}, exit{};
+    const float r_main = t.comet_shower_main_radius;
+    switch (side) {
+        case 0: entry = {rng.rangeFloat(0.0f, W), -r_main}; break;
+        case 1: entry = {W + r_main, rng.rangeFloat(0.0f, H)}; break;
+        case 2: entry = {rng.rangeFloat(0.0f, W), H + r_main}; break;
+        default:entry = {-r_main, rng.rangeFloat(0.0f, H)}; break;
+    }
+    const int opp = (side + 2) & 3;
+    switch (opp) {
+        case 0: exit = {rng.rangeFloat(0.0f, W), -r_main}; break;
+        case 1: exit = {W + r_main, rng.rangeFloat(0.0f, H)}; break;
+        case 2: exit = {rng.rangeFloat(0.0f, W), H + r_main}; break;
+        default:exit = {-r_main, rng.rangeFloat(0.0f, H)}; break;
+    }
+
+    Vec2  dir = exit - entry;
+    float L   = std::sqrt(dir.x * dir.x + dir.y * dir.y);
+    if (L < 1.0f) { dir = Vec2{1.0f, 0.0f}; L = 1.0f; }
+    const Vec2 unit_dir = dir * (1.0f / L);
+    // Perpendicular unit vector for satellite scatter (rotated 90° CCW).
+    const Vec2 perp     = Vec2{-unit_dir.y, unit_dir.x};
+    const Vec2 vel      = unit_dir * t.comet_speed;
+
+    const Tick telegraph_ticks = secondsToTicks(t.comet_telegraph_sec);
+
+    // ---- Main comet (Orange) ----
+    EntityId main_id = world.spawnComet(entry, vel, r_main,
+                                        now, now + telegraph_ticks,
+                                        entry, exit,
+                                        CometVariant::Orange);
+    events.push_back(CometEvent{main_id, CometEvent::Telegraph, entry, unit_dir});
+
+    // ---- Satellites (Red / Blue) ----
+    // Roll count in [min, max]; clamp to [0, 9] just in case the tuning has
+    // pathological values. With min=4, max=9 the spawn is 5..10 comets total.
+    int sat_min = std::max(0, t.comet_shower_satellite_min);
+    int sat_max = std::max(sat_min, t.comet_shower_satellite_max);
+    sat_max     = std::min(sat_max, 9); // hard cap so we don't choke the renderer
+    const int sat_count = rng.rangeInt(sat_min, sat_max);
+
+    for (int i = 0; i < sat_count; ++i) {
+        // Perpendicular offset: symmetric around the main's axis. Cube-rooted
+        // so the distribution is roughly uniform across the band (without
+        // cube-root the centre would cluster). +/- spread_perp.
+        float perp_u  = rng.rangeFloat(-1.0f, 1.0f);
+        float perp_o  = perp_u * t.comet_shower_spread_perp;
+        // Longitudinal offset: bias to NEGATIVE side (behind the main along
+        // entry->exit) so satellites trail the main rather than lead it.
+        // Range [-spread_along, +0.4 * spread_along].
+        float along_o = rng.rangeFloat(-1.0f, 0.4f) * t.comet_shower_spread_along;
+
+        // Satellite entry position relative to the formation's entry point.
+        Vec2 sat_entry{
+            entry.x + perp.x * perp_o + unit_dir.x * along_o,
+            entry.y + perp.y * perp_o + unit_dir.y * along_o,
+        };
+        // Compute a matching exit point so the renderer's telegraph line
+        // shows where this satellite will end up (parallel to the main's
+        // path, offset by perp_o).
+        Vec2 sat_exit{
+            exit.x  + perp.x * perp_o,
+            exit.y  + perp.y * perp_o,
+        };
+
+        float radius = rng.rangeFloat(t.comet_shower_satellite_min_radius,
+                                      t.comet_shower_satellite_max_radius);
+
+        // Alternate Red / Blue with an RNG roll. Even split feels balanced
+        // visually; both palettes are equally "non-orange" so the player
+        // doesn't think one color is more dangerous than the other.
+        CometVariant variant = (rng.rangeInt(0, 1) == 0)
+                                   ? CometVariant::Red
+                                   : CometVariant::Blue;
+
+        EntityId sid = world.spawnComet(sat_entry, vel, radius,
+                                        now, now + telegraph_ticks,
+                                        sat_entry, sat_exit,
+                                        variant);
+        events.push_back(CometEvent{sid, CometEvent::Telegraph, sat_entry, unit_dir});
+    }
+}
+
+void processCometShowers(World& world, const Tuning& t,
+                         Tick& next_spawn_tick_inout,
+                         std::vector<GameEvent>& events) {
+    const Tick now = world.currentTick();
+    if (now < next_spawn_tick_inout) return;
+
+    spawnCometShowerNow(world, t, events);
+
+    // Reschedule. Re-use the single-comet jitter so the shower cadence has
+    // the same "feels variable but bounded" character. Clamped to 30s
+    // minimum so a misconfigured tuning can't spawn showers every tick.
+    Rng& rng     = world.rng();
+    float interval = t.comet_shower_event_interval_sec;
+    if (t.comet_interval_jitter > 0.0f) {
+        float j = rng.rangeFloat(-t.comet_interval_jitter, t.comet_interval_jitter);
+        interval *= (1.0f + j);
+    }
+    next_spawn_tick_inout = now + secondsToTicks(std::max(30.0f, interval));
+}
+
+// ---------------------------------------------------------------------------
 // Tidal current bands
 // ---------------------------------------------------------------------------
 //

@@ -512,32 +512,73 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
     // radius perpendicularly and within a few radii ahead, snap the move
     // target to a perpendicular dodge -- the side already closer to the
     // current perp offset, so the bot exits the danger lane fastest.
-    bool dodging_comet = false;
+    // Multi-comet aware. Comet showers throw 5-10 comets across the map at once,
+    // and the original "break on first threat" loop made bots dive sideways into
+    // the next comet over. We now SUM unit-vector dodge directions across every
+    // threatening comet (active + soon-to-activate telegraphed ones) so the bot
+    // ends up steering toward the gap. If two comets threaten from opposite
+    // sides the sum cancels -- in that pinch we fall back to dodging the closest
+    // active threat individually, which at least makes the bot commit to a
+    // direction instead of standing still.
+    bool   dodging_comet     = false;
+    Vec2   combined_dodge    = {0.0f, 0.0f};
+    Vec2   closest_dodge     = {0.0f, 0.0f};
+    float  closest_fwd_d     = 1e30f;
     for (const auto& cm : world.comets()) {
-        if (cm.start_at > now) continue; // still in telegraph; safe to ignore
-        Vec2  to_cell = self.pos - cm.pos;
-        float vel_sq  = lengthSq(cm.vel);
-        if (vel_sq < 1.0f) continue;
-        float vel_mag = std::sqrt(vel_sq);
-        Vec2  fwd{cm.vel.x / vel_mag, cm.vel.y / vel_mag};
+        const bool active = (cm.start_at <= now);
+        Vec2       cm_pos  = active ? cm.pos : cm.telegraph_start;
+        Vec2       fwd{0, 0};
+        if (active) {
+            float vel_sq = lengthSq(cm.vel);
+            if (vel_sq < 1.0f) continue;
+            float vel_mag = std::sqrt(vel_sq);
+            fwd = Vec2{cm.vel.x / vel_mag, cm.vel.y / vel_mag};
+        } else {
+            // Telegraphed: use the announced path direction.
+            Vec2  tdir = cm.telegraph_end - cm.telegraph_start;
+            float td   = length(tdir);
+            if (td < 1.0f) continue;
+            fwd = Vec2{tdir.x / td, tdir.y / td};
+        }
         Vec2  perp{-fwd.y, fwd.x};
-        float fwd_d  = to_cell.x * fwd.x + to_cell.y * fwd.y;
-        float perp_d = to_cell.x * perp.x + to_cell.y * perp.y;
-        // Outside the path (perp too large) -- safe. Behind the comet
-        // (negative fwd_d) -- already passed, safe. Too far ahead -- not
-        // an imminent threat yet.
+        Vec2  to_cell = self.pos - cm_pos;
+        float fwd_d   = to_cell.x * fwd.x  + to_cell.y * fwd.y;
+        float perp_d  = to_cell.x * perp.x + to_cell.y * perp.y;
         const float danger_perp = cm.radius * 1.6f;
         const float danger_fwd  = cm.radius * 7.0f;
         if (std::abs(perp_d) > danger_perp) continue;
-        if (fwd_d < 0.0f || fwd_d > danger_fwd) continue;
-        // In the kill lane. Pick the perpendicular side that's already
-        // closer to escape, then aim well past the danger zone so the bot
-        // commits to the dodge instead of slowing as it nears the line.
+        if (active) {
+            // Behind the head = safe. Far ahead = not yet a threat.
+            if (fwd_d < 0.0f || fwd_d > danger_fwd) continue;
+        } else {
+            // Telegraphed: anywhere on the projected path within +/- the
+            // danger window is unsafe (the comet will arrive in <= telegraph_sec).
+            if (fwd_d < -danger_fwd * 0.5f || fwd_d > danger_fwd * 1.5f) continue;
+        }
         const float dodge_sign = (perp_d >= 0.0f) ? +1.0f : -1.0f;
-        d.move_target = self.pos + perp * (dodge_sign * 1200.0f);
-        d.chosen_state = BotState::FleePredator; // also disables EMA below
+        combined_dodge.x += perp.x * dodge_sign;
+        combined_dodge.y += perp.y * dodge_sign;
         dodging_comet = true;
-        break; // one comet at a time
+        if (active && fwd_d < closest_fwd_d) {
+            closest_fwd_d = fwd_d;
+            closest_dodge = Vec2{perp.x * dodge_sign, perp.y * dodge_sign};
+        }
+    }
+    if (dodging_comet) {
+        float len = length(combined_dodge);
+        Vec2  unit{0, 0};
+        if (len > 1e-3f) {
+            unit = Vec2{combined_dodge.x / len, combined_dodge.y / len};
+        } else if (closest_fwd_d < 1e29f) {
+            // Combined dodge cancelled (parallel threats from opposite sides).
+            // Fall back to dodging whichever active comet is closest.
+            unit = closest_dodge;
+        } else {
+            // Only telegraphed threats that all cancelled. Just hold for now.
+            unit = Vec2{1.0f, 0.0f};
+        }
+        d.move_target  = self.pos + unit * 1200.0f;
+        d.chosen_state = BotState::FleePredator; // also disables EMA below
     }
 
     // ---------- EMA smoothing ----------

@@ -51,6 +51,11 @@ public:
     // is intentionally a cheat hook, not a gameplay command.
     void triggerCometSpawn() { next_comet_spawn_tick_ = world_.currentTick(); }
 
+    // Dev / cheat hook: same as triggerCometSpawn but for the comet-shower event.
+    // Forces a full formation (main + 4..9 satellites) on the next tick. Subsequent
+    // showers respect the normal cadence.
+    void triggerCometShower() { next_shower_spawn_tick_ = world_.currentTick(); }
+
 private:
     void applyCommand(const Command& cmd);
 
@@ -61,7 +66,8 @@ private:
     std::vector<GameEvent> events_;
     // Tick at which the next crashing-comet world event should fire. Owned here (not
     // in Rules) so processComets stays stateless. Initialised in the constructor.
-    Tick                   next_comet_spawn_tick_ = 0;
+    Tick                   next_comet_spawn_tick_  = 0;
+    Tick                   next_shower_spawn_tick_ = 0;
 
     // Match-end bookkeeping. match_started_tick_ is the value of currentTick at the
     // first tick() call (i.e. the start of the match). When Tuning::match_duration_sec

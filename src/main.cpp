@@ -191,6 +191,7 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
         con.log("  set_mass N        set the watched cell's mass");
         con.log("  god               toggle invuln on the watched cell");
         con.log("  comet             spawn a crashing-comet event now");
+        con.log("  shower            spawn a comet-shower event now (main + 4..9 satellites)");
         con.log("  spawn_food N      drop N random food (food_target+=N)");
         con.log("  seed_food N [M]   drop N food, optional mass tier M (1,3,6,12,36)");
         con.log("  kick PID          (LocalHost only) disconnect peer + despawn their cells");
@@ -358,6 +359,16 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
         } else {
             s.sim->triggerCometSpawn();
             con.log("comet scheduled for next tick");
+        }
+    } else if (cmd == "shower") {
+        // Force-spawns a comet-shower world event on the next sim tick: 1 main
+        // (Orange) + 4..9 satellites (Red / Blue). Same RNG-driven path + scatter
+        // as the regular cadence. Host-only.
+        if (s.mode == MatchMode::LocalClient) {
+            con.log("shower: host-only (client doesn't own the sim)");
+        } else {
+            s.sim->triggerCometShower();
+            con.log("comet shower scheduled for next tick");
         }
     } else if (cmd == "kick" && needs(2)) {
         // Host-only: forcibly disconnect the peer that owns the given PlayerId.

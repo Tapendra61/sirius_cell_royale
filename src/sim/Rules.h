@@ -65,6 +65,27 @@ void processComets(World& world, const Tuning& t, float dt,
                    Tick& next_spawn_tick_inout,
                    std::vector<GameEvent>& events);
 
+// Comet shower world event: spawns a "main" Orange comet at the existing
+// single-comet size band + 4..9 satellites scattered around its path in Red
+// and Blue variants. All comets share the same world-edge entry vector (same
+// velocity direction) but with perpendicular + longitudinal jitter so the
+// formation reads as a swarm rather than a single wall.
+//
+// The shower runs on its own cadence (next_spawn_tick_inout) -- independent
+// of the single-comet schedule, so the two events can overlap. Once the
+// shower is spawned, the individual comets are handled by processComets()
+// (motion, kill checks, despawn) -- this function ONLY emits new comets on
+// the cadence; it doesn't tick existing ones. Keeps state ownership clean.
+void spawnCometShowerNow(World& world, const Tuning& t,
+                         std::vector<GameEvent>& events);
+
+// Cadence + jitter; calls spawnCometShowerNow() when the schedule fires.
+// Caller supplies `next_spawn_tick_inout` so the schedule is owned by
+// Simulation, not Rules.
+void processCometShowers(World& world, const Tuning& t,
+                         Tick& next_spawn_tick_inout,
+                         std::vector<GameEvent>& events);
+
 // Static directional flow fields. For each cell inside a current's radius,
 // bias velocity in the current's direction by `strength * dt / massFactor`
 // where massFactor grows with cell mass so small cells are swept more

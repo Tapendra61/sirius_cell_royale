@@ -179,14 +179,18 @@ struct Geyser {
 // The path endpoints (telegraph_start, telegraph_end) are stored so the renderer can
 // draw the predicted line without re-deriving it from pos+vel.
 struct Comet {
-    EntityId id              = INVALID_ENTITY;
-    Vec2     pos;
-    Vec2     vel;
-    float    radius          = 0.0f;
-    Tick     spawned_at      = 0;   // sim tick when the telegraph started
-    Tick     start_at        = 0;   // sim tick when the comet becomes active
-    Vec2     telegraph_start;       // world-edge entry point
-    Vec2     telegraph_end;         // world-edge exit point (predicted from vel)
+    EntityId     id              = INVALID_ENTITY;
+    Vec2         pos;
+    Vec2         vel;
+    float        radius          = 0.0f;
+    Tick         spawned_at      = 0;   // sim tick when the telegraph started
+    Tick         start_at        = 0;   // sim tick when the comet becomes active
+    Vec2         telegraph_start;       // world-edge entry point
+    Vec2         telegraph_end;         // world-edge exit point (predicted from vel)
+    // Color variant. Single-comet world events spawn Orange (the original fire
+    // look). Shower world events spawn one Orange "main" comet plus a handful
+    // of Red / Blue satellites so the formation reads as distinct on screen.
+    CometVariant variant        = CometVariant::Orange;
 };
 
 // Uniform-grid spatial index. Bucket size = 2 * max expected entity radius (~400px default).
@@ -226,8 +230,12 @@ public:
     EntityId spawnVirus(Vec2 pos, float mass);
     EntityId spawnPickup(Vec2 pos, PickupKind kind);
     EntityId spawnBlackHole(Vec2 pos, float radius, float pull_radius);
+    // Default variant is Orange so existing call sites (regular comet event)
+    // stay byte-identical. The comet-shower spawner passes Red / Blue for
+    // satellites.
     EntityId spawnComet(Vec2 pos, Vec2 vel, float radius, Tick spawned_at, Tick start_at,
-                        Vec2 telegraph_start, Vec2 telegraph_end);
+                        Vec2 telegraph_start, Vec2 telegraph_end,
+                        CometVariant variant = CometVariant::Orange);
     EntityId spawnTidalCurrent(Vec2 pos, Vec2 dir, float half_height, float strength);
     // Returns the pair as {a_id, b_id}. Caller can ignore if it doesn't need
     // to track them individually -- the pair link is stored on each endpoint.

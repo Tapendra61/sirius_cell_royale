@@ -170,6 +170,9 @@ bool readBH(Reader& r, BlackHoleSnap& b) {
 }
 
 // ---- CometSnap ----
+// kSnapshotVersion 5 appended the `variant` byte at the tail (was v4 without it).
+// Out-of-range bytes decode as Orange so a future host that introduces a new
+// variant index doesn't crash older clients.
 void writeComet(Writer& w, const CometSnap& c) {
     w.writePOD(c.id);
     w.writePOD(c.pos);
@@ -178,6 +181,7 @@ void writeComet(Writer& w, const CometSnap& c) {
     w.writePOD(c.telegraph_start);
     w.writePOD(c.telegraph_end);
     w.writePOD(c.telegraph_norm);
+    w.writePOD(static_cast<uint8_t>(c.variant));
 }
 bool readComet(Reader& r, CometSnap& c) {
     r.readPOD(c.id);
@@ -187,6 +191,15 @@ bool readComet(Reader& r, CometSnap& c) {
     r.readPOD(c.telegraph_start);
     r.readPOD(c.telegraph_end);
     r.readPOD(c.telegraph_norm);
+    uint8_t variant_byte = 0;
+    if (!r.readPOD(variant_byte)) return false;
+    // Unknown indices clamp to Orange for forward-compat (a host running a
+    // newer build with a Green variant won't crash an older client).
+    if (variant_byte > static_cast<uint8_t>(CometVariant::Blue)) {
+        c.variant = CometVariant::Orange;
+    } else {
+        c.variant = static_cast<CometVariant>(variant_byte);
+    }
     return !r.failed;
 }
 

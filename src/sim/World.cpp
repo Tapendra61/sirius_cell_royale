@@ -108,7 +108,8 @@ EntityId World::spawnBlackHole(Vec2 pos, float radius, float pull_radius) {
 
 EntityId World::spawnComet(Vec2 pos, Vec2 vel, float radius,
                            Tick spawned_at, Tick start_at,
-                           Vec2 telegraph_start, Vec2 telegraph_end) {
+                           Vec2 telegraph_start, Vec2 telegraph_end,
+                           CometVariant variant) {
     Comet c;
     c.id              = next_id_++;
     c.pos             = pos;
@@ -118,6 +119,7 @@ EntityId World::spawnComet(Vec2 pos, Vec2 vel, float radius,
     c.start_at        = start_at;
     c.telegraph_start = telegraph_start;
     c.telegraph_end   = telegraph_end;
+    c.variant         = variant;
     comets_.push_back(c);
     return c.id;
 }
