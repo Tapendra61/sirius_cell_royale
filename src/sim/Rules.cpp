@@ -962,21 +962,42 @@ void processComets(World& world, const Tuning& t, float dt,
         cells.resize(w);
     }
 
-    // ---- 4. Despawn comets that have left the world ----
-    // Per-comet margin: shower satellites with radius 117 don't need the
-    // single-comet's 1260-radius cull window. Using each comet's own radius
-    // means small satellites despawn quickly after exiting (one tick saved
-    // here, no kill-impact difference -- they've already left the world).
-    const int W = world.width();
-    const int H = world.height();
+    // ---- 4. Despawn comets that have travelled past their exit point ----
+    //
+    // Critical: do NOT use a "is the comet outside the world AABB?" test.
+    // Shower satellites can spawn legitimately BEHIND their entry edge (the
+    // along_o scatter pulls them backwards along the path so they trail the
+    // main), and an AABB check culls them on tick 1 of activation. Bug
+    // observed in the field as "only 2 meteors actually spawn in a shower".
+    //
+    // Instead: project the comet's current position onto its own
+    // (telegraph_start -> telegraph_end) path and despawn only when it has
+    // travelled PAST the exit point by its own kill-radius margin. Pre-entry
+    // satellites have negative path-projection, which is correctly "still
+    // alive". The main comet behaves identically to before -- it spawns at
+    // path_projection = 0 and despawns when projection > path_len + margin.
     comets.erase(std::remove_if(comets.begin(), comets.end(),
         [&](const Comet& c) {
             if (c.start_at > now) return false;
-            const float margin = c.radius + 200.0f;
-            const bool  out    = (c.pos.x < -margin
-                                || c.pos.x > static_cast<float>(W) + margin
-                                || c.pos.y < -margin
-                                || c.pos.y > static_cast<float>(H) + margin);
+            Vec2  path = c.telegraph_end - c.telegraph_start;
+            float path_len_sq = path.x * path.x + path.y * path.y;
+            if (path_len_sq < 1.0f) {
+                // Degenerate path -- fall back to a wide AABB cull so we
+                // don't leak comets forever. Should never happen in practice
+                // (spawnCometShowerNow + processComets[step 5] both guard
+                // against zero-length paths) but defensive.
+                const float margin = c.radius + 200.0f;
+                return c.pos.x < -margin
+                    || c.pos.x > static_cast<float>(world.width())  + margin
+                    || c.pos.y < -margin
+                    || c.pos.y > static_cast<float>(world.height()) + margin;
+            }
+            float path_len = std::sqrt(path_len_sq);
+            Vec2  unit{path.x / path_len, path.y / path_len};
+            Vec2  rel{c.pos.x - c.telegraph_start.x,
+                      c.pos.y - c.telegraph_start.y};
+            float along = rel.x * unit.x + rel.y * unit.y;
+            const bool out = along > path_len + c.radius + 200.0f;
             if (out) {
                 events.push_back(CometEvent{c.id, CometEvent::Despawn, c.pos, Vec2{0, 0}});
             }
@@ -1090,7 +1111,7 @@ void spawnCometShowerNow(World& world, const Tuning& t,
 
     // ---- Satellites (Red / Blue) ----
     // Roll count in [min, max]; clamp to [0, 9] just in case the tuning has
-    // pathological values. With default min=3, max=6 the spawn is 4..7
+    // pathological values. With default min=3, max=7 the spawn is 4..8
     // comets total. The 9-cap is a defensive ceiling, not the current
     // configured range -- left in place so a future bump in tuning.ini
     // doesn't immediately balloon to dozens of comets.

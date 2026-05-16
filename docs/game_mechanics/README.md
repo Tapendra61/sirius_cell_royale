@@ -222,7 +222,7 @@ the map together. Rarer than single comets (default first at 90s, then every
 
 - **Composition**: 1 **main** comet at radius 367 (smaller than the
   single-comet's 1260 — the formation should read as a swarm, not one giant
-  with sprinkles) + N **satellites** where N ∈ [3, 6] (so 4–7 comets total).
+  with sprinkles) + N **satellites** where N ∈ [3, 7] (so 4–8 comets total).
   Satellite radius rolls uniformly in [117, 233].
 - **Color variants**: main is the original **Orange** fire palette.
   Satellites are split 50/50 between **Red** (crimson body, near-white core)
@@ -735,7 +735,7 @@ with a `host-only` log line.
 | `set_mass N` | Set your watched cell's mass to N. |
 | `god` | Toggle invuln on your watched cell (the cell can't be absorbed). |
 | `comet` | Force-spawn a crashing-comet event on the next sim tick. The spawn position + direction remain RNG-driven. |
-| `shower` | Force-spawn a comet-shower event (1 main + 3..6 satellites in red/blue) on the next sim tick. |
+| `shower` | Force-spawn a comet-shower event (1 main + 3..7 satellites in red/blue) on the next sim tick. |
 | `spawn_food N` | Drop N random-tier food at random positions. |
 | `seed_food N [mass]` | Drop N food. Optional second arg pins the mass tier to one of `1`, `3`, `6`, `12`, `36`. |
 | `kick PID` | **LocalHost only.** Gracefully disconnect the peer that owns `PID`, then despawn all of their cells. Refuses to kick `PID = 1` (the host) or any PID with no matching peer. |
@@ -789,7 +789,7 @@ The full set is documented inline in `tuning.ini` itself. High-impact knobs:
 | `[comet_shower]` | `event_interval_sec` | 180 | Mean time between comet-shower events (separate cadence from single comets). |
 | `[comet_shower]` | `first_after_sec` | 90 | Delay before the first shower of a match. |
 | `[comet_shower]` | `main_radius` | 367 | Main (Orange) comet's kill radius during a shower. |
-| `[comet_shower]` | `satellite_min` / `satellite_max` | 3 / 6 | Inclusive range for the satellite count (4..7 comets total counting the main). |
+| `[comet_shower]` | `satellite_min` / `satellite_max` | 3 / 7 | Inclusive range for the satellite count (4..8 comets total counting the main). |
 | `[comet_shower]` | `satellite_min_radius` / `satellite_max_radius` | 117 / 233 | Bounds on satellite kill radius. |
 | `[comet_shower]` | `spread_perp` | 1800 | Perpendicular scatter of satellites around the main's path (each side). |
 | `[comet_shower]` | `spread_along` | 1500 | Longitudinal scatter along the velocity axis (earlier / later landing than the main). |

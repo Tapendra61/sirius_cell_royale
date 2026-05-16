@@ -52,7 +52,7 @@ public:
     void triggerCometSpawn() { next_comet_spawn_tick_ = world_.currentTick(); }
 
     // Dev / cheat hook: same as triggerCometSpawn but for the comet-shower event.
-    // Forces a full formation (main + 3..6 satellites) on the next tick. Subsequent
+    // Forces a full formation (main + 3..7 satellites) on the next tick. Subsequent
     // showers respect the normal cadence.
     void triggerCometShower() { next_shower_spawn_tick_ = world_.currentTick(); }
 

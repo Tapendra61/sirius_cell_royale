@@ -97,7 +97,7 @@ struct Tuning {
     float comet_speed              = 900.0f; // world units per second
     float comet_first_after_sec    = 45.0f;  // delay before the first comet of a match
 
-    // [comet_shower] -- separate world event: 1 main comet + 3..6 smaller satellites
+    // [comet_shower] -- separate world event: 1 main comet + 3..7 smaller satellites
     // in formation, in red / blue color variants. Less frequent than singles so the
     // shower stays a "holy crap" moment rather than ambient noise. Fires on its
     // own cadence; can overlap with regular single comets.
@@ -116,8 +116,8 @@ struct Tuning {
                                                      // bunch" rather than "a real
                                                      // comet with friends".
     int   comet_shower_satellite_min      = 3;       // minimum satellite count
-    int   comet_shower_satellite_max      = 6;       // maximum satellite count
-                                                     // (4..7 comets total counting
+    int   comet_shower_satellite_max      = 7;       // maximum satellite count
+                                                     // (4..8 comets total counting
                                                      // the main one; was 5..10 before
                                                      // playtesting found 10 was too
                                                      // much screen clutter)
