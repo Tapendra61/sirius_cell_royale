@@ -32,7 +32,14 @@ namespace cr {
 // commonly-installed macOS daemon already holds it (mDNSResponder relatives,
 // some screen-sharing apps).
 constexpr uint16_t kDiscoveryPortBase  = 47457;
-constexpr int      kDiscoveryPortCount = 3; // tries base, base+1, base+2
+// Number of ports the client tries when binding + the host iterates over
+// when announcing. Bumped from 3 to 12 because in real-world testing we
+// hit cases where all 3 of the original range were held by zombie sockets
+// (from a previously-crashed cell_royale) or random background processes,
+// leaving the JOIN screen permanently empty. 12 ports gives 24 candidate
+// announce destinations per call (broadcast + loopback) which is still
+// trivial bandwidth-wise and makes a free port almost certain.
+constexpr int      kDiscoveryPortCount = 12;
 
 struct DiscoveredHostEntry {
     std::string address;     // dotted-quad of the sender (e.g. "192.168.1.42")

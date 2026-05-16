@@ -133,26 +133,35 @@ bool LocalDiscovery::startClient() {
             return true;
         }
         // EADDRINUSE on this port is expected if a daemon owns it. Try the
-        // next one. Log the first failure so the user knows what happened
-        // (subsequent retries are logged at full chain end if all fail).
-        if (i == 0) {
+        // next one. Log the first failure of the FIRST retry only -- the
+        // outer "all busy" message (also rate-limited) carries the summary
+        // when subsequent retries hit the same problem.
+        static bool logged_first_port_fail = false;
+        if (i == 0 && !logged_first_port_fail) {
             std::fprintf(stderr, "[discovery] bind failed on udp/%u errno=%d (%s); "
                                   "trying next port...\n",
                          static_cast<unsigned>(port),
                          errno, std::strerror(errno));
-            if (errno == EADDRINUSE) {
-                std::fprintf(stderr, "[discovery] hint: `lsof -nP -iUDP:%u` will show "
-                                      "what's holding it.\n",
-                             static_cast<unsigned>(port));
-            }
+            logged_first_port_fail = true;
         }
         enet_socket_destroy(s);
     }
-    std::fprintf(stderr, "[discovery] all %d fallback ports busy (udp/%u..%u); "
-                          "manual host:port entry still works\n",
-                 kDiscoveryPortCount,
-                 static_cast<unsigned>(kDiscoveryPortBase),
-                 static_cast<unsigned>(kDiscoveryPortBase + kDiscoveryPortCount - 1));
+    // Rate-limit the "all busy" message -- the retry loop calls startClient
+    // every second, and without this we end up with one repeated stanza
+    // per second filling the log. One every 10s is plenty.
+    static int busy_count = 0;
+    if ((busy_count++ % 10) == 0) {
+        std::fprintf(stderr, "[discovery] all %d fallback ports busy "
+                              "(udp/%u..%u); manual host:port entry still "
+                              "works. Likely a stale cell_royale process "
+                              "is holding them -- `lsof -nP -iUDP:%u-%u` "
+                              "will show what.\n",
+                     kDiscoveryPortCount,
+                     static_cast<unsigned>(kDiscoveryPortBase),
+                     static_cast<unsigned>(kDiscoveryPortBase + kDiscoveryPortCount - 1),
+                     static_cast<unsigned>(kDiscoveryPortBase),
+                     static_cast<unsigned>(kDiscoveryPortBase + kDiscoveryPortCount - 1));
+    }
     return false;
 #else
     return false;
