@@ -82,13 +82,16 @@ struct Tuning {
     float comet_event_interval_sec = 75.0f;  // mean time between comet spawns
     float comet_interval_jitter    = 0.30f;  // +/- this fraction of the interval (RNG)
     float comet_telegraph_sec      = 3.0f;   // warning window before the strike
-    float comet_radius             = 700.0f; // kill radius / visual half-size.
-                                              // Sized at ~17.5% of the world width
-                                              // so a casual sidestep no longer
-                                              // dodges every strike -- you have to
-                                              // see the telegraph + commit to a
-                                              // direction. Bumped from 440 after
-                                              // playtesting kept landing zero hits.
+    float comet_radius             = 2100.0f; // kill radius / visual half-size.
+                                               // Massive on purpose: ~52% of world
+                                               // width as diameter, so the comet
+                                               // sweeps as a screen-spanning wall
+                                               // of fire that you outrun, not just
+                                               // sidestep. Iterated from 440 -> 700
+                                               // -> 2100 after playtesting -- the
+                                               // first two bumps still let the
+                                               // player ignore the telegraph. At
+                                               // 2100 you HAVE to move.
     float comet_speed              = 900.0f; // world units per second
     float comet_first_after_sec    = 45.0f;  // delay before the first comet of a match
 
