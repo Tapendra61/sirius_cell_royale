@@ -442,14 +442,21 @@ void main() {
     float r     = length(local);
     float theta = atan(local.y, local.x);
 
-    // Three-harmonic wobble around the rim. Low time multipliers feel
-    // watery rather than electric. Per-cell phase offset (u_id_seed)
-    // de-synchronises neighbouring cells.
-    float wobble  = 0.045 * sin(theta *  5.0 + u_time * 1.2 + u_id_seed);
-    wobble       += 0.022 * sin(theta *  8.0 - u_time * 1.7 + u_id_seed * 1.3);
-    wobble       += 0.012 * sin(theta * 11.0 + u_time * 2.4 + u_id_seed * 0.4);
+    // Three-harmonic angular wobble + a uniform "breathing" oscillation.
+    // Amplitudes are loud enough that the silhouette visibly deforms each
+    // frame (~15% radius swing total at peak), and the time multipliers
+    // give a ~0.5-2s period range so the motion reads as "alive" rather
+    // than static. Per-cell phase offset (u_id_seed) de-synchronises
+    // neighbouring cells.
+    float wobble  = 0.080 * sin(theta *  4.0 + u_time * 2.5 + u_id_seed);
+    wobble       += 0.050 * sin(theta *  7.0 - u_time * 3.5 + u_id_seed * 1.3);
+    wobble       += 0.025 * sin(theta * 10.0 + u_time * 5.0 + u_id_seed * 0.5);
+    // Breathing: whole rim expands + contracts uniformly. Slower than the
+    // angular wobble so it reads as a separate beat -- the silhouette
+    // "swells" in and out of the static outline.
+    float breath  = 0.028 * sin(u_time * 1.6 + u_id_seed * 0.7);
 
-    float edge = 1.0 + wobble;
+    float edge = 1.0 + wobble + breath;
 
     // Soft alpha falloff at the wobbly rim. The body holds full alpha
     // until 96% of the edge, then smoothly fades to 0 just past it --
@@ -1517,10 +1524,12 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec, bool fl
     // compile.
     ensureCellBlobGfx();
     if (g_blob_gfx.initialized) {
-        // Quad padding: the wobble can extend the visual edge by ~8% and
-        // the stretch can elongate it by up to ~25%, so 1.40 leaves a
-        // safe margin. The shader uses this constant directly via u_padding.
-        constexpr float kQuadPadding = 1.40f;
+        // Quad padding: the wobble + breath can extend the visual edge by
+        // up to ~18% and the stretch can elongate by ~25%, so the rendered
+        // quad has to be at least 1.25 * 1.18 = 1.475x the cell radius.
+        // 1.55 gives a comfortable margin. The shader uses this constant
+        // directly via u_padding.
+        constexpr float kQuadPadding = 1.55f;
 
         // Velocity-based stretch. cellSpeed maxes around ~280 for starters
         // and ~840 during dash; launch_vel piles on top. We normalize by a
