@@ -834,6 +834,127 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         }
     }
 
+    // ---- Leaderboard (top-left corner) ----
+    // Lists the top 15 players (by total mass summed across all of their cells)
+    // and -- if the watched player isn't in the top 15 -- one extra row showing
+    // their own rank. Built from the latest snapshot so it works uniformly in
+    // SinglePlayer / LocalHost / LocalClient. Skipped during the Summary panel
+    // since the death stats take the focus there.
+    if ((phase_ == GamePhase::Playing || phase_ == GamePhase::DeathCam)
+        && interp_.hasCurr()) {
+        struct LeaderRow {
+            PlayerId player     = INVALID_PLAYER;
+            float    total_mass = 0.0f;
+            uint8_t  tag        = 0;
+        };
+        // Accumulate per-player totals from the snapshot. Linear scan with a
+        // tiny insertion-sorted vector (most matches have <60 players + bots,
+        // so unordered_map overhead isn't worth it).
+        std::vector<LeaderRow> rows;
+        rows.reserve(64);
+        for (const auto& c : interp_.curr().cells) {
+            if (c.mass <= 0.0f) continue;
+            LeaderRow* hit = nullptr;
+            for (auto& r : rows) {
+                if (r.player == c.owner) { hit = &r; break; }
+            }
+            if (hit) {
+                hit->total_mass += c.mass;
+                if (hit->tag == 0) hit->tag = c.personality_tag;
+            } else {
+                LeaderRow nr;
+                nr.player     = c.owner;
+                nr.total_mass = c.mass;
+                nr.tag        = c.personality_tag;
+                rows.push_back(nr);
+            }
+        }
+        std::sort(rows.begin(), rows.end(),
+                  [](const LeaderRow& a, const LeaderRow& b) {
+                      return a.total_mass > b.total_mass;
+                  });
+
+        // Find watched-player rank for the "your rank" extra row (1-indexed).
+        int watched_rank = -1;
+        for (size_t i = 0; i < rows.size(); ++i) {
+            if (rows[i].player == watched_player_) {
+                watched_rank = static_cast<int>(i) + 1;
+                break;
+            }
+        }
+
+        constexpr int kTopN     = 15;
+        const int     n_top     = std::min(static_cast<int>(rows.size()), kTopN);
+        // Add one row if the watched player exists but is outside the top N.
+        const bool    show_self = (watched_rank > kTopN);
+
+        // Panel layout, top-left corner.
+        constexpr int x0      = 12;
+        constexpr int y0      = 12;
+        constexpr int width   = 218;
+        constexpr int row_h   = 16;
+        constexpr int header  = 22;
+        const int     visible_rows = n_top + (show_self ? 1 : 0);
+        const int     panel_h = header + visible_rows * row_h + 6;
+
+        // Backdrop + thin border for legibility against busy worlds.
+        DrawRectangle(x0 - 2, y0 - 2, width + 4, panel_h + 4, Color{0, 0, 0, 190});
+        DrawRectangle(x0, y0, width, panel_h, Color{18, 22, 32, 220});
+        DrawRectangleLines(x0, y0, width, panel_h, Color{120, 130, 160, 130});
+
+        // Header.
+        DrawText("LEADERBOARD", x0 + 8, y0 + 5, 14, Color{220, 220, 240, 230});
+
+        auto drawRow = [&](int row_y, int rank, const LeaderRow& r,
+                            bool is_self_extra) {
+            const Color pcol = colorForPlayer(r.player);
+            // Highlight the watched player's row with a faint backdrop +
+            // brighter text. Also highlight the "your rank" extra row.
+            const bool highlight = (r.player == watched_player_) || is_self_extra;
+            if (highlight) {
+                DrawRectangle(x0 + 2, row_y - 1, width - 4, row_h,
+                              Color{255, 220, 100, 35});
+            }
+            // Rank number, right-aligned in a 22-px column.
+            char rank_buf[8];
+            std::snprintf(rank_buf, sizeof(rank_buf), "%d.", rank);
+            int rank_w = MeasureText(rank_buf, 13);
+            DrawText(rank_buf, x0 + 26 - rank_w, row_y + 1, 13,
+                     Color{200, 200, 220, 230});
+            // Player label: letter + id (matches killfeed format).
+            char name_buf[24];
+            std::snprintf(name_buf, sizeof(name_buf), "%c%u",
+                          ai::letterForTag(r.tag),
+                          static_cast<unsigned>(r.player));
+            // Cell-coloured dot before the name so the leaderboard maps
+            // visually to the cells on screen.
+            DrawCircle(x0 + 36, row_y + row_h / 2, 4.0f, pcol);
+            DrawText(name_buf, x0 + 46, row_y + 1, 13,
+                     highlight ? Color{255, 240, 180, 255}
+                                : Color{220, 225, 245, 230});
+            // Mass, right-aligned to the panel.
+            char mass_buf[16];
+            std::snprintf(mass_buf, sizeof(mass_buf), "%d",
+                          static_cast<int>(r.total_mass));
+            int mass_w = MeasureText(mass_buf, 13);
+            DrawText(mass_buf, x0 + width - mass_w - 10, row_y + 1, 13,
+                     highlight ? Color{255, 240, 180, 255}
+                                : Color{200, 210, 230, 220});
+        };
+
+        for (int i = 0; i < n_top; ++i) {
+            drawRow(y0 + header + i * row_h, i + 1, rows[i], false);
+        }
+        if (show_self) {
+            // Separator strip above the "your rank" row so it reads as its
+            // own group.
+            int sep_y = y0 + header + n_top * row_h - 2;
+            DrawRectangle(x0 + 4, sep_y, width - 8, 1, Color{120, 130, 160, 120});
+            drawRow(y0 + header + n_top * row_h, watched_rank,
+                    rows[static_cast<size_t>(watched_rank - 1)], true);
+        }
+    }
+
     // Crashing-comet HUD banner. Big alarm text centered horizontally, just below the
     // top of the screen. Fades in over the first 0.3s of the warning, holds, then
     // fades out as comet_banner_remaining_ approaches zero.

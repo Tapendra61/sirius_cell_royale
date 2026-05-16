@@ -220,6 +220,7 @@ Each effect has an aura ring around the cell while active.
 
 | Element | Position | What it shows |
 |---|---|---|
+| Leaderboard | Top-left corner | Top 15 players by total mass (summed across all of their cells). Each row: rank, cell-coloured dot, letter+id (e.g. `P1`, `H7`), mass. Your row is highlighted in gold. If you're outside the top 15, a separate "your rank" row is appended below with the same gold highlight. Builds from the latest snapshot so it works identically in SinglePlayer / LocalHost / LocalClient. |
 | Combo counter | Top-right (under Q-bar) | Pulsing `xN` when ≥ 2. Bigger / dimmer with chain length. |
 | Killfeed | Top-right, below combo | Last 5 inter-player kills. Player-involved kills get a gold accent. Comet kills label predator as **COMET** in hot orange. |
 | Q (Mass Blast) cooldown bar | Top-right corner | 220×18 px. Red → orange → bright yellow as it refills. "BLAST" overlay when ready; "NEED MASS" overlay when biggest cell is below 300. Subtle pulsing glow when castable. |
