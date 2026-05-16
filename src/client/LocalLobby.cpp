@@ -178,12 +178,17 @@ void LocalLobby::update(float frame_dt, int /*sw*/, int /*sh*/) {
                 discovery_retry_timer_ = 1.0f;
             }
         }
-        discovery_.pollIncoming();
+        // Drain incoming announces using the SAME clock we'll use for the
+        // staleness check in getKnownHosts (raylib's GetTime). Mixing
+        // sources here caused the JOIN list to flicker / stay empty even
+        // with announces live on the wire.
+        const double now_sec = GetTime();
+        discovery_.pollIncoming(now_sec);
         // Build the visible list from live results. The lobby's `discovered_`
         // is rebuilt every frame -- the underlying deque is tiny (<10) so
         // there's no point caching.
         std::vector<DiscoveredHostEntry> live;
-        discovery_.getKnownHosts(live, GetTime());
+        discovery_.getKnownHosts(live, now_sec);
         discovered_.clear();
         discovered_.reserve(live.size());
         for (const auto& e : live) discovered_.push_back(toDiscoveredHost(e));

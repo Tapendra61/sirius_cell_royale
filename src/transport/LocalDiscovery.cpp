@@ -208,19 +208,41 @@ void LocalDiscovery::announceNow() {
         if (s2 > 0) ++total_sent;
     }
 
-    // One-time confirmation print so it's obvious from the terminal whether
-    // the host is actually shipping announces. After the first success we
-    // shut up to avoid spamming.
-    static bool logged_once = false;
-    if (!logged_once && total_sent > 0) {
+    // First-success confirmation + periodic heartbeat. Without the heartbeat
+    // it's impossible to tell from the log whether the announcer is silently
+    // dying (all sends returning -1) or is happily firing but the receiving
+    // side is the broken half. Once per ~10s is plenty for diagnostics
+    // without spamming.
+    static bool   logged_first = false;
+    static int    call_counter = 0;
+    if (!logged_first && total_sent > 0) {
         std::printf("[discovery] announce sent (%d packets across %d ports)\n",
                     total_sent, kDiscoveryPortCount);
-        logged_once = true;
+        logged_first = true;
+    }
+    if ((++call_counter % 10) == 0) {
+        std::printf("[discovery] heartbeat: %d announces fired so far "
+                    "(last: %d / %d packets ok)\n",
+                    call_counter, total_sent, 2 * kDiscoveryPortCount);
+    }
+    // If a send EVER fails, log it once. This catches "permission denied"
+    // (macOS Local Network privacy prompt declined) and similar errors
+    // that would otherwise be silent.
+    if (total_sent < 2 * kDiscoveryPortCount) {
+        static bool logged_fail = false;
+        if (!logged_fail) {
+            std::fprintf(stderr,
+                         "[discovery] partial send failure (%d of %d packets ok). "
+                         "errno=%d (%s)\n",
+                         total_sent, 2 * kDiscoveryPortCount,
+                         errno, std::strerror(errno));
+            logged_fail = true;
+        }
     }
 #endif
 }
 
-void LocalDiscovery::pollIncoming() {
+void LocalDiscovery::pollIncoming(double now_sec) {
 #ifdef CR_NETWORK
     if (mode_ != Mode::Client || socket_ == -1) return;
     // Drain everything pending; non-blocking socket returns 0 when empty.
@@ -239,7 +261,16 @@ void LocalDiscovery::pollIncoming() {
         if (!unpackAnnounce(buf_data,
                             static_cast<size_t>(received),
                             game_port, name_buf)) {
-            continue; // not one of ours
+            // Diagnostic: log the first malformed packet we see so we can
+            // tell whether the wire is silent vs. carrying noise we reject.
+            static bool logged_bad = false;
+            if (!logged_bad) {
+                std::fprintf(stderr,
+                             "[discovery] rejected packet (len=%d) -- not one of ours\n",
+                             received);
+                logged_bad = true;
+            }
+            continue;
         }
         // Render the source IP to dotted-quad for the address field.
         char addr_str[64] = {0};
@@ -254,8 +285,10 @@ void LocalDiscovery::pollIncoming() {
         bool found = false;
         for (auto& h : hosts_) {
             if (h.address == addr_str && h.game_port == game_port) {
-                // Use a wall-clock seconds counter via enet_time_get / 1000.
-                h.last_seen = static_cast<double>(enet_time_get()) * 0.001;
+                // Stamp with the caller's clock so getKnownHosts can compare
+                // last_seen against the same source -- no skew, no false
+                // staleness drops.
+                h.last_seen = now_sec;
                 std::memcpy(h.name, name_buf, kNameSize);
                 h.name[kNameSize - 1] = '\0';
                 found = true;
@@ -266,7 +299,7 @@ void LocalDiscovery::pollIncoming() {
             DiscoveredHostEntry e;
             e.address   = addr_str;
             e.game_port = game_port;
-            e.last_seen = static_cast<double>(enet_time_get()) * 0.001;
+            e.last_seen = now_sec;
             std::memset(e.name, 0, sizeof(e.name));
             std::memcpy(e.name, name_buf, kNameSize);
             e.name[sizeof(e.name) - 1] = '\0';

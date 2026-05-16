@@ -74,8 +74,15 @@ public:
 
     // Client mode: drain any received announce packets, dedupe by (address,
     // game_port). Caller drives the cadence (typically every frame on the
-    // JOIN screen). No-op when not in Client mode.
-    void pollIncoming();
+    // JOIN screen) and supplies `now_sec` so the timestamp stored on each
+    // entry shares a clock with `getKnownHosts(now_sec, ...)`. Previously
+    // pollIncoming used `enet_time_get()/1000` internally while getKnownHosts
+    // used raylib's `GetTime()` from the caller -- a small but non-zero
+    // skew between the two clocks could prematurely mark fresh entries as
+    // stale, causing the JOIN list to flicker / stay empty even with live
+    // announces in flight.
+    // No-op when not in Client mode.
+    void pollIncoming(double now_sec);
 
     // Client mode: read the current list of known hosts. Entries get dropped
     // from the underlying list once they're more than `staleAfterSec` old.
