@@ -1050,7 +1050,10 @@ void spawnCometShowerNow(World& world, const Tuning& t,
 
     // ---- Satellites (Red / Blue) ----
     // Roll count in [min, max]; clamp to [0, 9] just in case the tuning has
-    // pathological values. With min=4, max=9 the spawn is 5..10 comets total.
+    // pathological values. With default min=3, max=6 the spawn is 4..7
+    // comets total. The 9-cap is a defensive ceiling, not the current
+    // configured range -- left in place so a future bump in tuning.ini
+    // doesn't immediately balloon to dozens of comets.
     int sat_min = std::max(0, t.comet_shower_satellite_min);
     int sat_max = std::max(sat_min, t.comet_shower_satellite_max);
     sat_max     = std::min(sat_max, 9); // hard cap so we don't choke the renderer
