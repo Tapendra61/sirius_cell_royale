@@ -387,6 +387,124 @@ void main() {
 }
 )GLSL";
 
+// Procedural "cell blob" shader. Replaces the flat DrawCircleV body fill with
+// a watery deformable disc: soft alpha at the rim, low-frequency wobble around
+// the edge so the silhouette breathes, and a stretch factor along the velocity
+// direction so a moving cell elongates like a water droplet. Plus an
+// upper-left highlight for a 3D droplet feel.
+//
+// Per-cell uniforms (updated between draws):
+//   u_color    -- base RGB (0..1).
+//   u_vel_dir  -- unit velocity direction; (0,0) when stationary.
+//   u_stretch  -- 1.0 = circular, >1 = elongated along u_vel_dir.
+//   u_id_seed  -- per-cell radians offset so neighbouring cells don't wobble
+//                 in lockstep.
+//   u_alpha    -- overall alpha multiplier (fade effects: BH transit, stealth).
+//   u_padding  -- the quad's half-size in units of cell radius. Caller draws
+//                 a 2*r*padding-sized quad so there's room for stretch +
+//                 wobble; the shader uses this to map fragTexCoord -> uv.
+//
+// u_time is shared per-frame.
+const char* const kCellBlobFS = R"GLSL(
+#version 330
+
+in  vec2 fragTexCoord;
+out vec4 finalColor;
+
+uniform float u_time;
+uniform vec3  u_color;
+uniform vec2  u_vel_dir;
+uniform float u_stretch;
+uniform float u_id_seed;
+uniform float u_alpha;
+uniform float u_padding;
+
+void main() {
+    // Centered uv in [-padding, +padding] across the quad. The cell's
+    // unstretched edge sits at radius 1.0 in this space, so `padding` must
+    // be > the max stretch + max wobble amplitude.
+    vec2 uv = (fragTexCoord - 0.5) * 2.0 * u_padding;
+
+    // Rotate uv into the velocity frame so x-axis aligns with motion.
+    // If the cell is stationary, identity.
+    vec2 local = uv;
+    if (dot(u_vel_dir, u_vel_dir) > 0.0001) {
+        float cx = u_vel_dir.x;
+        float sy = u_vel_dir.y;
+        local = vec2( uv.x * cx + uv.y * sy,
+                     -uv.x * sy + uv.y * cx);
+    }
+    // Stretch along the motion axis: dividing local.x by stretch makes the
+    // edge (at local-x = stretch) line up with radius 1.0 -- so a stretched
+    // cell visually elongates in the velocity direction.
+    local.x /= u_stretch;
+
+    float r     = length(local);
+    float theta = atan(local.y, local.x);
+
+    // Three-harmonic wobble around the rim. Low time multipliers feel
+    // watery rather than electric. Per-cell phase offset (u_id_seed)
+    // de-synchronises neighbouring cells.
+    float wobble  = 0.045 * sin(theta *  5.0 + u_time * 1.2 + u_id_seed);
+    wobble       += 0.022 * sin(theta *  8.0 - u_time * 1.7 + u_id_seed * 1.3);
+    wobble       += 0.012 * sin(theta * 11.0 + u_time * 2.4 + u_id_seed * 0.4);
+
+    float edge = 1.0 + wobble;
+
+    // Soft alpha falloff at the wobbly rim. The body holds full alpha
+    // until 92% of the edge, then smoothly fades to 0 just past it.
+    float fade_start = edge * 0.92;
+    float fade_end   = edge * 1.02;
+    float body_a     = 1.0 - smoothstep(fade_start, fade_end, r);
+    if (body_a < 0.004) discard;
+
+    vec3 col = u_color;
+
+    // Inner shading: slightly darken toward the rim so the blob reads as
+    // a 3D droplet, not a flat disc. Centre stays slightly brighter than
+    // the base color.
+    float t_edge    = clamp(r / edge, 0.0, 1.0);
+    float edge_dark = smoothstep(0.55, 1.0, t_edge);
+    col *= mix(1.06, 0.72, edge_dark);
+
+    // Crisp darker rim band just before the alpha fade -- gives the blob
+    // a visible silhouette without an explicit DrawCircleLines pass.
+    float rim_band = smoothstep(0.92, 0.99, t_edge)
+                   * (1.0 - smoothstep(0.99, 1.05, t_edge));
+    col = mix(col, col * 0.45, rim_band * 0.65);
+
+    // Upper-left specular highlight. Fixed in screen-space (uses uv, not
+    // the velocity frame) so the "light source" stays steady as the cell
+    // moves. Gaussian falloff in normalized space.
+    vec2  hi_pos     = vec2(-0.45, -0.45);
+    float hi_d       = length(uv - hi_pos);
+    float hi_falloff = exp(-hi_d * hi_d * 6.0);
+    col += vec3(1.0, 1.0, 1.0) * hi_falloff * 0.32;
+
+    // Faint cool back-light opposite the highlight for depth.
+    vec2  bk_pos     = vec2(0.45, 0.45);
+    float bk_d       = length(uv - bk_pos);
+    float bk_falloff = exp(-bk_d * bk_d * 9.0);
+    col += vec3(0.60, 0.70, 0.80) * bk_falloff * 0.08;
+
+    finalColor = vec4(col, body_a * u_alpha);
+}
+)GLSL";
+
+struct CellBlobGfx {
+    Shader     shader{};
+    Texture2D  white{};
+    int        loc_time    = -1;
+    int        loc_color   = -1;
+    int        loc_vel_dir = -1;
+    int        loc_stretch = -1;
+    int        loc_id_seed = -1;
+    int        loc_alpha   = -1;
+    int        loc_padding = -1;
+    bool       initialized = false;
+    bool       failed      = false;
+};
+
 struct WormholeGfx {
     Shader     shader{};
     Texture2D  white{};
@@ -569,6 +687,7 @@ struct CometGfx {
 BlackHoleGfx g_bh_gfx;
 CometGfx     g_comet_gfx;
 WormholeGfx  g_wh_gfx;
+CellBlobGfx  g_blob_gfx;
 
 void ensureBlackHoleGfx() {
     if (g_bh_gfx.initialized || g_bh_gfx.failed) return;
@@ -634,6 +753,40 @@ void unloadWormholeGfx() {
     } else if (g_wh_gfx.failed && g_wh_gfx.shader.id != 0) {
         UnloadShader(g_wh_gfx.shader);
         g_wh_gfx = WormholeGfx{};
+    }
+}
+
+void ensureCellBlobGfx() {
+    if (g_blob_gfx.initialized || g_blob_gfx.failed) return;
+
+    g_blob_gfx.shader = LoadShaderFromMemory(nullptr, kCellBlobFS);
+    if (g_blob_gfx.shader.id == 0) {
+        g_blob_gfx.failed = true;
+        return;
+    }
+    g_blob_gfx.loc_time    = GetShaderLocation(g_blob_gfx.shader, "u_time");
+    g_blob_gfx.loc_color   = GetShaderLocation(g_blob_gfx.shader, "u_color");
+    g_blob_gfx.loc_vel_dir = GetShaderLocation(g_blob_gfx.shader, "u_vel_dir");
+    g_blob_gfx.loc_stretch = GetShaderLocation(g_blob_gfx.shader, "u_stretch");
+    g_blob_gfx.loc_id_seed = GetShaderLocation(g_blob_gfx.shader, "u_id_seed");
+    g_blob_gfx.loc_alpha   = GetShaderLocation(g_blob_gfx.shader, "u_alpha");
+    g_blob_gfx.loc_padding = GetShaderLocation(g_blob_gfx.shader, "u_padding");
+
+    Image img = GenImageColor(1, 1, WHITE);
+    g_blob_gfx.white = LoadTextureFromImage(img);
+    UnloadImage(img);
+
+    g_blob_gfx.initialized = true;
+}
+
+void unloadCellBlobGfx() {
+    if (g_blob_gfx.initialized) {
+        UnloadTexture(g_blob_gfx.white);
+        UnloadShader(g_blob_gfx.shader);
+        g_blob_gfx = CellBlobGfx{};
+    } else if (g_blob_gfx.failed && g_blob_gfx.shader.id != 0) {
+        UnloadShader(g_blob_gfx.shader);
+        g_blob_gfx = CellBlobGfx{};
     }
 }
 
@@ -1379,13 +1532,85 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec, bool fl
         fill.g = static_cast<unsigned char>(std::min(255, static_cast<int>(fill.g) + static_cast<int>(bump)));
     }
 
-    DrawCircleV(Vector2{pos.x, pos.y}, r, fill);
+    // ---- Body fill: shader-driven watery blob ----
+    // Replaces the old flat DrawCircleV + hard outline. The shader produces
+    // a wobbly soft-edged disc with a velocity-driven stretch and a baked
+    // dark rim band (so we don't need DrawCircleLines for the silhouette).
+    // Falls back to the legacy flat-circle path if the shader couldn't
+    // compile.
+    ensureCellBlobGfx();
+    if (g_blob_gfx.initialized) {
+        // Quad padding: the wobble can extend the visual edge by ~8% and
+        // the stretch can elongate it by up to ~25%, so 1.40 leaves a
+        // safe margin. The shader uses this constant directly via u_padding.
+        constexpr float kQuadPadding = 1.40f;
+
+        // Velocity-based stretch. cellSpeed maxes around ~280 for starters
+        // and ~840 during dash; launch_vel piles on top. We normalize by a
+        // moderate reference (1500 u/s) and cap at +25% elongation -- enough
+        // to read as motion without distorting the body grotesquely.
+        Vec2 vel_dir{0.0f, 0.0f};
+        const float speed = length(c.vel);
+        if (speed > 1.0f) {
+            vel_dir.x = c.vel.x / speed;
+            vel_dir.y = c.vel.y / speed;
+        }
+        const float stretch = 1.0f + std::clamp(speed / 1500.0f, 0.0f, 0.25f);
+
+        // Per-cell wobble phase. Hashed off the cell id so adjacent cells
+        // don't ripple in sync. * 0.137 keeps the hash producing a smooth
+        // distribution across the 0..2pi range.
+        const float id_seed = static_cast<float>(c.id) * 0.137f;
+
+        // u_color expects 0..1 RGB. We've already mixed invuln pulses,
+        // dash_telegraph bumps, stealth alpha, etc. into `fill`. Alpha
+        // flows through u_alpha.
+        const float r_col = static_cast<float>(fill.r) / 255.0f;
+        const float g_col = static_cast<float>(fill.g) / 255.0f;
+        const float b_col = static_cast<float>(fill.b) / 255.0f;
+        const float a_col = static_cast<float>(fill.a) / 255.0f;
+
+        const float t      = static_cast<float>(now_sec);
+        const float padval = kQuadPadding;
+        const float color3[3] = {r_col, g_col, b_col};
+        const float veldir2[2] = {vel_dir.x, vel_dir.y};
+
+        const float quad_half = r * kQuadPadding;
+        const Rectangle dst{pos.x - quad_half, pos.y - quad_half,
+                            quad_half * 2.0f, quad_half * 2.0f};
+
+        BeginShaderMode(g_blob_gfx.shader);
+        SetShaderValue   (g_blob_gfx.shader, g_blob_gfx.loc_time,    &t,       SHADER_UNIFORM_FLOAT);
+        SetShaderValueV  (g_blob_gfx.shader, g_blob_gfx.loc_color,   color3,   SHADER_UNIFORM_FLOAT, 3);
+        SetShaderValueV  (g_blob_gfx.shader, g_blob_gfx.loc_vel_dir, veldir2,  SHADER_UNIFORM_FLOAT, 2);
+        SetShaderValue   (g_blob_gfx.shader, g_blob_gfx.loc_stretch, &stretch, SHADER_UNIFORM_FLOAT);
+        SetShaderValue   (g_blob_gfx.shader, g_blob_gfx.loc_id_seed, &id_seed, SHADER_UNIFORM_FLOAT);
+        SetShaderValue   (g_blob_gfx.shader, g_blob_gfx.loc_alpha,   &a_col,   SHADER_UNIFORM_FLOAT);
+        SetShaderValue   (g_blob_gfx.shader, g_blob_gfx.loc_padding, &padval,  SHADER_UNIFORM_FLOAT);
+        DrawTexturePro(g_blob_gfx.white,
+                       Rectangle{0, 0, 1, 1},
+                       dst,
+                       Vector2{0, 0},
+                       0.0f,
+                       WHITE);
+        EndShaderMode();
+    } else {
+        // Fallback path (shader compile failed). Old hard-circle look.
+        DrawCircleV(Vector2{pos.x, pos.y}, r, fill);
+    }
+
+    // High-contrast accessibility outline: thick white stroke layered ON TOP
+    // of the shader body. The blob's wobbly silhouette is approximated by
+    // the circle outline -- close enough for the accessibility intent (cell
+    // edge visible against busy backgrounds), and gives users a clear
+    // boundary even if the shader's rim band is subtle on their display.
     if (s_high_contrast) {
-        // 3-pass thick white outline. Reads as a hard border against busy backgrounds.
         DrawCircleLinesV(Vector2{pos.x, pos.y}, r,        Color{255, 255, 255, 255});
         DrawCircleLinesV(Vector2{pos.x, pos.y}, r + 1.0f, Color{255, 255, 255, 220});
         DrawCircleLinesV(Vector2{pos.x, pos.y}, r - 1.0f, Color{255, 255, 255, 180});
-    } else {
+    } else if (c.god) {
+        // God-mode dev cells get a bright gold ring on top of the shader
+        // body so the dev flag is unmistakable.
         DrawCircleLinesV(Vector2{pos.x, pos.y}, r, outline);
     }
 
@@ -1519,6 +1744,7 @@ void unloadRendererGpuResources() {
     unloadBlackHoleGfx();
     unloadCometGfx();
     unloadWormholeGfx();
+    unloadCellBlobGfx();
 }
 
 void Renderer::drawScreenBackdrop(int sw, int sh) const {
