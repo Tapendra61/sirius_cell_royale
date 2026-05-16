@@ -1648,19 +1648,31 @@ int runWindow(uint64_t initial_seed) {
                         if (w.cell_id == cr::INVALID_ENTITY) {
                             // Lobby join. Record self + host names. Send our
                             // own name up so the host can broadcast it.
+                            // If the user hasn't typed a name in Settings,
+                            // fall back to "Player <id>" so the host has
+                            // SOMETHING to display instead of treating us as
+                            // "Joining..." forever.
+                            std::string effective_name = save.player_name;
+                            if (effective_name.empty()) {
+                                char buf[32];
+                                std::snprintf(buf, sizeof(buf), "Player %u",
+                                              static_cast<unsigned>(w.player_id));
+                                effective_name = buf;
+                            }
                             lobby_my_player_id = w.player_id;
-                            lobby_known_peer_names[w.player_id] = save.player_name;
+                            lobby_known_peer_names[w.player_id] = effective_name;
                             lobby_known_peer_names[1] =
                                 w.host_name.empty() ? std::string("Host") : w.host_name;
                             local_lobby.setRemoteHostName(
                                 w.host_name.empty() ? std::string("Host") : w.host_name);
                             cr::codec::ClientHelloMsg hello;
                             hello.player_id = w.player_id;
-                            hello.name      = save.player_name;
+                            hello.name      = effective_name;
                             lobby_transport.sendClientHelloToHost(hello);
-                            std::printf("[lobby] lobby welcome: player_id=%u host=\"%s\"\n",
+                            std::printf("[lobby] lobby welcome: player_id=%u host=\"%s\" sending name=\"%s\"\n",
                                         static_cast<unsigned>(w.player_id),
-                                        w.host_name.c_str());
+                                        w.host_name.c_str(),
+                                        effective_name.c_str());
                         } else {
                             // Match start! Stash the welcome and trigger the
                             // phase transition below.
@@ -1699,7 +1711,18 @@ int runWindow(uint64_t initial_seed) {
                     if (pid == 1) continue;
                     cr::LobbyPlayerRow r;
                     r.id      = pid;
-                    r.name    = name.empty() ? std::string("Joining...") : name;
+                    if (name.empty()) {
+                        // Defensive: shouldn't happen in normal flow (the
+                        // client always sends at least "Player <id>") but
+                        // if it ever does, show a placeholder that's clear
+                        // the player is connected, not stuck mid-handshake.
+                        char buf[32];
+                        std::snprintf(buf, sizeof(buf), "Player %u",
+                                      static_cast<unsigned>(pid));
+                        r.name = buf;
+                    } else {
+                        r.name = name;
+                    }
                     r.is_self = false;
                     r.is_host = false;
                     rows.push_back(r);
