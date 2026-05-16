@@ -28,6 +28,12 @@ bool        s_high_contrast = false;
 // when there are many bots + peers.
 std::unordered_map<PlayerId, std::string> s_player_names;
 
+// Per-cell wobble pulse map. Bumped to ~1.0 by the event handler on absorbs
+// / splits / blasts / recombines; decayed each frame in Client::updateFrame.
+// At rest (no recent event) entries are dropped; drawCell reads zero for
+// any cell not in the map, which makes the cell render as a perfect circle.
+std::unordered_map<EntityId, float> s_cell_wobble_pulse;
+
 // Default vibrant palette (used everywhere outside cell-color identification).
 const Color kPaletteDefault[] = {
     Color{ 64, 156, 255, 255}, // blue
@@ -94,6 +100,36 @@ void setPlayerName(PlayerId p, const char* name) {
     }
 }
 void clearPlayerNames() { s_player_names.clear(); }
+
+void bumpCellWobblePulse(EntityId id, float amount) {
+    if (id == INVALID_ENTITY || amount <= 0.0f) return;
+    auto& v = s_cell_wobble_pulse[id];
+    // Take the max so back-to-back events on the same cell don't reset the
+    // pulse to a smaller value -- they hold the peak and continue decaying.
+    v = std::max(v, amount);
+}
+
+void decayCellWobblePulses(float dt) {
+    // Exponential decay; ~3.0/sec gives ~230ms half-life so a single
+    // collision wobble is visible for ~0.6-0.8s before fading to nothing.
+    constexpr float kDecayPerSec = 3.0f;
+    const float factor = std::exp(-kDecayPerSec * dt);
+    for (auto it = s_cell_wobble_pulse.begin(); it != s_cell_wobble_pulse.end(); ) {
+        it->second *= factor;
+        if (it->second < 0.02f) {
+            it = s_cell_wobble_pulse.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void clearCellWobblePulses() { s_cell_wobble_pulse.clear(); }
+
+float cellWobblePulse(EntityId id) {
+    auto it = s_cell_wobble_pulse.find(id);
+    return (it == s_cell_wobble_pulse.end()) ? 0.0f : it->second;
+}
 
 Color colorForPlayer(PlayerId p) {
     if (p == INVALID_PLAYER) return Color{180, 180, 180, 255};
@@ -418,6 +454,11 @@ uniform float u_stretch;
 uniform float u_id_seed;
 uniform float u_alpha;
 uniform float u_padding;
+// Wobble intensity. 0.0 = perfect circle (cell at rest, no collisions);
+// 1.0 = baseline wobble; up to ~1.5 right after a collision pulse.
+// Driven from C++ -- composed of (a) a velocity-derived baseline and
+// (b) transient pulses pushed in by collision / split / absorb events.
+uniform float u_wobble_amp;
 
 void main() {
     // Centered uv in [-padding, +padding] across the quad. The cell's
@@ -442,21 +483,19 @@ void main() {
     float r     = length(local);
     float theta = atan(local.y, local.x);
 
-    // Three-harmonic angular wobble + a uniform "breathing" oscillation.
-    // Amplitudes are loud enough that the silhouette visibly deforms each
-    // frame (~15% radius swing total at peak), and the time multipliers
-    // give a ~0.5-2s period range so the motion reads as "alive" rather
-    // than static. Per-cell phase offset (u_id_seed) de-synchronises
-    // neighbouring cells.
+    // Three-harmonic angular wobble. ALL amplitudes are multiplied by
+    // u_wobble_amp, so when the cell is at rest (no velocity, no recent
+    // collision pulse) the wobble is zero and the cell renders as a
+    // perfect circle. Up to ~15% peak deformation when u_wobble_amp = 1.
+    // Per-cell phase offset (u_id_seed) keeps neighbouring cells
+    // out-of-sync when they ARE wobbling. No "breathing" oscillation --
+    // cells should be still when nothing is happening to them.
     float wobble  = 0.080 * sin(theta *  4.0 + u_time * 2.5 + u_id_seed);
     wobble       += 0.050 * sin(theta *  7.0 - u_time * 3.5 + u_id_seed * 1.3);
     wobble       += 0.025 * sin(theta * 10.0 + u_time * 5.0 + u_id_seed * 0.5);
-    // Breathing: whole rim expands + contracts uniformly. Slower than the
-    // angular wobble so it reads as a separate beat -- the silhouette
-    // "swells" in and out of the static outline.
-    float breath  = 0.028 * sin(u_time * 1.6 + u_id_seed * 0.7);
+    wobble       *= u_wobble_amp;
 
-    float edge = 1.0 + wobble + breath;
+    float edge = 1.0 + wobble;
 
     // Soft alpha falloff at the wobbly rim. The body holds full alpha
     // until 96% of the edge, then smoothly fades to 0 just past it --
@@ -478,13 +517,14 @@ void main() {
 struct CellBlobGfx {
     Shader     shader{};
     Texture2D  white{};
-    int        loc_time    = -1;
-    int        loc_color   = -1;
-    int        loc_vel_dir = -1;
-    int        loc_stretch = -1;
-    int        loc_id_seed = -1;
-    int        loc_alpha   = -1;
-    int        loc_padding = -1;
+    int        loc_time       = -1;
+    int        loc_color      = -1;
+    int        loc_vel_dir    = -1;
+    int        loc_stretch    = -1;
+    int        loc_id_seed    = -1;
+    int        loc_alpha      = -1;
+    int        loc_padding    = -1;
+    int        loc_wobble_amp = -1;
     bool       initialized = false;
     bool       failed      = false;
 };
@@ -748,13 +788,14 @@ void ensureCellBlobGfx() {
         g_blob_gfx.failed = true;
         return;
     }
-    g_blob_gfx.loc_time    = GetShaderLocation(g_blob_gfx.shader, "u_time");
-    g_blob_gfx.loc_color   = GetShaderLocation(g_blob_gfx.shader, "u_color");
-    g_blob_gfx.loc_vel_dir = GetShaderLocation(g_blob_gfx.shader, "u_vel_dir");
-    g_blob_gfx.loc_stretch = GetShaderLocation(g_blob_gfx.shader, "u_stretch");
-    g_blob_gfx.loc_id_seed = GetShaderLocation(g_blob_gfx.shader, "u_id_seed");
-    g_blob_gfx.loc_alpha   = GetShaderLocation(g_blob_gfx.shader, "u_alpha");
-    g_blob_gfx.loc_padding = GetShaderLocation(g_blob_gfx.shader, "u_padding");
+    g_blob_gfx.loc_time       = GetShaderLocation(g_blob_gfx.shader, "u_time");
+    g_blob_gfx.loc_color      = GetShaderLocation(g_blob_gfx.shader, "u_color");
+    g_blob_gfx.loc_vel_dir    = GetShaderLocation(g_blob_gfx.shader, "u_vel_dir");
+    g_blob_gfx.loc_stretch    = GetShaderLocation(g_blob_gfx.shader, "u_stretch");
+    g_blob_gfx.loc_id_seed    = GetShaderLocation(g_blob_gfx.shader, "u_id_seed");
+    g_blob_gfx.loc_alpha      = GetShaderLocation(g_blob_gfx.shader, "u_alpha");
+    g_blob_gfx.loc_padding    = GetShaderLocation(g_blob_gfx.shader, "u_padding");
+    g_blob_gfx.loc_wobble_amp = GetShaderLocation(g_blob_gfx.shader, "u_wobble_amp");
 
     Image img = GenImageColor(1, 1, WHITE);
     g_blob_gfx.white = LoadTextureFromImage(img);
@@ -1548,6 +1589,15 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec, bool fl
         // distribution across the 0..2pi range.
         const float id_seed = static_cast<float>(c.id) * 0.137f;
 
+        // Wobble amplitude: 0 = perfect circle (cell at rest, no recent
+        // collisions). Composed of a velocity-derived baseline + any
+        // transient collision pulse the event handler dropped on this
+        // cell. Capped at 1.2 so even a stack of events doesn't blow the
+        // shader's quad padding.
+        const float vel_amp   = std::clamp(speed / 800.0f, 0.0f, 0.85f);
+        const float pulse_amp = cellWobblePulse(c.id);
+        const float wobble_amp = std::clamp(vel_amp + pulse_amp, 0.0f, 1.2f);
+
         // u_color expects 0..1 RGB. We've already mixed invuln pulses,
         // dash_telegraph bumps, stealth alpha, etc. into `fill`. Alpha
         // flows through u_alpha.
@@ -1574,10 +1624,11 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec, bool fl
         // black") on most drivers.
         SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_color,   color3,   SHADER_UNIFORM_VEC3);
         SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_vel_dir, veldir2,  SHADER_UNIFORM_VEC2);
-        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_stretch, &stretch, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_id_seed, &id_seed, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_alpha,   &a_col,   SHADER_UNIFORM_FLOAT);
-        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_padding, &padval,  SHADER_UNIFORM_FLOAT);
+        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_stretch,    &stretch,    SHADER_UNIFORM_FLOAT);
+        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_id_seed,    &id_seed,    SHADER_UNIFORM_FLOAT);
+        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_alpha,      &a_col,      SHADER_UNIFORM_FLOAT);
+        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_padding,    &padval,     SHADER_UNIFORM_FLOAT);
+        SetShaderValue(g_blob_gfx.shader, g_blob_gfx.loc_wobble_amp, &wobble_amp, SHADER_UNIFORM_FLOAT);
         DrawTexturePro(g_blob_gfx.white,
                        Rectangle{0, 0, 1, 1},
                        dst,
