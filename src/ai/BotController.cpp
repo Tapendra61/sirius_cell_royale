@@ -224,14 +224,22 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
             && rng.nextFloat() < 0.85f) {
             queueDashOrFire(mind, d, self, rng, now);
         }
-        // Panic blast: push the predator away. Same gates as the prey-chasing
-        // case (min mass + cooldown + range) but we skip the aggression roll
-        // when the threat is dangerously close -- survival overrides flavor.
+        // Panic blast (defensive). Only fires when:
+        //   - Aggression > 0 (Cautious / Greedy / Hoarder never panic-blast).
+        //   - Mass + cooldown gates pass.
+        //   - The threat is CLOSE enough that the push will actually shove
+        //     them out of eating range (within blast_radius * 0.55 -- past
+        //     that the push velocity is too gentle to matter at the centre).
+        //   - The threat is meaningfully bigger than us, so spending 20% of
+        //     our mass on the blast is a net win versus being eaten.
+        // Aggression is rolled at 1.3x in the panic case so high-aggro bots
+        // are a bit more likely to use the escape valve than to wait it out.
         if (w.blast_aggression > 0.0f
             && self.mass >= t.blast_min_mass
             && self.blast_cooldown_until <= now
-            && threat_d < t.blast_radius * 0.9f
-            && rng.nextFloat() < std::min(1.0f, w.blast_aggression * 1.5f)) {
+            && threat_d < t.blast_radius * 0.55f
+            && threat->mass > self.mass * 1.4f
+            && rng.nextFloat() < std::min(1.0f, w.blast_aggression * 1.3f)) {
             d.blast = true;
         }
         mind.fled_threat_id = threat->id;
@@ -285,18 +293,50 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
             && rng.nextFloat() < 0.85f) {
             queueDashOrFire(mind, d, self, rng, now);
         }
-        // Q-blast: fire when prey is in blast range AND personality favors it.
-        // The blast pushes the prey + nearby food / cells outward, so it's most
-        // valuable as a *disruption* tool (scatter the player's split pieces;
-        // knock the prey away from a black hole they were diving for). The
-        // ability has a min-mass requirement and a cooldown -- the sim's
-        // doBlast no-ops if either is unmet, so a missed roll doesn't break.
-        if (w.blast_aggression > 0.0f
-            && self.mass >= t.blast_min_mass
-            && self.blast_cooldown_until <= now
-            && prey_d < t.blast_radius * 0.8f
-            && rng.nextFloat() < w.blast_aggression) {
-            d.blast = true;
+        // Smart Q-blast (chase-side). Blast has a 6s cooldown and a 20% mass
+        // cost -- firing it casually is BAD. We only fire when it pays off:
+        //
+        //   1. The prey is the *human player* AND they're moderately close
+        //      (between 0.30 and 0.65 of blast_radius -- not point-blank
+        //      where the cell could just eat them, not too far where the
+        //      shockwave barely nudges). Disrupts the player's escape
+        //      splits, which is the canonical valuable case.
+        //
+        //   2. OR there are >= 3 enemy cells within blast_radius. A blast
+        //      hitting a cluster of bots+player splits is high-value
+        //      regardless of who the prey is.
+        //
+        // After the gate, the aggression roll still applies so identical bot
+        // setups don't all blast at the same instant.
+        const bool blast_ready = w.blast_aggression > 0.0f
+                              && self.mass >= t.blast_min_mass
+                              && self.blast_cooldown_until <= now;
+        if (blast_ready) {
+            const bool prey_is_human = (prey->owner < kFirstBotPlayerId);
+            const bool sweet_range   = prey_d > t.blast_radius * 0.30f
+                                    && prey_d < t.blast_radius * 0.65f;
+
+            int cluster_count = 0;
+            if (!(prey_is_human && sweet_range)) {
+                // Cluster fallback only if the human-player case didn't fire.
+                // Cheap O(N) scan -- ~50 bots + the player, single iteration.
+                const float blast_sq = t.blast_radius * t.blast_radius;
+                for (const auto& other : world.cells()) {
+                    if (other.owner == self.owner) continue;
+                    if (other.stealth_until > now) continue;
+                    if (other.hiding_in != INVALID_ENTITY) continue;
+                    float dx = other.pos.x - self.pos.x;
+                    float dy = other.pos.y - self.pos.y;
+                    if (dx * dx + dy * dy < blast_sq) ++cluster_count;
+                    if (cluster_count >= 3) break; // early exit
+                }
+            }
+
+            const bool high_value = (prey_is_human && sweet_range)
+                                 || (cluster_count >= 3);
+            if (high_value && rng.nextFloat() < w.blast_aggression) {
+                d.blast = true;
+            }
         }
         mind.fled_threat_id = INVALID_ENTITY;
         mind.flee_until     = 0;
@@ -424,10 +464,52 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
         }
     }
 
+    // ---------- Comet dodging (overrides target on collision course) ----------
+    // The crashing-comet world event kills any cell within ~440 px of its
+    // travelling centre. A bot that doesn't dodge can get one-shot regardless
+    // of mass or personality. We test "am I in the comet's path?" by
+    // decomposing the cell-to-comet vector into forward + perpendicular
+    // components in the comet's frame:
+    //   - forward (along vel): positive = ahead of the comet
+    //   - perp:                magnitude = perpendicular distance to the line
+    // If the cell sits in front of an active comet, within roughly a kill-
+    // radius perpendicularly and within a few radii ahead, snap the move
+    // target to a perpendicular dodge -- the side already closer to the
+    // current perp offset, so the bot exits the danger lane fastest.
+    bool dodging_comet = false;
+    for (const auto& cm : world.comets()) {
+        if (cm.start_at > now) continue; // still in telegraph; safe to ignore
+        Vec2  to_cell = self.pos - cm.pos;
+        float vel_sq  = lengthSq(cm.vel);
+        if (vel_sq < 1.0f) continue;
+        float vel_mag = std::sqrt(vel_sq);
+        Vec2  fwd{cm.vel.x / vel_mag, cm.vel.y / vel_mag};
+        Vec2  perp{-fwd.y, fwd.x};
+        float fwd_d  = to_cell.x * fwd.x + to_cell.y * fwd.y;
+        float perp_d = to_cell.x * perp.x + to_cell.y * perp.y;
+        // Outside the path (perp too large) -- safe. Behind the comet
+        // (negative fwd_d) -- already passed, safe. Too far ahead -- not
+        // an imminent threat yet.
+        const float danger_perp = cm.radius * 1.6f;
+        const float danger_fwd  = cm.radius * 7.0f;
+        if (std::abs(perp_d) > danger_perp) continue;
+        if (fwd_d < 0.0f || fwd_d > danger_fwd) continue;
+        // In the kill lane. Pick the perpendicular side that's already
+        // closer to escape, then aim well past the danger zone so the bot
+        // commits to the dodge instead of slowing as it nears the line.
+        const float dodge_sign = (perp_d >= 0.0f) ? +1.0f : -1.0f;
+        d.move_target = self.pos + perp * (dodge_sign * 1200.0f);
+        d.chosen_state = BotState::FleePredator; // also disables EMA below
+        dodging_comet = true;
+        break; // one comet at a time
+    }
+
     // ---------- EMA smoothing ----------
-    // Snap when fleeing or orbiting a virus -- both are safety-critical and rely on the
-    // computed target being applied exactly. Otherwise use the personality's EMA alpha.
-    if (d.chosen_state == BotState::FleePredator || avoiding || !mind.smoothed_init) {
+    // Snap when fleeing, orbiting a virus, OR dodging a comet -- all safety-
+    // critical and rely on the computed target being applied exactly.
+    // Otherwise use the personality's EMA alpha.
+    if (d.chosen_state == BotState::FleePredator || avoiding || dodging_comet
+        || !mind.smoothed_init) {
         mind.smoothed_target = d.move_target;
         mind.smoothed_init   = true;
     } else {

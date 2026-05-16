@@ -31,7 +31,7 @@ and connect to `127.0.0.1:7456`. Multiplayer modes don't auto-pause on focus los
 | Split | `Space` | Splits each eligible cell in half, launching the new piece in the cursor direction. Costs no mass (the original splits 50/50). Max 16 cells per player. |
 | Eject mass | `W` | Drops a small food pellet in the cursor direction. Used to feed viruses, push enemies, or barter mass. |
 | Dash | `Shift` | Short burst of 3× speed with brief invuln. 4s cooldown. |
-| Mass Blast (Q) | `Q` | Spends 20% of your biggest cell's mass to push every enemy cell + nearby food radially outward. 4s cooldown. Min cast mass = 300. Blast radius scales with caster size. |
+| Mass Blast (Q) | `Q` | Spends 20% of your biggest cell's mass to push every enemy cell + nearby food radially outward. 6s cooldown. Min cast mass = 300. Blast radius scales with caster size. |
 | Pause | `Esc` (in match, **single-player only**) | Opens the Pause overlay. RESUME or MAIN MENU buttons. In multiplayer Esc is silently ignored as a pause toggle (the host can't freeze the world for clients and a client can't freeze the host either). |
 | Hold-to-move mode | Console command `set_hold_to_move 0|1` | When on, your cell only moves while the left mouse button is held. Off by default. |
 | Dev console | `` ` `` (backtick / tilde) | Opens a text input for commands. See §10. Hidden in release builds (CR_ENABLE_DEV_TOOLS=OFF). |
@@ -98,7 +98,7 @@ forced into the touch layout via `force_touch 1`.
   - Your own cells.
   - Cells hiding inside a black hole.
   - Cells with an active Shield pickup.
-- Cooldown: 4 seconds. Live cooldown bar in the top-right HUD ramps red → orange
+- Cooldown: 6 seconds. Live cooldown bar in the top-right HUD ramps red → orange
   → bright yellow as it refills.
 - Tactical uses: peel a predator off you; clear space for an eat; combo into a
   split-and-chase.
@@ -238,11 +238,27 @@ angle. When they're all chasing the player, each approaches from a
 slightly different perpendicular offset (scaled by distance), so a group
 ends up surrounding you instead of stacking on the same chase line.
 
-**Bot Q-blast** — Hunters / Apex / Reckless / Hoarder will fire the
-Mass Blast when their target (or attacker) is in blast range, they have
-≥ 300 mass, and the cooldown is ready. Mostly used as a disruption tool
-to scatter your split pieces. Bots blast at the same cooldown and cost
-as the player.
+**Bot Q-blast (smart use)** — only Hunter / Apex / Reckless personalities
+ever blast (Greedy / Hoarder / Cautious never do). The fire heuristic
+keeps them from spamming the 6-second cooldown:
+
+- **Chase blast**: only fires when the prey is the *human player* AND
+  they're in the sweet range (30%–65% of blast radius) — pure
+  disruption against your split-escape — OR when **3+** enemy cells
+  cluster within blast radius (multi-hit value justifies the cost).
+- **Panic blast**: only fires when the threat is **close** (< 55% of
+  blast radius) AND **meaningfully bigger** (≥ 1.4× the bot's mass),
+  so spending 20% mass actually saves them.
+
+Bots use the same cooldown (6 s) and cost (20% of source mass) as the
+player.
+
+**Comet dodge** — every bot computes whether it's in the comet's
+forward kill lane (perpendicular distance < ~700 px, ahead of the
+comet by ≤ 7 radii). If so it abandons its current move target and
+darts perpendicular to the comet's velocity — picks the side it's
+already closer to so the exit is fastest. EMA smoothing is bypassed
+during the dodge so the swerve registers immediately.
 
 ---
 
@@ -443,7 +459,7 @@ The full set is documented inline in `tuning.ini` itself. High-impact knobs:
 | `[split]` | `min_mass_to_split` | 200 | Smallest cell that can split. |
 | `[split]` | `launch_velocity` | 700 | Split-launch speed. |
 | `[blast]` | `radius` | 600 | Blast reach at min cast mass. Scales with caster size. |
-| `[blast]` | `cooldown_sec` | 4 | Q recharge time. |
+| `[blast]` | `cooldown_sec` | 6 | Q recharge time (longer than dash so bots can't spam, and player blasts feel meaningful). |
 | `[dash]` | `cooldown_sec` | 4 | Dash recharge time. |
 | `[world]` | `width` / `height` | 16000 / 16000 | Playfield. |
 | `[bots]` | `target_count` | 50 | VS AI default. Royale modes (LocalHost / LocalClient) override to 0 at match start; the host opts in with `bots N`. |

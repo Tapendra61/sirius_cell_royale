@@ -9,7 +9,8 @@ PersonalityWeights weightsFor(BotPersonality p) {
     case BotPersonality::Greedy:
         // The food monarch: huge food vision, strongest value weighting, will snap at
         // anything that wanders very close. Caps slightly above player so they end up
-        // as roaming fat targets that occasionally eat you back.
+        // as roaming fat targets that occasionally eat you back. Doesn't blast --
+        // they're food-focused, not hunters.
         return {/*view*/         3500.0f,
                 /*flee_mult*/       2.5f,
                 /*chase_mult*/      3.0f,
@@ -23,38 +24,41 @@ PersonalityWeights weightsFor(BotPersonality p) {
                 /*responsiveness*/  0.25f,
                 /*food_value_w*/    3.0f,
                 /*prey_lead_sec*/   0.0f,
-                /*blast_aggro*/     0.10f};
+                /*blast_aggro*/     0.0f};
     case BotPersonality::Cautious:
         // The unkillable survivor. Never blasts (defensive specialist).
         return {2500.0f, 25.0f, 0.0f, 0.0f, 0.20f, 6.0f, 0.0f, true, 0.85f, 1.0f, 0.12f, 1.0f, 0.0f, 0.0f};
     case BotPersonality::Hunter:
-        // The apex predator. Now lobs blasts at fleeing prey to disrupt escape splits.
-        return {4500.0f, 4.0f, 32.0f, 0.95f, 0.45f, 2.0f, 0.0f, true, 1.25f, 5.0f, 0.32f, 0.3f, 0.7f, 0.55f};
+        // The apex predator. Lobs blasts at fleeing prey to disrupt escape splits.
+        // Smart-blast heuristic gates the actual firing so they don't blow the
+        // cooldown on a low-value target.
+        return {4500.0f, 4.0f, 32.0f, 0.95f, 0.45f, 2.0f, 0.0f, true, 1.25f, 5.0f, 0.32f, 0.3f, 0.7f, 0.35f};
     case BotPersonality::Hoarder:
-        // The fortress. Blasts when prey gets close enough so the corner is even more
-        // hostile to camp -- punches them away or into a wall.
-        return {1500.0f, 6.0f, 10.0f, 0.5f, 0.20f, 8.0f, 0.92f, true, 1.4f, 1.0f, 0.10f, 5.0f, 0.0f, 0.45f};
+        // The fortress. Doesn't blast -- they camp the corner and let prey come
+        // to them. Wasting blasts on flyby targets is off-brand.
+        return {1500.0f, 6.0f, 10.0f, 0.5f, 0.20f, 8.0f, 0.92f, true, 1.4f, 1.0f, 0.10f, 5.0f, 0.0f, 0.0f};
     case BotPersonality::Reckless:
-        // The chaos lord. Loves blasts, fires often (sometimes wastes them).
-        return {2800.0f, 1.5f, 28.0f, 1.0f, 1.0f, 1.0f, 0.0f, false, 1.35f, 2.0f, 0.55f, 0.8f, 0.4f, 0.75f};
+        // The chaos lord. Will blast occasionally but the smart-blast gate keeps
+        // them from spamming -- they're impulsive, not stupid.
+        return {2800.0f, 1.5f, 28.0f, 1.0f, 1.0f, 1.0f, 0.0f, false, 1.35f, 2.0f, 0.55f, 0.8f, 0.4f, 0.20f};
     case BotPersonality::Apex:
-        // The late-game terror. Slow, fearless, sticky lock-on, very high blast
-        // aggression -- splits the player + chases the largest piece. Spawns only
-        // as an elite (BotDirector gates this) so non-elite Apex doesn't exist.
+        // The late-game terror. Slow, fearless, sticky lock-on, blast aggression
+        // gated by the smart heuristic so it doesn't pop on the first frame in
+        // range.
         return {/*view*/         5500.0f,
-                /*flee_mult*/       1.0f,  // doesn't flee meaningfully
-                /*chase_mult*/      45.0f, // chases across the map
-                /*split_aggro*/     0.85f, // split-pounces eagerly when ahead
+                /*flee_mult*/       1.0f,
+                /*chase_mult*/      45.0f,
+                /*split_aggro*/     0.85f,
                 /*dash_eager*/      0.30f,
                 /*wander_period*/   8.0f,
                 /*corner_pull*/     0.0f,
-                /*fears_viruses*/   true,  // still avoids them
-                /*max_mass_factor*/ 1.7f,  // can outgrow the player
-                /*human_bias*/      8.0f,  // locks onto the player hard
-                /*responsiveness*/  0.22f, // smooth & predatory, not jittery
+                /*fears_viruses*/   true,
+                /*max_mass_factor*/ 1.7f,
+                /*human_bias*/      8.0f,
+                /*responsiveness*/  0.22f,
                 /*food_value_w*/    1.2f,
-                /*prey_lead_sec*/   0.60f, // intercepts well
-                /*blast_aggro*/     0.95f}; // signature ability
+                /*prey_lead_sec*/   0.60f,
+                /*blast_aggro*/     0.55f};
     case BotPersonality::Count:
         break;
     }

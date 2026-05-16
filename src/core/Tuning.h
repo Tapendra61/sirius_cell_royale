@@ -40,7 +40,7 @@ struct Tuning {
     float blast_radius          = 600.0f;  // push reach
     float blast_push_speed      = 1200.0f; // peak outward velocity at the blast centre
     float blast_food_push_scale = 0.5f;    // food gets a weaker push than cells
-    float blast_cooldown_sec    = 4.0f;
+    float blast_cooldown_sec    = 6.0f;
 
     // [crit]
     float chance_per_absorb = 0.05f;
