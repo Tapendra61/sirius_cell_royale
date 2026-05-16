@@ -32,7 +32,7 @@ and connect to `127.0.0.1:7456`. Multiplayer modes don't auto-pause on focus los
 | Eject mass | `W` | Drops a small food pellet in the cursor direction. Used to feed viruses, push enemies, or barter mass. |
 | Dash | `Shift` | Short burst of 3× speed with brief invuln. 4s cooldown. |
 | Mass Blast (Q) | `Q` | Spends 20% of your biggest cell's mass to push every enemy cell + nearby food radially outward. 6s cooldown. Min cast mass = 300. Blast radius scales with caster size. |
-| Pause | `Esc` (in match, **single-player only**) | Opens the Pause overlay. RESUME or MAIN MENU buttons. In multiplayer Esc is silently ignored as a pause toggle (the host can't freeze the world for clients and a client can't freeze the host either). |
+| Pause / Menu | `Esc` (in match) | **Single-player**: freezes the sim AND shows the overlay with RESUME / MAIN MENU buttons. **Multiplayer**: opens the same overlay but the sim KEEPS ticking (host can't freeze peers; client can't freeze the host). Buttons read RESUME / END MATCH (host) or RESUME / DISCONNECT (client). |
 | Hold-to-move mode | Console command `set_hold_to_move 0|1` | When on, your cell only moves while the left mouse button is held. Off by default. |
 | Dev console | `` ` `` (backtick / tilde) | Opens a text input for commands. See §10. Hidden in release builds (CR_ENABLE_DEV_TOOLS=OFF). |
 | Skip Death Cam | Any gameplay key | The 1.5s killer-focus cam can be skipped early. |
@@ -359,10 +359,26 @@ All channels are reliable. Default port: **UDP 7456**.
 
 ### Pause semantics
 
-Esc and the `pause` dev console command are both **single-player only**.
-Pausing the host would stop snapshots for clients; pausing a client would
-just freeze its local view. Both are confusing in multiplayer, so the
-shortcut and the command both refuse cleanly.
+- **Single-player**: Esc opens the pause overlay AND freezes the sim
+  (`effectiveDtMultiplier` returns 0). Buttons: RESUME / MAIN MENU.
+- **Multiplayer**: Esc opens the same overlay but the sim KEEPS ticking
+  -- pausing the host would stop snapshots for everyone; pausing a
+  client just hides its local view. Buttons read RESUME / END MATCH
+  (host) or RESUME / DISCONNECT (client). The overlay also displays a
+  subtitle reminding the player that the world is still alive.
+- The `pause` dev console command works in both modes (toggles the
+  overlay; SP also freezes the sim).
+
+### Disconnect flow
+
+- **Player-initiated**: clicking DISCONNECT / END MATCH on the pause
+  overlay sets the return-to-menu flag. After cleanup the host or
+  client returns to the LocalLobby (Picker sub-state).
+- **Host-initiated tear-down**: when a host clicks END MATCH (or
+  triggers `kick PID` / window-closes), ENet sends DISCONNECT to all
+  peers. Each client's `NetworkTransport::hostDisconnected()` flips
+  true, the match loop detects it, and the client returns to the
+  lobby with a `[net] host disconnected -- returning to lobby` log.
 
 ### Disconnect cleanup
 
@@ -431,7 +447,7 @@ only).
 | Command | What it does |
 |---|---|
 | `slowmo F` | Set the dt multiplier. `slowmo 1` = normal speed; `slowmo 0.25` = quarter-speed (cinematic / debug). `slowmo 2` = double-speed. |
-| `pause` | Toggle local pause. **Single-player only**; refuses in multiplayer. |
+| `pause` | Toggle the pause overlay. In SP also freezes the sim; in MP the sim keeps ticking and the overlay is purely a menu. |
 | `reload_tuning` | Re-read `tuning.ini` from disk and push it into the sim + menu copies. |
 | `replay_save FILE` | Write the in-memory replay tape to `FILE`. Records seed + initial cells + every command since match start. |
 | `replay_load FILE` | Stub. Use `--replay-load FILE` on the CLI instead for now. |

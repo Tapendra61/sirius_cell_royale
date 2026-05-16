@@ -72,12 +72,14 @@ void Client::pollFrame(int screen_w, int screen_h, Tick current_tick) {
     }
 
     // ---- Playing phase ----
-    // Pause is single-player only. In multiplayer the host can't freeze the world
-    // for clients (their snapshots would just stop arriving) and the client can't
-    // freeze the host either; either way Esc is silently ignored as a pause
-    // toggle. The lobby's `pause` console command is similarly host-only via the
-    // dev-console gate when this changes in the future.
-    if (s.pausePressed && !multiplayer_active_) {
+    // Esc opens the pause overlay in every mode. In single-player the sim also
+    // freezes (effectiveDtMultiplier returns 0). In multiplayer the sim KEEPS
+    // ticking -- pausing the host stops snapshots for everyone; pausing a
+    // client just diverges their view; neither is desirable. So in MP the
+    // overlay is "just a menu" that gates LOCAL input + offers a Disconnect,
+    // not a freeze. Implementation: the paused_ flag still flips here in MP,
+    // but effectiveDtMultiplier ignores it (see Client::effectiveDtMultiplier).
+    if (s.pausePressed) {
         togglePause();
         return;
     }
@@ -112,7 +114,13 @@ std::vector<Command> Client::takeCommands() {
 }
 
 float Client::effectiveDtMultiplier() const {
-    if (paused_ || auto_paused_) return 0.0f;
+    // Pause-freeze only applies in single-player. Multiplayer's "pause" is
+    // really an overlay -- the sim must keep ticking so the host produces
+    // snapshots and clients keep draining their inbound queue. auto_paused_
+    // (focus loss) is itself already gated to SP at the runMatch level, so
+    // we don't need to special-case it here -- but we keep the check for
+    // robustness in case that gating ever changes.
+    if (!multiplayer_active_ && (paused_ || auto_paused_)) return 0.0f;
     float m = dt_mult_;
     if (death_cam_.active) m *= 0.3f;
     return m;
@@ -1023,6 +1031,13 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         return_to_menu_pending_ = true;
     } else if (sa == SummaryAction::ResumeFromPause) {
         paused_ = false;
+    } else if (sa == SummaryAction::Disconnect) {
+        // Same outer-loop hand-off as ReturnToMenu. The outer loop's mode
+        // check decides whether we land back in MainMenu (SP) or the lobby
+        // (LocalHost / LocalClient). Closing the pause overlay too so the
+        // last visible frame before the match teardown isn't a stuck menu.
+        return_to_menu_pending_ = true;
+        paused_                 = false;
     }
 
     console_.render(screen_w, screen_h);

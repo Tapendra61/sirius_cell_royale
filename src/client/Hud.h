@@ -42,6 +42,8 @@ enum class SummaryAction : uint8_t {
     PlayAgainNow,
     ReturnToMenu,
     ResumeFromPause,
+    Disconnect,       // multiplayer pause overlay: leave the match. For a host
+                      // this also tears down the server (peers see DISCONNECT).
 };
 
 // Killfeed line. Lives in Hud's recent_kills_ list and fades out after a few seconds.
@@ -81,6 +83,13 @@ public:
     int  bestCombo() const { return best_combo_; }
     bool playerDead() const { return player_dead_; }
 
+    // Set by Client to swap the pause overlay's labels:
+    //   role 0 = SinglePlayer (PAUSED title, RESUME / MAIN MENU buttons)
+    //   role 1 = MP Host      (MENU title,   RESUME / DISCONNECT (END HOST))
+    //   role 2 = MP Client    (MENU title,   RESUME / DISCONNECT)
+    enum class PauseRole : uint8_t { SinglePlayer = 0, MpHost = 1, MpClient = 2 };
+    void setPauseRole(PauseRole r) { pause_role_ = r; }
+
 private:
     SummaryAction renderSummary(int screen_w, int screen_h, const MatchSummary& s);
     SummaryAction renderPauseOverlay(int screen_w, int screen_h);
@@ -98,6 +107,8 @@ private:
     static constexpr int kKillfeedMax = 5;
     KillfeedEntry recent_kills_[kKillfeedMax] = {};
     int           recent_kills_count_         = 0; // active entries in [0, kKillfeedMax)
+
+    PauseRole     pause_role_                 = PauseRole::SinglePlayer;
 };
 
 } // namespace cr

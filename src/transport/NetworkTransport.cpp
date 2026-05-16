@@ -230,9 +230,10 @@ void NetworkTransport::disconnect() {
     enet_host_ = nullptr;
     enet_peer_ = nullptr;
 #endif
-    role_        = Role::Idle;
-    host_port_   = 0;
-    peer_count_  = 0;
+    role_              = Role::Idle;
+    host_port_         = 0;
+    peer_count_        = 0;
+    host_disconnected_ = false;
     client_peer_.clear();
     commands_.clear();
     snapshots_.clear();
@@ -269,8 +270,12 @@ void NetworkTransport::poll() {
                 std::printf("[net] peer disconnected (peers=%d)\n", peer_count_);
                 // If WE were the client and the host vanished, clear enet_peer_ so
                 // future sends short-circuit instead of hitting a stale peer.
+                // Also set host_disconnected_ so the match loop can detect the
+                // case (host quit / kicked us / network dropped) and bounce us
+                // back to the lobby instead of sitting on a frozen snapshot.
                 if (role_ == Role::Client && ev.peer == static_cast<ENetPeer*>(enet_peer_)) {
-                    enet_peer_ = nullptr;
+                    enet_peer_         = nullptr;
+                    host_disconnected_ = true;
                 }
                 // Host-side: surface the departing peer so the match loop can
                 // despawn their cells + free their PlayerId slot.

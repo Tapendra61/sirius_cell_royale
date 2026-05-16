@@ -340,15 +340,12 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
         cr::setForceTouch(v != 0);
         con.log(std::string("force_touch = ") + (v ? "on" : "off"));
     } else if (cmd == "pause") {
-        // Single-player only. In multiplayer pausing isn't a real concept: the
-        // host's sim ticking is what feeds clients, so freezing one side is
-        // either invisible (client) or world-stopping (host) -- neither is good.
-        if (s.mode != MatchMode::SinglePlayer) {
-            con.log("pause: only available in single-player");
-        } else {
-            s.client->togglePause();
-            con.log(s.client->isPaused() ? "paused" : "unpaused");
-        }
+        // In SP this freezes the sim AND shows the pause overlay. In MP it
+        // only toggles the overlay (effectiveDtMultiplier keeps the sim
+        // ticking) -- handy as a "give me the menu without reaching for Esc"
+        // command via the dev console.
+        s.client->togglePause();
+        con.log(s.client->isPaused() ? "menu open" : "menu closed");
     } else if (cmd == "comet") {
         // Force-spawns a crashing-comet world event on the next sim tick. Useful for
         // demoing the effect without waiting for the regular cadence. Spawn point /
@@ -504,10 +501,15 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
 
     cr::Client client(player_cell,
                       mode == MatchMode::LocalClient ? cr::INVALID_PLAYER : player);
-    // Disables the pause shortcut + pause overlay's keyboard handler. Snapshots
-    // can't be frozen in multiplayer -- the host's world keeps ticking for peers
-    // and the client just renders what it gets.
+    // Changes pause semantics in MP: Esc still opens the overlay menu, but
+    // the sim keeps ticking underneath. Also picks the right pause-overlay
+    // button labels via the role -- SP shows MAIN MENU, MP host shows
+    // END MATCH, MP client shows DISCONNECT.
     client.setMultiplayerActive(mode != MatchMode::SinglePlayer);
+    cr::Hud::PauseRole pause_role = cr::Hud::PauseRole::SinglePlayer;
+    if (mode == MatchMode::LocalHost)   pause_role = cr::Hud::PauseRole::MpHost;
+    if (mode == MatchMode::LocalClient) pause_role = cr::Hud::PauseRole::MpClient;
+    client.setPauseRole(pause_role);
     client.camera().snapTo(
         cr::Vec2{static_cast<float>(tuning.world_width)  * 0.5f,
                  static_cast<float>(tuning.world_height) * 0.5f},
@@ -647,8 +649,17 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
     MatchOutcome   outcome       = MatchOutcome::WindowClosed;
 
     while (!WindowShouldClose()) {
-        // Player clicked MAIN MENU on the Summary panel -- end this match cleanly.
+        // Player clicked MAIN MENU on the Summary panel (or the DISCONNECT /
+        // END MATCH button on the MP pause overlay) -- end this match cleanly.
         if (client.consumeReturnToMenuRequest()) {
+            outcome = MatchOutcome::ReturnToMenu;
+            break;
+        }
+        // LocalClient: if the host vanished (disconnect / quit / network drop),
+        // bounce us out instead of sitting on a stale snapshot forever. Logs
+        // once (the transport sets the flag from a one-time DISCONNECT event).
+        if (mode == MatchMode::LocalClient && net_transport.hostDisconnected()) {
+            std::printf("[net] host disconnected -- returning to lobby\n");
             outcome = MatchOutcome::ReturnToMenu;
             break;
         }

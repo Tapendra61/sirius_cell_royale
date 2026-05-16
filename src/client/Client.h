@@ -59,13 +59,15 @@ public:
     void  setDtMultiplier(float m) { dt_mult_ = m; }
     bool  isPaused() const { return paused_; }
     void  togglePause() { paused_ = !paused_; }
-    // Multiplayer modes disable the pause shortcut entirely (the host can't freeze
-    // the world for clients via Esc, and a client can't pause the authoritative sim
-    // either). The outer loop flips this on for LocalHost / LocalClient. Esc in
-    // multiplayer still propagates to the dev console etc. -- this only blocks the
-    // pause toggle and the pause overlay's keyboard handler.
+    // Multiplayer modes change pause semantics: Esc opens the overlay menu but
+    // the sim KEEPS ticking (the host can't freeze the world for clients, and
+    // a client can't freeze the host). effectiveDtMultiplier() honors that.
+    // The outer loop flips this on for LocalHost / LocalClient.
     void  setMultiplayerActive(bool v) { multiplayer_active_ = v; }
     bool  isMultiplayerActive() const  { return multiplayer_active_; }
+    // Forwards the role to the Hud so the pause overlay can pick the right
+    // button labels (SP: MAIN MENU, MP host: END MATCH, MP client: DISCONNECT).
+    void  setPauseRole(Hud::PauseRole r) { hud_.setPauseRole(r); }
     // Includes pause + death-cam slow-mo.
     float effectiveDtMultiplier() const;
 

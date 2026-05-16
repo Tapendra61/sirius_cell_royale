@@ -42,10 +42,20 @@ VS-AI-on / Royale-off asymmetry.
 
 ### Multiplayer pause semantics
 
-In LocalHost / LocalClient, pressing Esc does **not** toggle pause.
-Pausing the host stops snapshots; pausing a client just freezes the local
-view. Both states are confusing in multiplayer, so the keyboard shortcut
-and the `pause` dev command are gated to SinglePlayer only.
+Esc opens the pause overlay in all modes, but the sim's freeze behaviour
+differs:
+
+- **SinglePlayer**: Esc / `pause` freeze the sim (`effectiveDtMultiplier`
+  returns 0) AND show the overlay (RESUME / MAIN MENU).
+- **Multiplayer (LocalHost / LocalClient)**: Esc / `pause` show the
+  overlay but the sim KEEPS ticking. The host can't freeze peers and a
+  client can't freeze the host -- the overlay is purely a "menu while
+  you stand still". Buttons read RESUME / END MATCH (host) or RESUME /
+  DISCONNECT (client). Clicking either disconnect button bounces the
+  player back to the LocalLobby.
+
+Don't gate Esc out of MP or remove the overlay. Don't have the sim
+freeze in MP.
 
 ### Host-only commands
 

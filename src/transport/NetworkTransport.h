@@ -70,6 +70,12 @@ public:
     // Number of remote peers currently connected. SKELETON: always 0.
     int peerCount() const { return peer_count_; }
 
+    // Client-side: true once a DISCONNECT event has fired for the host peer
+    // we were connected to (host quit, network drop, kicked, etc.). The client
+    // match loop polls this and returns to the lobby cleanly when set. Reset
+    // by the next connect() / disconnect() / host() call.
+    bool hostDisconnected() const { return host_disconnected_; }
+
     // Per-frame pump. Real impl: drain the OS socket / ENet event queue, enqueue
     // received Commands/Snapshots/Events into the internal deques. Skeleton no-op.
     void poll();
@@ -124,10 +130,11 @@ public:
     bool consumeWelcome(codec::WelcomeMsg& out);
 
 private:
-    Role        role_         = Role::Idle;
-    uint16_t    host_port_    = 0;
+    Role        role_              = Role::Idle;
+    uint16_t    host_port_         = 0;
     std::string client_peer_;
-    int         peer_count_   = 0;
+    int         peer_count_        = 0;
+    bool        host_disconnected_ = false; // client-side: host DISCONNECT seen
 
     // In-memory pumps. With CR_NETWORK off these are the entire pipeline (used by
     // unit tests / single-process scenarios). With CR_NETWORK on, sendCommand on a

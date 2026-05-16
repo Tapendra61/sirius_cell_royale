@@ -416,7 +416,9 @@ void Hud::renderKillfeed(int sw, int /*sh*/, double now_sec) const {
 
 SummaryAction Hud::renderPauseOverlay(int sw, int sh) {
     // Dim the world. Lighter than the death-summary dim so it still reads as
-    // "temporarily suspended" rather than "game over".
+    // "temporarily suspended" rather than "game over". In multiplayer the
+    // sim KEEPS running underneath, so the world isn't really paused -- this
+    // is purely a menu overlay.
     DrawRectangle(0, 0, sw, sh, Color{0, 0, 0, 150});
 
     const int box_w = 380;
@@ -431,17 +433,32 @@ SummaryAction Hud::renderPauseOverlay(int sw, int sh) {
         Rectangle{(float)box_x, (float)box_y, (float)box_w, (float)box_h},
         0.12f, 8, Color{160, 170, 220, 200});
 
-    // Title -- gentle pulse so the screen doesn't feel frozen-dead.
+    // Title varies by mode -- "PAUSED" only makes sense in SP, since MP
+    // leaves the sim running. MP title is just "MENU".
+    const bool        mp_active    = (pause_role_ != PauseRole::SinglePlayer);
+    const char* const title        = mp_active ? "MENU" : "PAUSED";
     float t          = static_cast<float>(GetTime());
     float pulse      = 0.5f + 0.5f * std::sin(t * 2.2f);
     int   title_size = sc(44);
-    const char* title = "PAUSED";
     int title_w = MeasureText(title, title_size);
     unsigned char a = static_cast<unsigned char>(200 + pulse * 55);
     DrawText(title, box_x + (box_w - title_w) / 2 + 2,
              box_y + sc(32) + 2, title_size, Color{0, 0, 0, 180});
     DrawText(title, box_x + (box_w - title_w) / 2,
              box_y + sc(32),     title_size, Color{255, 220, 130, a});
+
+    // MP subline: explain that the world is still alive so the player knows
+    // peers are still seeing them stand still.
+    if (mp_active) {
+        const char* sub = (pause_role_ == PauseRole::MpHost)
+                              ? "world keeps ticking -- peers still see you"
+                              : "world keeps ticking -- host still sees you";
+        int sub_fs = sc(13);
+        int sub_w  = MeasureText(sub, sub_fs);
+        DrawText(sub, box_x + (box_w - sub_w) / 2,
+                 box_y + sc(32) + title_size + 8, sub_fs,
+                 Color{180, 190, 220, 200});
+    }
 
     // Buttons stack
     const int btn_w = 260;
@@ -458,14 +475,38 @@ SummaryAction Hud::renderPauseOverlay(int sw, int sh) {
     }
     btn_y += btn_h + 14;
 
+    // Secondary button:
+    //   SP    : "MAIN MENU"  (returns to title screen)
+    //   MP host : "END MATCH"  (disconnects, kicks all peers)
+    //   MP client: "DISCONNECT"
+    const char* sec_label;
+    SummaryAction sec_action;
+    switch (pause_role_) {
+        case PauseRole::SinglePlayer:
+            sec_label  = "MAIN MENU";
+            sec_action = SummaryAction::ReturnToMenu;
+            break;
+        case PauseRole::MpHost:
+            sec_label  = "END MATCH";
+            sec_action = SummaryAction::Disconnect;
+            break;
+        case PauseRole::MpClient:
+        default:
+            sec_label  = "DISCONNECT";
+            sec_action = SummaryAction::Disconnect;
+            break;
+    }
+    Color sec_fill = (pause_role_ == PauseRole::SinglePlayer)
+                         ? Color{60, 70, 100, 255}
+                         : Color{145, 60, 60, 255}; // warm red for "leave"
     if (drawButton(Rectangle{(float)btn_x, (float)btn_y, (float)btn_w, (float)btn_h},
-                   "MAIN MENU", 22,
-                   Color{60, 70, 100, 255}, Color{220, 225, 245, 255})) {
-        action = SummaryAction::ReturnToMenu;
+                   sec_label, 22,
+                   sec_fill, Color{240, 230, 230, 255})) {
+        action = sec_action;
     }
 
     // Footer hint
-    const char* hint = "ESC also resumes";
+    const char* hint = "ESC also closes this menu";
     int hint_fs = sc(14);
     int hint_w  = MeasureText(hint, hint_fs);
     DrawText(hint, box_x + (box_w - hint_w) / 2, box_y + box_h - sc(32), hint_fs,
