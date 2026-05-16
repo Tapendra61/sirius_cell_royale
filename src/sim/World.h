@@ -51,6 +51,25 @@ struct Cell {
     Vec2     anim_target{};       // where this animation ends (used by exit only;
                                    // entry uses the BH centre, looked up each tick)
     bool     god                  = false; // dev: never gets absorbed
+    // Wormhole teleport cooldown. Set to `now + cooldown_ticks` when a
+    // teleport fires; the cell is ignored by processWormholes() until
+    // currentTick > this value. Prevents loop-back when the destination is
+    // also inside the partner's radius (or when a cell is being shoved by a
+    // current toward the same wormhole).
+    Tick     wormhole_cooldown_until = 0;
+    // Wormhole transit state. Drives the two-phase visual:
+    //   0 = idle
+    //   1 = phase 1 (shrinking at source); cell.pos held at source,
+    //       entry_anim_until ticks down, anim_origin/anim_target store the
+    //       partner endpoint + final emerge position for phase 2.
+    //   2 = phase 2 (growing at destination); cell.pos sliding from partner
+    //       centre to final emerge position, exit_anim_until ticks down,
+    //       blackhole_visual_scale grows 0->1 via the shared exit-anim path.
+    // Runtime-only; not serialised to snapshots. (The visual fields it
+    // controls -- entry_anim_until, exit_anim_until, blackhole_visual_scale
+    // -- ARE in the snapshot, so clients see the same shrink/grow without
+    // needing this flag.)
+    uint8_t  wormhole_transit_phase = 0;
 };
 
 struct Food {
@@ -87,6 +106,65 @@ struct BlackHole {
     Vec2     pos;
     float    radius      = 0.0f; // visual / hide boundary
     float    pull_radius = 0.0f; // outer reach where the pull starts
+};
+
+// Horizontal tidal-current band. Spans the full world width at a fixed
+// y-coordinate (`pos.y` is the band centre); `pos.x` is the world-x centroid
+// for renderer convenience (frustum-cull math + minimap layout) but the
+// physics treats the band as infinitely wide -- only the y-coordinate
+// matters for containment.
+//
+// Cells inside the band (`|cell.y - band.pos.y| <= half_height`) get a
+// velocity bias along `dir` (always ±x for the standard bands). Force
+// scales inversely with sqrt(mass) so small cells get visibly swept while
+// mega-cells are barely affected. There's no "lethal" zone -- bands are
+// pure ambient terrain, like a river current. Spawned once at world
+// construction; never moves, never despawns.
+struct TidalCurrent {
+    EntityId id          = INVALID_ENTITY;
+    Vec2     pos;             // (world_w/2, band_y)
+    Vec2     dir;             // unit vector (±x for horizontal bands)
+    float    half_height = 0.0f; // vertical reach above/below pos.y
+    float    strength    = 0.0f; // px/sec applied to a mass=1 cell
+};
+
+// One end of a teleport pair. The two endpoints reference each other via
+// `pair_id`. Cells that enter `radius` of an endpoint are warped to the
+// PARTNER endpoint (instant pos snap, velocity preserved). A per-cell
+// cooldown (`Cell::wormhole_cooldown_until`) prevents an immediate loop-back
+// after a teleport so the player has time to react to the new surroundings.
+//
+// Spawned once at world construction in matched pairs (always an even count).
+struct Wormhole {
+    EntityId id          = INVALID_ENTITY;
+    EntityId pair_id     = INVALID_ENTITY; // the other end of this pair
+    Vec2     pos;
+    float    radius      = 0.0f;
+    float    spin_phase  = 0.0f; // 0..2pi swirl angle; advances each tick
+};
+
+// Periodic food-eruption point. Cycles: Idle -> Telegraph -> Erupt -> Idle.
+//   * Idle: nothing happening; `next_event_tick` is when telegraph begins.
+//   * Telegraph: warning ring grows from `next_event_tick - telegraph_ticks`
+//                up to `next_event_tick`. Cells get a chance to crowd in.
+//   * Erupt: a single tick where N food pellets are spawned in a radial
+//            pattern with outward velocity. Then immediately back to Idle
+//            with `next_event_tick = now + interval_ticks`.
+//
+// The state enum mirrors the snapshot's GeyserSnap::state field. Stored on
+// the runtime entity so the renderer's read of GeyserSnap stays cheap.
+enum class GeyserState : uint8_t {
+    Idle       = 0,
+    Telegraph  = 1,
+    Erupt      = 2,
+};
+struct Geyser {
+    EntityId    id              = INVALID_ENTITY;
+    Vec2        pos;
+    float       radius          = 0.0f; // visual base radius
+    GeyserState state           = GeyserState::Idle;
+    Tick        next_event_tick = 0;    // when the NEXT state change fires
+    Tick        last_erupted_at = 0;    // for debugging / future eruption strength scaling
 };
 
 // World-event comet. Spawned periodically by the world upkeep step. Two-phase:
@@ -150,6 +228,11 @@ public:
     EntityId spawnBlackHole(Vec2 pos, float radius, float pull_radius);
     EntityId spawnComet(Vec2 pos, Vec2 vel, float radius, Tick spawned_at, Tick start_at,
                         Vec2 telegraph_start, Vec2 telegraph_end);
+    EntityId spawnTidalCurrent(Vec2 pos, Vec2 dir, float half_height, float strength);
+    // Returns the pair as {a_id, b_id}. Caller can ignore if it doesn't need
+    // to track them individually -- the pair link is stored on each endpoint.
+    std::pair<EntityId, EntityId> spawnWormholePair(Vec2 a, Vec2 b, float radius);
+    EntityId spawnGeyser(Vec2 pos, float radius, Tick first_event_tick);
 
     Cell*            findCell(EntityId id);
     Food*            findFood(EntityId id);
@@ -163,20 +246,28 @@ public:
     const Pickup*    findPickup(EntityId id) const;
     const BlackHole* findBlackHole(EntityId id) const;
     const Comet*     findComet(EntityId id) const;
+    const Wormhole*  findWormhole(EntityId id) const;
+    Wormhole*        findWormhole(EntityId id);
 
-    const std::vector<Cell>&      cells()      const { return cells_; }
-    const std::vector<Food>&      food()       const { return food_; }
-    const std::vector<Virus>&     viruses()    const { return viruses_; }
-    const std::vector<Pickup>&    pickups()    const { return pickups_; }
-    const std::vector<BlackHole>& blackholes() const { return blackholes_; }
-    const std::vector<Comet>&     comets()     const { return comets_; }
+    const std::vector<Cell>&         cells()      const { return cells_; }
+    const std::vector<Food>&         food()       const { return food_; }
+    const std::vector<Virus>&        viruses()    const { return viruses_; }
+    const std::vector<Pickup>&       pickups()    const { return pickups_; }
+    const std::vector<BlackHole>&    blackholes() const { return blackholes_; }
+    const std::vector<Comet>&        comets()     const { return comets_; }
+    const std::vector<TidalCurrent>& currents()   const { return currents_; }
+    const std::vector<Wormhole>&     wormholes()  const { return wormholes_; }
+    const std::vector<Geyser>&       geysers()    const { return geysers_; }
 
-    std::vector<Cell>&      cellsMut()      { return cells_; }
-    std::vector<Food>&      foodMut()       { return food_; }
-    std::vector<Virus>&     virusesMut()    { return viruses_; }
-    std::vector<Pickup>&    pickupsMut()    { return pickups_; }
-    std::vector<BlackHole>& blackholesMut() { return blackholes_; }
-    std::vector<Comet>&     cometsMut()     { return comets_; }
+    std::vector<Cell>&         cellsMut()      { return cells_; }
+    std::vector<Food>&         foodMut()       { return food_; }
+    std::vector<Virus>&        virusesMut()    { return viruses_; }
+    std::vector<Pickup>&       pickupsMut()    { return pickups_; }
+    std::vector<BlackHole>&    blackholesMut() { return blackholes_; }
+    std::vector<Comet>&        cometsMut()     { return comets_; }
+    std::vector<TidalCurrent>& currentsMut()   { return currents_; }
+    std::vector<Wormhole>&     wormholesMut()  { return wormholes_; }
+    std::vector<Geyser>&       geysersMut()    { return geysers_; }
 
     int playerCellCount(PlayerId p) const;
 
@@ -204,12 +295,15 @@ private:
     Rng                rng_;
     Tick               tick_     = 0;
     EntityId           next_id_  = 1;
-    std::vector<Cell>      cells_;
-    std::vector<Food>      food_;
-    std::vector<Virus>     viruses_;
-    std::vector<Pickup>    pickups_;
-    std::vector<BlackHole> blackholes_;
-    std::vector<Comet>     comets_; // tiny vector (0..1 typically); no spatial grid
+    std::vector<Cell>         cells_;
+    std::vector<Food>         food_;
+    std::vector<Virus>        viruses_;
+    std::vector<Pickup>       pickups_;
+    std::vector<BlackHole>    blackholes_;
+    std::vector<Comet>        comets_; // tiny vector (0..1 typically); no spatial grid
+    std::vector<TidalCurrent> currents_;   // static; spawned once
+    std::vector<Wormhole>     wormholes_;  // static; spawned once in pairs
+    std::vector<Geyser>       geysers_;    // static; spawned once
     SpatialGrid            cells_grid_;
     SpatialGrid            foods_grid_;
     SpatialGrid            viruses_grid_;

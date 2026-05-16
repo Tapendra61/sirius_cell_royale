@@ -34,6 +34,14 @@ bool drawChoice(Rectangle r, const char* label,
 // On/Off toggle pill. Returns true if state flipped.
 bool drawToggle(Rectangle r, const char* label, bool* value);
 
+// Horizontal row of preset chips. Renders the label above the row, then
+// `option_count` equally-sized buttons inside `r`. The button at `*index` is
+// rendered with a highlighted fill so the user knows which preset is active.
+// Returns true if the user clicked a different preset.
+bool drawPresetRow(Rectangle r, const char* label,
+                   const char* const* options, int option_count,
+                   int* index);
+
 // Accessibility: HUD-text size multiplier. Applied by Hud.cpp to in-match font
 // sizes (combo counter, summary panel, pause overlay, debug stats). Main menu
 // and settings screen are NOT affected -- those have tight layouts that would

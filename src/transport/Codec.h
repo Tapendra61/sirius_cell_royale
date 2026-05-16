@@ -16,12 +16,13 @@ namespace cr::codec {
 // independently because Snapshot is the largest (and most likely to evolve) and
 // Command/Event/Welcome/ClientHello/PeerInfo are small enough that a bump rarely
 // costs anything.
-constexpr uint8_t kSnapshotVersion    = 3; // v2 adds CellSnap::blast_cooldown_norm
+constexpr uint8_t kSnapshotVersion    = 4; // v2 adds CellSnap::blast_cooldown_norm
                                             // v3 adds Snapshot::match_time_left_sec
+                                            // v4 adds currents / wormholes / geysers
 constexpr uint8_t kCommandVersion     = 1;
-constexpr uint8_t kEventVersion       = 1;
+constexpr uint8_t kEventVersion       = 2; // v2 adds RecombineEvent variant
 constexpr uint8_t kWelcomeVersion     = 2; // v2 adds host_name
-constexpr uint8_t kClientHelloVersion = 1;
+constexpr uint8_t kClientHelloVersion = 2; // v2 adds explicit player_id
 constexpr uint8_t kPeerInfoVersion    = 1;
 
 // Type discriminator for messages on CHAN_CONTROL. Each control packet begins
@@ -49,9 +50,13 @@ struct WelcomeMsg {
 };
 
 // Client -> host. Carries the joining peer's display name (from SaveData::
-// player_name in Settings). Sent once immediately after the client consumes
-// the Welcome message. Host registers + broadcasts via PeerInfoMsg.
+// player_name in Settings) and the PlayerId the host allocated to it in the
+// preceding Welcome (so the host doesn't have to attribute the hello to
+// "first peer without a name" -- that heuristic broke if two peers connected
+// in the same tick). Sent once immediately after the client consumes the
+// Welcome message. Host registers + broadcasts via PeerInfoMsg.
 struct ClientHelloMsg {
+    PlayerId    player_id = INVALID_PLAYER;
     std::string name;
 };
 

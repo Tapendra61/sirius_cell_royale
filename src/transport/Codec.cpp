@@ -190,6 +190,61 @@ bool readComet(Reader& r, CometSnap& c) {
     return !r.failed;
 }
 
+// ---- CurrentSnap ----
+// Horizontal tidal-current band. Binary layout unchanged from the original
+// circular-current encoding (5 floats after the id) so kSnapshotVersion
+// didn't need a bump -- the field formerly known as `radius` is now
+// `half_height` (vertical reach above/below pos.y).
+void writeCurrent(Writer& w, const CurrentSnap& c) {
+    w.writePOD(c.id);
+    w.writePOD(c.pos);
+    w.writePOD(c.dir);
+    w.writePOD(c.half_height);
+    w.writePOD(c.strength);
+}
+bool readCurrent(Reader& r, CurrentSnap& c) {
+    r.readPOD(c.id);
+    r.readPOD(c.pos);
+    r.readPOD(c.dir);
+    r.readPOD(c.half_height);
+    r.readPOD(c.strength);
+    return !r.failed;
+}
+
+// ---- WormholeSnap ----
+void writeWormhole(Writer& w, const WormholeSnap& wh) {
+    w.writePOD(wh.id);
+    w.writePOD(wh.pair_id);
+    w.writePOD(wh.pos);
+    w.writePOD(wh.radius);
+    w.writePOD(wh.spin_phase);
+}
+bool readWormhole(Reader& r, WormholeSnap& wh) {
+    r.readPOD(wh.id);
+    r.readPOD(wh.pair_id);
+    r.readPOD(wh.pos);
+    r.readPOD(wh.radius);
+    r.readPOD(wh.spin_phase);
+    return !r.failed;
+}
+
+// ---- GeyserSnap ----
+void writeGeyser(Writer& w, const GeyserSnap& g) {
+    w.writePOD(g.id);
+    w.writePOD(g.pos);
+    w.writePOD(g.radius);
+    w.writePOD(g.state);
+    w.writePOD(g.phase_norm);
+}
+bool readGeyser(Reader& r, GeyserSnap& g) {
+    r.readPOD(g.id);
+    r.readPOD(g.pos);
+    r.readPOD(g.radius);
+    r.readPOD(g.state);
+    r.readPOD(g.phase_norm);
+    return !r.failed;
+}
+
 // ---- Event variant tags ----
 // Independent from CommandTag so we can extend either without ABI drift on the other.
 enum class EventTagWire : uint8_t {
@@ -202,6 +257,7 @@ enum class EventTagWire : uint8_t {
     Blast            = 6,
     Comet            = 7,
     MatchEnd         = 8,
+    Recombine        = 9,
 };
 
 void writeAbsorb(Writer& w, const AbsorbEvent& e) {
@@ -330,6 +386,18 @@ bool readMatchEnd(Reader& r, MatchEndEvent& e) {
     return !r.failed;
 }
 
+void writeRecombine(Writer& w, const RecombineEvent& e) {
+    w.writePOD(e.player);
+    w.writePOD(e.at);
+    w.writePOD(e.new_mass);
+}
+bool readRecombine(Reader& r, RecombineEvent& e) {
+    r.readPOD(e.player);
+    r.readPOD(e.at);
+    r.readPOD(e.new_mass);
+    return !r.failed;
+}
+
 } // namespace
 
 // ---- Snapshot ----
@@ -364,6 +432,16 @@ bool encodeSnapshot(const Snapshot& s, std::vector<uint8_t>& out) {
     w.writePOD(static_cast<uint32_t>(s.comets.size()));
     for (const auto& c : s.comets) writeComet(w, c);
 
+    // v4: ambient environment entities (currents / wormholes / geysers).
+    w.writePOD(static_cast<uint32_t>(s.currents.size()));
+    for (const auto& c : s.currents) writeCurrent(w, c);
+
+    w.writePOD(static_cast<uint32_t>(s.wormholes.size()));
+    for (const auto& wh : s.wormholes) writeWormhole(w, wh);
+
+    w.writePOD(static_cast<uint32_t>(s.geysers.size()));
+    for (const auto& g : s.geysers) writeGeyser(w, g);
+
     // v3: match timer (seconds remaining; 0 = unlimited or already ended).
     w.writePOD(s.match_time_left_sec);
 
@@ -395,12 +473,16 @@ bool decodeSnapshot(const uint8_t* data, size_t len, Snapshot& s) {
         return true;
     };
 
-    if (!readVec(s.cells,      readCell))   return false;
-    if (!readVec(s.food,       readFood))   return false;
-    if (!readVec(s.viruses,    readVirus))  return false;
-    if (!readVec(s.pickups,    readPickup)) return false;
-    if (!readVec(s.blackholes, readBH))     return false;
-    if (!readVec(s.comets,     readComet))  return false;
+    if (!readVec(s.cells,      readCell))     return false;
+    if (!readVec(s.food,       readFood))     return false;
+    if (!readVec(s.viruses,    readVirus))    return false;
+    if (!readVec(s.pickups,    readPickup))   return false;
+    if (!readVec(s.blackholes, readBH))       return false;
+    if (!readVec(s.comets,     readComet))    return false;
+    // v4: ambient environment entities.
+    if (!readVec(s.currents,   readCurrent))  return false;
+    if (!readVec(s.wormholes,  readWormhole)) return false;
+    if (!readVec(s.geysers,    readGeyser))   return false;
 
     // v3: match timer.
     r.readPOD(s.match_time_left_sec);
@@ -494,6 +576,8 @@ bool encodeEvent(const GameEvent& e, std::vector<uint8_t>& out) {
             writeCometEvent(w, std::get<CometEvent>(e));         return true;
         case EventTagWire::MatchEnd:
             writeMatchEnd(w, std::get<MatchEndEvent>(e));        return true;
+        case EventTagWire::Recombine:
+            writeRecombine(w, std::get<RecombineEvent>(e));      return true;
     }
     out.clear();
     return false;
@@ -549,14 +633,16 @@ bool decodeWelcome(const uint8_t* data, size_t len, WelcomeMsg& m) {
 }
 
 // ---- ClientHello (peer -> host) ----
-// On-wire: [type=ClientHello][version=1][name_len][name_bytes]
+// On-wire: [type=ClientHello][version=2][player_id][name_len][name_bytes]
+//          v1 had no player_id; we don't accept v1 anymore.
 
 bool encodeClientHello(const ClientHelloMsg& m, std::vector<uint8_t>& out) {
     out.clear();
-    out.reserve(24);
+    out.reserve(28);
     Writer w{out};
     w.writePOD(static_cast<uint8_t>(ControlMsgType::ClientHello));
     w.writePOD(kClientHelloVersion);
+    w.writePOD(m.player_id);
     writeName(w, m.name);
     return true;
 }
@@ -569,6 +655,7 @@ bool decodeClientHello(const uint8_t* data, size_t len, ClientHelloMsg& m) {
     uint8_t version = 0;
     if (!r.readPOD(version) || version != kClientHelloVersion) return false;
     m = ClientHelloMsg{};
+    r.readPOD(m.player_id);
     return readName(r, m.name);
 }
 
@@ -633,6 +720,9 @@ bool decodeEvent(const uint8_t* data, size_t len, GameEvent& e) {
         }
         case EventTagWire::MatchEnd: {
             MatchEndEvent ev; if (!readMatchEnd(r, ev)) return false; e = ev; return true;
+        }
+        case EventTagWire::Recombine: {
+            RecombineEvent ev; if (!readRecombine(r, ev)) return false; e = ev; return true;
         }
     }
     return false;

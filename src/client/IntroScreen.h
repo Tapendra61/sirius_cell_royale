@@ -31,7 +31,7 @@ public:
     void render(int screen_w, int screen_h);
 
 private:
-    enum class CmdKind { Move, Split, Dash };
+    enum class CmdKind { Move, Split, Dash, Eject, Blast };
 
     struct ScriptCmd {
         Tick    queue_tick;   // sim tick at which to enqueue this command
@@ -59,7 +59,10 @@ private:
     std::vector<ScriptCmd> script_;
     int                next_cmd_idx_ = 0;
 
-    static constexpr float kDurationSec       = 15.0f;
+    // Bumped from 15s -> 19s to fit the new EJECT (W) and MASS BLAST (Q)
+    // demo beats plus a Royale-mode teaser at the end. Skippable on any key
+    // so users who've seen it once aren't held hostage by the extra length.
+    static constexpr float kDurationSec       = 19.0f;
     static constexpr float kFadeInDurationSec = 0.6f;
     static constexpr float kFadeOutDurationSec = 0.6f;
 };

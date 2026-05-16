@@ -469,6 +469,30 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                 summary_.final_mass      = static_cast<int>(match_peak_mass_);
                 summary_.best_combo      = hud_.bestCombo();
                 summary_.time_alive_sec  = static_cast<float>(now_sec - run_start_sec_);
+            } else if constexpr (std::is_same_v<T, RecombineEvent>) {
+                // Same-owner merge. Soft inward implosion + audio for the
+                // player; light shake/chroma so the merge lands as a
+                // tactile beat without disrupting input. Earshot-gated for
+                // non-watched players so 50 bots auto-recombining off-
+                // screen doesn't carpet-bomb the mix.
+                const Color color = colorForPlayer(e.player);
+                particles_.spawnRecombineRing(e.at, e.new_mass, color);
+                const bool is_player = (e.player == watched_player_);
+                const bool audible   = is_player || within_earshot(e.at);
+                if (audible) {
+                    // Reuse the single-absorb sound -- it has the right
+                    // "thunk + settle" character for a merge. Combo count
+                    // 0 -> no pitch-up, by_player=is_player gates volume.
+                    audio_.playAbsorb(e.new_mass * 0.5f, 0, is_player);
+                }
+                if (is_player) {
+                    // Trauma scaled by mass so a 200-mass merge is barely a
+                    // nudge but an 8000-mass mega-merge has presence.
+                    const float t = std::clamp(0.05f + e.new_mass / 14000.0f,
+                                               0.05f, 0.22f);
+                    shake_.addTrauma(t);
+                    chroma_.addShift(0.10f);
+                }
             } else if constexpr (std::is_same_v<T, SplitEvent>) {
                 CellRef from = lookupCell(e.from);
                 if (from.found) {
@@ -477,10 +501,35 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                 // SplitEvents with INVALID_ENTITY child indicate a virus explosion.
                 // Player virus pops always audible; bot virus pops only if visible --
                 // otherwise 60 viruses + 50 bots produce a constant pop fog from off-screen.
-                if (e.into == INVALID_ENTITY) {
-                    const bool is_player = e.player == watched_player_;
-                    if (is_player || (from.found && within_earshot(from.pos))) {
-                        audio_.playVirusPop();
+                const bool is_player    = (e.player == watched_player_);
+                const bool is_virus_pop = (e.into == INVALID_ENTITY);
+                const bool audible      = is_player
+                                          || (from.found && within_earshot(from.pos));
+                if (is_virus_pop) {
+                    if (audible) audio_.playVirusPop();
+                    // Virus pops are violent -- give them a stronger extra
+                    // burst on top of the standard puff, scaled by mass so a
+                    // 5000-mass pop looks bigger than a 500-mass one. Player
+                    // virus pops also shake the screen briefly (modest
+                    // trauma -- they're more common than blasts).
+                    if (from.found) {
+                        particles_.spawnAbsorbBurst(from.pos, 60.0f,
+                                                    colorForPlayer(e.player));
+                    }
+                    if (is_player) {
+                        shake_.addTrauma(0.30f);
+                        chroma_.addShift(0.30f);
+                    }
+                } else {
+                    // Manual (Space-key) split. Audio + light shake/chroma
+                    // for the player's own splits so the action feels
+                    // responsive; multi-cell splits stack the trauma but
+                    // the per-event amount is small enough that even a
+                    // quad-split caps below the blast threshold.
+                    if (audible) audio_.playSplit();
+                    if (is_player) {
+                        shake_.addTrauma(0.14f);
+                        chroma_.addShift(0.12f);
                     }
                 }
             } else if constexpr (std::is_same_v<T, NearMissEvent>) {
@@ -798,7 +847,11 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         }
 
         BeginTextureMode(world_rt_);
-        ClearBackground(Color{18, 22, 30, 255}); // bg gets baked into the RT
+        ClearBackground(Color{12, 14, 22, 255}); // matches backdrop's top tone
+        // Screen-space backdrop (gradient + vignette) baked into the RT
+        // before world rendering. Keeps the gradient stable as the camera
+        // moves and survives the chroma channel composite below.
+        renderer_.drawScreenBackdrop(screen_w, screen_h);
         BeginMode2D(cam);
         renderer_.drawWorld(interp_, tuning, alpha, view_min, view_max,
                             watched_cell_, watched_player_, level_);
@@ -824,6 +877,11 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
                        Color{  0,   0, 255, 255});
         EndBlendMode();
     } else {
+        // Non-chroma path: the backbuffer has already been cleared by main
+        // to a flat dark color. Paint the backdrop in screen space first
+        // (gradient + vignette) so the world draws on top of a framed
+        // surface instead of a flat fill.
+        renderer_.drawScreenBackdrop(screen_w, screen_h);
         BeginMode2D(cam);
         renderer_.drawWorld(interp_, tuning, alpha, view_min, view_max,
                             watched_cell_, watched_player_, level_);

@@ -100,6 +100,28 @@ bool LoadTuningFromFile(Tuning& out, const std::string& path) {
     readFloat(ini, "comet", "speed",              out.comet_speed);
     readFloat(ini, "comet", "first_after_sec",    out.comet_first_after_sec);
 
+    readInt  (ini, "currents", "band_count",    out.tidal_band_count);
+    readFloat(ini, "currents", "band_height",   out.tidal_band_height);
+    readFloat(ini, "currents", "band_strength", out.tidal_band_strength);
+
+    readInt  (ini, "wormholes", "pair_count",       out.wormhole_pair_count);
+    readFloat(ini, "wormholes", "radius",           out.wormhole_radius);
+    readFloat(ini, "wormholes", "cooldown_sec",     out.wormhole_cooldown_sec);
+    readFloat(ini, "wormholes", "pair_min_distance", out.wormhole_pair_min_distance);
+    readFloat(ini, "wormholes", "min_separation",   out.wormhole_min_separation);
+
+    readInt  (ini, "geysers", "count",            out.geyser_count);
+    readFloat(ini, "geysers", "radius",           out.geyser_radius);
+    readFloat(ini, "geysers", "interval_sec",     out.geyser_interval_sec);
+    readFloat(ini, "geysers", "interval_jitter",  out.geyser_interval_jitter);
+    readFloat(ini, "geysers", "telegraph_sec",    out.geyser_telegraph_sec);
+    readFloat(ini, "geysers", "first_after_sec",  out.geyser_first_after_sec);
+    readInt  (ini, "geysers", "food_count_min",   out.geyser_food_count_min);
+    readInt  (ini, "geysers", "food_count_max",   out.geyser_food_count_max);
+    readFloat(ini, "geysers", "food_eject_speed", out.geyser_food_eject_speed);
+    readFloat(ini, "geysers", "food_spread",      out.geyser_food_spread);
+    readFloat(ini, "geysers", "min_separation",   out.geyser_min_separation);
+
     readInt  (ini, "bots", "target_count",            out.bot_target_count);
     readFloat(ini, "bots", "spawn_interval_sec",      out.bot_spawn_interval_sec);
     readFloat(ini, "bots", "difficulty_scaling",      out.difficulty_scaling);
@@ -142,6 +164,15 @@ void PrintTuning(const Tuning& t) {
                 t.comet_event_interval_sec, t.comet_interval_jitter * 100.0f,
                 t.comet_first_after_sec, t.comet_telegraph_sec,
                 t.comet_radius, t.comet_speed);
+    std::printf("  [currents] bands=%d  height=%.0f  strength=%.0f\n",
+                t.tidal_band_count, t.tidal_band_height, t.tidal_band_strength);
+    std::printf("  [wormholes] pairs=%d  r=%.0f  cooldown=%.1fs  pair_min_dist=%.0f\n",
+                t.wormhole_pair_count, t.wormhole_radius,
+                t.wormhole_cooldown_sec, t.wormhole_pair_min_distance);
+    std::printf("  [geysers] count=%d  every %.0fs (+/-%.0f%%, first @ %.0fs)  warn=%.1fs  food=%d-%d\n",
+                t.geyser_count, t.geyser_interval_sec, t.geyser_interval_jitter * 100.0f,
+                t.geyser_first_after_sec, t.geyser_telegraph_sec,
+                t.geyser_food_count_min, t.geyser_food_count_max);
 }
 
 } // namespace cr

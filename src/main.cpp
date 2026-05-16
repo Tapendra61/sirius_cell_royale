@@ -18,12 +18,15 @@
 #include "sim/Replay.h"
 #include "sim/Rules.h"           // rollFoodMass (used by seed_food dev command)
 #include "sim/Simulation.h"
+#include "transport/Codec.h"
 #include "transport/LocalDiscovery.h"
 #include "transport/NetworkTransport.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <unordered_map>
@@ -463,38 +466,74 @@ enum class MatchOutcome {
 struct MatchNetworkConfig {
     std::string  host_address;     // LocalClient only: "host[:port]" string
     uint16_t     listen_port = 7456; // LocalHost only: UDP bind port
+
+    // Host-only: match parameters chosen in the lobby. Applied to the tuning
+    // at runMatch entry. Default values preserve the previous Royale defaults
+    // so callers that don't set them get the same behaviour.
+    int  match_duration_sec = 300;
+    int  max_players        = 8;
+    int  bot_count          = 0;
 };
 
 // Runs one match start-to-finish. Builds a fresh sim + client, applies persistent state,
 // runs the play loop, and writes updated persistent state back into `save` before
 // returning. Designed to be called repeatedly from the menu loop with different seeds.
+//
 // `mode` selects the transport role; `net_cfg` carries the address/port for network
-// modes. Skeleton: all three modes share the same gameplay loop -- LocalHost/Client
-// just additionally set up a NetworkTransport and bind / connect via it. The full
-// snapshot-replication path is a Phase 10 follow-up.
+// modes.
+//
+// `shared_transport` lets the caller (runWindow) own the NetworkTransport across the
+// LocalLobby + Match phases so peers that joined during the lobby remain connected
+// once the match starts. Non-null means "this transport is already host()'d /
+// connect()'d; don't disconnect on exit." Null falls back to the legacy behaviour
+// where runMatch owns the transport (SP, plus the fallback if anything ever calls
+// runMatch directly without the lobby flow).
+//
+// `shared_peer_to_player` + `shared_known_peer_names` mirror the lobby-side maps so
+// the host spawns cells at match start for every peer that joined during the lobby.
+// Same null-fallback semantics as the transport.
 MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                       MatchMode mode = MatchMode::SinglePlayer,
-                      MatchNetworkConfig net_cfg = {}) {
+                      MatchNetworkConfig net_cfg = {},
+                      cr::NetworkTransport* shared_transport = nullptr,
+                      std::unordered_map<void*, cr::PlayerId>* shared_peer_to_player = nullptr,
+                      std::unordered_map<cr::PlayerId, std::string>* shared_known_peer_names = nullptr,
+                      const cr::codec::WelcomeMsg* preconsumed_welcome = nullptr,
+                      cr::PlayerId next_peer_pid_seed = 2,
+                      bool transport_already_announcing = false) {
     // Mode-specific tuning overrides. Royale modes (LocalHost / LocalClient)
-    // start with NO AI by default; SinglePlayer respects tuning.ini (50). MP
-    // also forces a 5-min match timer so peers get a "winner is..." moment;
-    // SP keeps tuning.ini's value (0 = unlimited sandbox by default). Both
-    // overrides are restored at the single return point below.
+    // pull bot count + match duration from the host's lobby panel
+    // (net_cfg.bot_count / net_cfg.match_duration_sec); SinglePlayer respects
+    // tuning.ini. Both overrides are restored at the single return point below.
     const int saved_bot_target_count   = tuning.bot_target_count;
     const int saved_match_duration_sec = tuning.match_duration_sec;
-    if (mode != MatchMode::SinglePlayer) {
+    if (mode == MatchMode::LocalHost) {
+        tuning.bot_target_count = std::max(0, net_cfg.bot_count);
+        // 0 in the settings panel means "endless" which the sim's match-end
+        // gate already understands (duration <= 0 disables the timer).
+        tuning.match_duration_sec = std::max(0, net_cfg.match_duration_sec);
+    } else if (mode == MatchMode::LocalClient) {
+        // Client doesn't tick its own sim, so the bot target doesn't matter
+        // here; we still clamp to 0 so any stray local logic (post-disconnect
+        // SP fall-through, dev console) doesn't surprise us. Match duration
+        // arrives from the host inside each snapshot, so we leave tuning's
+        // value at the SP default.
         tuning.bot_target_count = 0;
-        if (tuning.match_duration_sec <= 0) {
-            tuning.match_duration_sec = 300; // 5 min default for Royale
-        }
     }
 
     cr::Simulation sim(seed, tuning);
 
     // Player slot + initial cell. SinglePlayer / LocalHost spawn locally; LocalClient
     // defers the spawn to the host -- the welcome packet will tell us our slot + cell.
+    // If runWindow already consumed the match-start welcome during the lobby phase
+    // (preconsumed_welcome non-null), seed our player + cell from it now so the
+    // Client object can be constructed with the correct ids on frame 1.
     cr::PlayerId player      = 1;
     cr::EntityId player_cell = cr::INVALID_ENTITY;
+    if (mode == MatchMode::LocalClient && preconsumed_welcome != nullptr) {
+        player      = preconsumed_welcome->player_id;
+        player_cell = preconsumed_welcome->cell_id;
+    }
     if (mode != MatchMode::LocalClient) {
         player_cell = sim.world().spawnCell(
             player,
@@ -504,7 +543,9 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
     }
 
     cr::Client client(player_cell,
-                      mode == MatchMode::LocalClient ? cr::INVALID_PLAYER : player);
+                      (mode == MatchMode::LocalClient && preconsumed_welcome == nullptr)
+                          ? cr::INVALID_PLAYER
+                          : player);
     // Changes pause semantics in MP: Esc still opens the overlay menu, but
     // the sim keeps ticking underneath. Also picks the right pause-overlay
     // button labels via the role -- SP shows MAIN MENU, MP host shows
@@ -543,19 +584,30 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
     }
 
     // ---- Network setup ----
-    // Declared before WindowState so the state struct can take pointers to these.
-    cr::NetworkTransport net_transport;
-    // Host-side: the next PlayerId to assign to a joining peer. Starts at 2 because
-    // the host itself owns slot 1. Bumped per accepted CONNECT event.
-    cr::PlayerId next_peer_player_id = 2;
-    // Host-side: peer (ENetPeer*) -> PlayerId map so we can despawn the leaving
-    // peer's cells on DISCONNECT and so the `kick` console command can find the
-    // ENetPeer to call disconnectPeer on.
-    std::unordered_map<void*, cr::PlayerId> peer_to_player;
-    // Host-side: PlayerId -> display name table for connected peers. Populated
-    // when each peer's ClientHello arrives. The host pushes these out to new
-    // joiners via PeerInfo so everyone's HUD has matching labels.
-    std::unordered_map<cr::PlayerId, std::string> known_peer_names;
+    // Transport + peer tables. If the caller (runWindow) supplied a shared
+    // transport, peer_to_player, and known_peer_names, we use those so peers
+    // that joined during the lobby stay connected through the match. Otherwise
+    // fall back to local instances (SP path or any caller that bypasses the
+    // lobby).
+    cr::NetworkTransport  owned_transport;
+    cr::NetworkTransport& net_transport = (shared_transport != nullptr)
+                                              ? *shared_transport
+                                              : owned_transport;
+    std::unordered_map<void*, cr::PlayerId>       owned_peer_to_player;
+    std::unordered_map<void*, cr::PlayerId>&      peer_to_player =
+        (shared_peer_to_player != nullptr) ? *shared_peer_to_player
+                                           : owned_peer_to_player;
+    std::unordered_map<cr::PlayerId, std::string>  owned_known_peer_names;
+    std::unordered_map<cr::PlayerId, std::string>& known_peer_names =
+        (shared_known_peer_names != nullptr) ? *shared_known_peer_names
+                                             : owned_known_peer_names;
+    const bool using_shared_transport = (shared_transport != nullptr);
+    // Host-side: the next PlayerId to assign to a joining peer. Starts past
+    // any peer the lobby already accepted so we don't collide.
+    cr::PlayerId next_peer_player_id = next_peer_pid_seed;
+    for (const auto& [peer_ptr, pid] : peer_to_player) {
+        if (pid >= next_peer_player_id) next_peer_player_id = pid + 1;
+    }
     // LAN discovery: only the host runs an announcer; clients learn about
     // hosts via the JoinBrowsing screen (which owns its own discovery client
     // listener, separate from this runMatch state).
@@ -567,7 +619,13 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
             // No transport setup needed.
             break;
         case MatchMode::LocalHost:
-            if (!net_transport.host(net_cfg.listen_port)) {
+            if (using_shared_transport) {
+                // The lobby already bound the host port + started the LAN
+                // announcer. Just take over the existing transport.
+                std::printf("[net] resuming hosted match on existing transport "
+                            "(peers=%d)\n",
+                            net_transport.peerCount());
+            } else if (!net_transport.host(net_cfg.listen_port)) {
                 client.console().log("[net] failed to bind host port; running solo");
             } else {
                 // Spin up the LAN announcer alongside the game socket. Best-
@@ -584,11 +642,14 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
             }
             break;
         case MatchMode::LocalClient:
-            if (!net_transport.connect(net_cfg.host_address)) {
+            if (using_shared_transport) {
+                std::printf("[net] resuming client match on existing transport\n");
+            } else if (!net_transport.connect(net_cfg.host_address)) {
                 client.console().log("[net] failed to connect; check host address");
             }
             break;
     }
+    (void)transport_already_announcing; // currently inferred from using_shared_transport
 
     // Dev console state. Constructed AFTER the network bits so it can hold
     // pointers to net_transport + peer_to_player for host-only commands like
@@ -638,6 +699,82 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
         }
         return chosen;
     };
+
+    // ---- Match-start spawn pass (host with shared transport) ----
+    // Peers that joined during the lobby phase are in peer_to_player already, but
+    // their cells haven't been spawned yet (the lobby Welcome carried cell_id =
+    // INVALID). Now that the match is starting, spawn a cell for each, register
+    // their name with the client, and ship a fresh Welcome with the real cell_id.
+    // The Welcome doubles as the client's "match has started" trigger -- on
+    // receiving a Welcome with a valid cell_id, the joiner transitions out of
+    // their lobby's JoinWaiting screen into AppPhase::Match.
+    if (mode == MatchMode::LocalHost && using_shared_transport) {
+        for (auto& [peer_ptr, pid] : peer_to_player) {
+            cr::Vec2 spawn_at = pickClearSpawn();
+            cr::EntityId new_cell = sim.world().spawnCell(
+                pid, spawn_at, tuning.start_mass);
+            // Make sure the local client's name table knows about this peer.
+            auto name_it = known_peer_names.find(pid);
+            if (name_it != known_peer_names.end()) {
+                client.setPlayerName(pid, name_it->second);
+            }
+            cr::codec::WelcomeMsg w;
+            w.player_id = pid;
+            w.cell_id   = new_cell;
+            w.host_name = save.player_name;
+            cr::NetworkTransport::PeerHandle ph;
+            ph.enet_peer = peer_ptr;
+            net_transport.sendWelcomeTo(ph, w);
+            // Catch the joining peer up on every OTHER peer's name we know.
+            // This duplicates lobby-phase sends but it's idempotent on the
+            // client and guarantees they're not missing anyone after match
+            // start.
+            for (const auto& [other_pid, other_name] : known_peer_names) {
+                if (other_pid == pid) continue;
+                cr::codec::PeerInfoMsg pi;
+                pi.player_id = other_pid;
+                pi.name      = other_name;
+                net_transport.sendPeerInfoTo(ph, pi);
+            }
+            std::printf("[net] match start: spawned cell for peer player=%u cell=%u\n",
+                        static_cast<unsigned>(pid),
+                        static_cast<unsigned>(new_cell));
+        }
+        // Push every known name through the local client so the host's HUD
+        // shows the right labels from frame 1.
+        for (const auto& [pid, name] : known_peer_names) {
+            client.setPlayerName(pid, name);
+        }
+        // Lag-fix: blast an initial snapshot to every peer immediately so
+        // their Interpolator has data on frame 1 of the match (otherwise
+        // they sit on an empty world for ~33ms while waiting for the host's
+        // first sim tick). Refresh local client's snapshot too so the host's
+        // own HUD reflects the new peer cells.
+        if (!peer_to_player.empty()) {
+            cr::Snapshot bootstrap = sim.buildSnapshot();
+            client.onSnapshot(bootstrap);
+            net_transport.sendSnapshot(std::move(bootstrap));
+        }
+    }
+
+    // ---- Match-start welcome apply (client with shared transport) ----
+    // If runWindow already consumed the match-start welcome, apply its
+    // bookkeeping now (the player + cell ids were already used to construct
+    // the client above, so all that remains is registering host + self names).
+    if (mode == MatchMode::LocalClient && preconsumed_welcome != nullptr) {
+        if (!preconsumed_welcome->host_name.empty()) {
+            client.setPlayerName(/*host slot*/ 1, preconsumed_welcome->host_name);
+        }
+        client.setPlayerName(preconsumed_welcome->player_id, save.player_name);
+        // Also re-apply any names the lobby phase collected via PeerInfo so
+        // the killfeed / leaderboard / nameplate are populated on frame 1.
+        for (const auto& [pid, name] : known_peer_names) {
+            client.setPlayerName(pid, name);
+        }
+        std::printf("[net] match start: applying preconsumed welcome player=%u cell=%u\n",
+                    static_cast<unsigned>(preconsumed_welcome->player_id),
+                    static_cast<unsigned>(preconsumed_welcome->cell_id));
+    }
 
     // ---- Client-side prediction (LocalClient only) ----
     // Tracks the locally-predicted position of the watched cell so motion is
@@ -708,10 +845,24 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
         // For each peer that just connected, allocate a PlayerId, spawn a cell at a
         // clear spot, and ship a welcome so they know which cell to watch. The
         // peer pointer is also stored in peer_to_player so we can despawn their
-        // cells when they disconnect (or get kicked).
+        // cells when they disconnect (or get kicked). Late-joiners beyond the
+        // max-players cap are rejected (ENet handshake completes, then we drop).
         if (mode == MatchMode::LocalHost) {
+            const int hard_cap =
+                (net_cfg.max_players <= 0)
+                    ? cr::MatchSettings::kHardPlayerCap
+                    : std::min(net_cfg.max_players,
+                               cr::MatchSettings::kHardPlayerCap);
             cr::NetworkTransport::PeerHandle ph;
             while (net_transport.pollNewPeer(ph)) {
+                const int slots_used =
+                    1 + static_cast<int>(peer_to_player.size());
+                if (slots_used >= hard_cap) {
+                    std::printf("[net] late-joiner rejected (full: %d/%d)\n",
+                                slots_used, hard_cap);
+                    net_transport.disconnectPeer(ph);
+                    continue;
+                }
                 cr::PlayerId new_pid  = next_peer_player_id++;
                 cr::Vec2     spawn_at = pickClearSpawn();
                 cr::EntityId new_cell = sim.world().spawnCell(
@@ -741,30 +892,35 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
             }
 
             // Drain ClientHello messages -- one arrives per peer shortly
-            // after their welcome. We can't know the sender's PlayerId
-            // from the message alone, so we attribute it to the most
-            // recently spawned peer that hasn't yet announced a name.
+            // after their welcome. v2 ClientHello carries the peer's
+            // self-reported PlayerId so we can attribute it deterministically
+            // (the old "first peer without a name" heuristic raced if two
+            // peers connected in the same tick).
             cr::codec::ClientHelloMsg hello;
             while (net_transport.pollClientHello(hello)) {
-                cr::PlayerId attribute_to = cr::INVALID_PLAYER;
+                if (hello.player_id == cr::INVALID_PLAYER) continue;
+                // Sanity: the reported pid must be one we actually allocated.
+                bool known_slot = false;
                 for (const auto& [peer, pid] : peer_to_player) {
-                    if (known_peer_names.find(pid) == known_peer_names.end()) {
-                        attribute_to = pid;
-                        break;
-                    }
+                    if (pid == hello.player_id) { known_slot = true; break; }
                 }
-                if (attribute_to == cr::INVALID_PLAYER) continue;
-                known_peer_names[attribute_to] = hello.name;
-                client.setPlayerName(attribute_to, hello.name);
+                if (!known_slot) {
+                    std::fprintf(stderr,
+                                 "[net] dropping hello for unknown pid=%u\n",
+                                 static_cast<unsigned>(hello.player_id));
+                    continue;
+                }
+                known_peer_names[hello.player_id] = hello.name;
+                client.setPlayerName(hello.player_id, hello.name);
                 // Broadcast the new peer's name to EVERYONE (including the
                 // joining peer itself -- harmless, they just re-set their
                 // own map entry to the same value).
                 cr::codec::PeerInfoMsg pi;
-                pi.player_id = attribute_to;
+                pi.player_id = hello.player_id;
                 pi.name      = hello.name;
                 net_transport.broadcastPeerInfo(pi);
                 std::printf("[net] registered peer name: player=%u \"%s\"\n",
-                            static_cast<unsigned>(attribute_to),
+                            static_cast<unsigned>(hello.player_id),
                             hello.name.c_str());
             }
 
@@ -814,7 +970,8 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                 }
                 client.setPlayerName(w.player_id, save.player_name);
                 cr::codec::ClientHelloMsg hello;
-                hello.name = save.player_name;
+                hello.player_id = w.player_id;
+                hello.name      = save.player_name;
                 net_transport.sendClientHelloToHost(hello);
                 std::printf("[net] client received welcome: player_id=%u cell_id=%u host=\"%s\"\n",
                             static_cast<unsigned>(w.player_id),
@@ -1163,8 +1320,13 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
     // Pull updated progression + lifetime stats + settings out of the client so the
     // outer loop has fresh data for the menu display and the on-disk save.
     save = client.snapshotForSave();
-    // Tear down the transport before returning so the next match starts clean.
-    net_transport.disconnect();
+    // Tear down the transport only when we own it. The shared-transport path
+    // hands lifecycle back to runWindow which decides when to disconnect
+    // (typically right after this returns so the next lobby visit starts
+    // fresh).
+    if (!using_shared_transport) {
+        net_transport.disconnect();
+    }
     // Restore the outer tuning's bot_target_count so a subsequent VS AI match
     // doesn't inherit the multiplayer override of 0. Idempotent for SP (we
     // wrote the saved value over itself).
@@ -1265,6 +1427,43 @@ int runWindow(uint64_t initial_seed) {
 
     uint64_t next_match_seed = initial_seed;
 
+    // ---- Lobby-level multiplayer state ----
+    // Lives across the LocalLobby <-> Match phase boundary so peers that joined
+    // during the lobby keep their connection (and PlayerId) once the match
+    // begins. runMatch is handed pointers to all three when it starts a Local
+    // mode -- on return, runWindow tears them down (clean state for the next
+    // lobby visit).
+    cr::NetworkTransport                          lobby_transport;
+    std::unordered_map<void*, cr::PlayerId>       lobby_peer_to_player;
+    std::unordered_map<cr::PlayerId, std::string> lobby_known_peer_names;
+    cr::LocalDiscovery                            lobby_host_announcer; // host-side
+    bool         lobby_socket_open       = false; // true iff transport is host()/connect()'d
+    bool         lobby_is_host           = false; // role we entered with
+    cr::PlayerId lobby_next_player_id    = 2;     // next free slot (host)
+    cr::PlayerId lobby_my_player_id      = cr::INVALID_PLAYER; // filled by welcome (client)
+    double       lobby_last_announce_sec = 0.0;
+    std::optional<cr::codec::WelcomeMsg> lobby_pending_match_welcome;
+    cr::LobbySubState lobby_prev_substate = cr::LobbySubState::Picker;
+
+    // Tear down the lobby's transport + LAN announcer + peer state. Called on
+    // BACK / disconnect events and after runMatch returns so the next lobby
+    // visit starts from a known-clean state.
+    auto closeLobbyTransport = [&]() {
+        if (!lobby_socket_open) return;
+        std::printf("[lobby] closing transport (was host=%d, peers=%d)\n",
+                    lobby_is_host ? 1 : 0, lobby_transport.peerCount());
+        lobby_transport.disconnect();
+        lobby_host_announcer.stop();
+        lobby_socket_open       = false;
+        lobby_is_host           = false;
+        lobby_peer_to_player.clear();
+        lobby_known_peer_names.clear();
+        lobby_next_player_id    = 2;
+        lobby_my_player_id      = cr::INVALID_PLAYER;
+        lobby_pending_match_welcome.reset();
+        lobby_last_announce_sec = 0.0;
+    };
+
     while (phase != AppPhase::Quit && !WindowShouldClose()) {
         if (phase == AppPhase::Intro) {
             float dt = GetFrameTime();
@@ -1336,29 +1535,308 @@ int runWindow(uint64_t initial_seed) {
             int   sh = GetScreenHeight();
             local_lobby.update(dt, sw, sh);
 
+            // ---- Drive the live socket every lobby frame ----
+            // Poll the transport so CONNECT/DISCONNECT/RECEIVE events get
+            // surfaced. peerCount() updates inside poll(). Cheap when the
+            // socket is closed (no-op).
+            if (lobby_socket_open) {
+                lobby_transport.poll();
+
+                // Periodic LAN announce on the host side. Same cadence as
+                // the in-match announcer (1Hz).
+                if (lobby_is_host
+                    && lobby_host_announcer.mode() == cr::LocalDiscovery::Mode::Host) {
+                    const double now = GetTime();
+                    if (now - lobby_last_announce_sec >= 1.0) {
+                        lobby_host_announcer.announceNow();
+                        lobby_last_announce_sec = now;
+                    }
+                }
+
+                // Host-side: accept new peers, hand them a lobby Welcome (with
+                // cell_id = INVALID so the joiner knows we're still in the
+                // lobby), and add them to the peer map. Max-players cap is
+                // enforced here -- connections beyond the limit are accepted
+                // (ENet handshake) then immediately dropped with a log.
+                if (lobby_is_host) {
+                    cr::NetworkTransport::PeerHandle ph;
+                    while (lobby_transport.pollNewPeer(ph)) {
+                        const auto& settings = local_lobby.matchSettings();
+                        const int hard_cap = (settings.max_players <= 0)
+                            ? cr::MatchSettings::kHardPlayerCap
+                            : std::min(settings.max_players,
+                                       cr::MatchSettings::kHardPlayerCap);
+                        // host counts as 1 (slot 1); peers fill 2..N.
+                        const int current_count =
+                            1 + static_cast<int>(lobby_peer_to_player.size());
+                        if (current_count >= hard_cap) {
+                            std::printf(
+                                "[lobby] rejecting peer (lobby full: %d/%d)\n",
+                                current_count, hard_cap);
+                            lobby_transport.disconnectPeer(ph);
+                            continue;
+                        }
+
+                        cr::PlayerId new_pid = lobby_next_player_id++;
+                        lobby_peer_to_player[ph.enet_peer] = new_pid;
+                        cr::codec::WelcomeMsg w;
+                        w.player_id = new_pid;
+                        w.cell_id   = cr::INVALID_ENTITY; // lobby-phase marker
+                        w.host_name = save.player_name;
+                        lobby_transport.sendWelcomeTo(ph, w);
+                        // Catch the new peer up on every name we already know.
+                        for (const auto& [pid, name] : lobby_known_peer_names) {
+                            if (pid == new_pid) continue;
+                            cr::codec::PeerInfoMsg pi;
+                            pi.player_id = pid;
+                            pi.name      = name;
+                            lobby_transport.sendPeerInfoTo(ph, pi);
+                        }
+                        std::printf("[lobby] peer joined player=%u (%d/%d slots)\n",
+                                    static_cast<unsigned>(new_pid),
+                                    current_count + 1, hard_cap);
+                    }
+
+                    // ClientHello from peers carries their self-reported
+                    // PlayerId (from their lobby Welcome) + display name.
+                    cr::codec::ClientHelloMsg hello;
+                    while (lobby_transport.pollClientHello(hello)) {
+                        if (hello.player_id == cr::INVALID_PLAYER) continue;
+                        bool known_slot = false;
+                        for (const auto& [peer, pid] : lobby_peer_to_player) {
+                            if (pid == hello.player_id) { known_slot = true; break; }
+                        }
+                        if (!known_slot) {
+                            std::fprintf(stderr,
+                                         "[lobby] dropping hello for unknown pid=%u\n",
+                                         static_cast<unsigned>(hello.player_id));
+                            continue;
+                        }
+                        lobby_known_peer_names[hello.player_id] = hello.name;
+                        // Broadcast PeerInfo to everyone (including the joiner
+                        // -- harmless echo of their own name).
+                        cr::codec::PeerInfoMsg pi;
+                        pi.player_id = hello.player_id;
+                        pi.name      = hello.name;
+                        lobby_transport.broadcastPeerInfo(pi);
+                        std::printf("[lobby] peer name registered: player=%u \"%s\"\n",
+                                    static_cast<unsigned>(hello.player_id),
+                                    hello.name.c_str());
+                    }
+
+                    // Departed peers: drop their entry. (Cells aren't spawned
+                    // yet so there's nothing to despawn.)
+                    while (lobby_transport.pollDepartedPeer(ph)) {
+                        auto it = lobby_peer_to_player.find(ph.enet_peer);
+                        if (it == lobby_peer_to_player.end()) continue;
+                        cr::PlayerId departed = it->second;
+                        lobby_peer_to_player.erase(it);
+                        lobby_known_peer_names.erase(departed);
+                        std::printf("[lobby] peer departed player=%u\n",
+                                    static_cast<unsigned>(departed));
+                    }
+                }
+
+                // Client-side: consume welcomes from the host. The lobby
+                // welcome (cell_id == INVALID) tells us we're in the lobby
+                // and gives us our PlayerId + the host's name. The match
+                // welcome (cell_id != INVALID) is our signal to transition
+                // into AppPhase::Match.
+                if (!lobby_is_host) {
+                    cr::codec::WelcomeMsg w;
+                    while (lobby_transport.consumeWelcome(w)) {
+                        if (w.cell_id == cr::INVALID_ENTITY) {
+                            // Lobby join. Record self + host names. Send our
+                            // own name up so the host can broadcast it.
+                            lobby_my_player_id = w.player_id;
+                            lobby_known_peer_names[w.player_id] = save.player_name;
+                            lobby_known_peer_names[1] =
+                                w.host_name.empty() ? std::string("Host") : w.host_name;
+                            local_lobby.setRemoteHostName(
+                                w.host_name.empty() ? std::string("Host") : w.host_name);
+                            cr::codec::ClientHelloMsg hello;
+                            hello.player_id = w.player_id;
+                            hello.name      = save.player_name;
+                            lobby_transport.sendClientHelloToHost(hello);
+                            std::printf("[lobby] lobby welcome: player_id=%u host=\"%s\"\n",
+                                        static_cast<unsigned>(w.player_id),
+                                        w.host_name.c_str());
+                        } else {
+                            // Match start! Stash the welcome and trigger the
+                            // phase transition below.
+                            lobby_pending_match_welcome = w;
+                            std::printf("[lobby] match-start welcome: player=%u cell=%u\n",
+                                        static_cast<unsigned>(w.player_id),
+                                        static_cast<unsigned>(w.cell_id));
+                        }
+                    }
+                    // PeerInfo updates for other peers in the lobby.
+                    cr::codec::PeerInfoMsg pi;
+                    while (lobby_transport.pollPeerInfo(pi)) {
+                        lobby_known_peer_names[pi.player_id] = pi.name;
+                    }
+
+                    // Detect host disappearance (closed window, kicked us).
+                    if (lobby_transport.hostDisconnected()) {
+                        std::printf("[lobby] host disconnected -- back to picker\n");
+                        closeLobbyTransport();
+                        local_lobby.reset();
+                    }
+                }
+            }
+
+            // ---- Build the per-frame player list ----
+            std::vector<cr::LobbyPlayerRow> rows;
+            if (lobby_is_host) {
+                cr::LobbyPlayerRow me;
+                me.id      = 1;
+                me.name    = save.player_name.empty() ? std::string("Player 1")
+                                                      : save.player_name;
+                me.is_self = true;
+                me.is_host = true;
+                rows.push_back(me);
+                for (const auto& [pid, name] : lobby_known_peer_names) {
+                    if (pid == 1) continue;
+                    cr::LobbyPlayerRow r;
+                    r.id      = pid;
+                    r.name    = name.empty() ? std::string("Joining...") : name;
+                    r.is_self = false;
+                    r.is_host = false;
+                    rows.push_back(r);
+                }
+            } else {
+                // Client view: show host + ourselves + any other known peers.
+                for (const auto& [pid, name] : lobby_known_peer_names) {
+                    cr::LobbyPlayerRow r;
+                    r.id      = pid;
+                    r.name    = name.empty() ? std::string("Player") : name;
+                    r.is_self = (pid == lobby_my_player_id);
+                    r.is_host = (pid == 1);
+                    rows.push_back(r);
+                }
+            }
+            local_lobby.setPlayerList(std::move(rows));
+
+            // Status lines for the sub-state panels.
+            if (lobby_is_host && lobby_socket_open) {
+                char buf[160];
+                std::snprintf(buf, sizeof(buf),
+                              "listening on udp/7456  |  %d peer%s connected  |  share your local IP",
+                              lobby_transport.peerCount(),
+                              lobby_transport.peerCount() == 1 ? "" : "s");
+                local_lobby.setHostStatus(buf);
+            }
+            if (!lobby_is_host && lobby_socket_open) {
+                char buf[160];
+                if (lobby_known_peer_names.empty()) {
+                    std::snprintf(buf, sizeof(buf),
+                                  "connecting to %s...",
+                                  local_lobby.joinTargetAddress().c_str());
+                } else {
+                    std::snprintf(buf, sizeof(buf),
+                                  "in lobby -- waiting for host to start...");
+                }
+                local_lobby.setJoinStatus(buf);
+            }
+
             BeginDrawing();
             ClearBackground(Color{18, 22, 30, 255});
             cr::LocalLobbyAction la = local_lobby.render(sw, sh);
             EndDrawing();
 
+            // ---- Drive transitions based on lobby actions / sub-state changes ----
+            cr::LobbySubState cur = local_lobby.subState();
+
+            // BeginHosting: user pressed HOST in the picker. Open the socket
+            // + start the LAN announcer now so peers can join while the user
+            // waits in HostWaiting.
+            if (la == cr::LocalLobbyAction::BeginHosting) {
+                if (!lobby_transport.host(7456)) {
+                    std::printf("[lobby] failed to bind udp/7456\n");
+                    closeLobbyTransport();
+                    local_lobby.reset();
+                } else {
+                    lobby_socket_open       = true;
+                    lobby_is_host           = true;
+                    lobby_next_player_id    = 2;
+                    // Register host's name under player_id=1 so the player
+                    // list renders it.
+                    if (!save.player_name.empty()) {
+                        lobby_known_peer_names[1] = save.player_name;
+                    }
+                    // LAN announcer is best-effort.
+                    char hostname[32];
+                    std::snprintf(hostname, sizeof(hostname),
+                                  "%s's game",
+                                  save.player_name.empty() ? "Cell Royale"
+                                                           : save.player_name.c_str());
+                    lobby_host_announcer.startHost(7456, hostname);
+                    std::printf("[lobby] hosting on udp/7456 (LAN announcer: %s)\n",
+                                lobby_host_announcer.mode() == cr::LocalDiscovery::Mode::Host
+                                    ? "on" : "off");
+                }
+            }
+            // BeginJoining: user clicked a JOIN row or pressed JOIN by IP.
+            // Open a client transport and wait for the host's welcome.
+            else if (la == cr::LocalLobbyAction::BeginJoining) {
+                if (!lobby_transport.connect(local_lobby.joinTargetAddress())) {
+                    std::printf("[lobby] failed to connect to %s\n",
+                                local_lobby.joinTargetAddress().c_str());
+                    closeLobbyTransport();
+                    local_lobby.reset();
+                } else {
+                    lobby_socket_open = true;
+                    lobby_is_host     = false;
+                    std::printf("[lobby] connecting to %s\n",
+                                local_lobby.joinTargetAddress().c_str());
+                }
+            }
+            // Backing out closes the transport.
+            else if (la == cr::LocalLobbyAction::LeaveHostingLobby
+                     || la == cr::LocalLobbyAction::LeaveJoiningLobby) {
+                closeLobbyTransport();
+            }
+
+            // ---- Dispatch lobby actions ----
             if (la == cr::LocalLobbyAction::Quit) {
+                closeLobbyTransport();
                 phase = AppPhase::Quit;
             } else if (la == cr::LocalLobbyAction::BackToRoyaleMenu) {
+                closeLobbyTransport();
                 phase = AppPhase::RoyaleMenu;
                 cr::swallowNextClick();
             } else if (la == cr::LocalLobbyAction::StartLocalHost) {
-                next_match_mode               = MatchMode::LocalHost;
-                next_match_net                = {};
-                next_match_net.listen_port    = 7456;
+                // Host clicked START GAME -- hand off to runMatch reusing the
+                // live transport + peer maps. lobby_pending_match_welcome
+                // stays empty for the host (it's a client-only signal).
+                next_match_mode = MatchMode::LocalHost;
+                next_match_net  = {};
+                next_match_net.listen_port = 7456;
+                // Carry the host's lobby-panel choices into runMatch's tuning
+                // overrides.
+                const auto& s = local_lobby.matchSettings();
+                next_match_net.match_duration_sec = s.match_duration_sec;
+                next_match_net.max_players        = s.max_players;
+                next_match_net.bot_count          = s.bot_count;
                 phase = AppPhase::Match;
                 cr::swallowNextClick();
-            } else if (la == cr::LocalLobbyAction::StartLocalJoin) {
+            }
+
+            // Client: when the match-start welcome arrives (cell_id != INVALID),
+            // transition to Match. Done here (outside the la switch) because
+            // welcomes are consumed by the transport drain above and the
+            // pending welcome is the trigger.
+            if (lobby_pending_match_welcome.has_value() && !lobby_is_host
+                && phase == AppPhase::LocalLobby) {
                 next_match_mode             = MatchMode::LocalClient;
                 next_match_net              = {};
                 next_match_net.host_address = local_lobby.joinTargetAddress();
                 phase = AppPhase::Match;
                 cr::swallowNextClick();
             }
+
+            lobby_prev_substate = cur;
+            (void)lobby_prev_substate; // currently unused; kept for future transition logic
         } else if (phase == AppPhase::Settings) {
             int sw = GetScreenWidth();
             int sh = GetScreenHeight();
@@ -1382,9 +1860,31 @@ int runWindow(uint64_t initial_seed) {
             next_match_mode = MatchMode::SinglePlayer;
             next_match_net  = {};
 
+            // If the lobby opened a live transport, pass it down so runMatch reuses
+            // the connection (peers stay connected across the lobby->match boundary).
+            const bool use_shared = lobby_socket_open
+                                    && (mode_now == MatchMode::LocalHost
+                                        || mode_now == MatchMode::LocalClient);
+            cr::NetworkTransport* tport_ptr = use_shared ? &lobby_transport : nullptr;
+            auto* peer_map_ptr   = use_shared ? &lobby_peer_to_player : nullptr;
+            auto* name_map_ptr   = use_shared ? &lobby_known_peer_names : nullptr;
+            const cr::codec::WelcomeMsg* prew_ptr =
+                (use_shared && mode_now == MatchMode::LocalClient
+                 && lobby_pending_match_welcome.has_value())
+                    ? &lobby_pending_match_welcome.value()
+                    : nullptr;
+
             MatchOutcome outcome = runMatch(next_match_seed, tuning, save,
-                                            mode_now, net_now);
+                                            mode_now, net_now,
+                                            tport_ptr, peer_map_ptr, name_map_ptr,
+                                            prew_ptr, lobby_next_player_id, use_shared);
             ++next_match_seed; // new seed per match for variety across the session
+
+            // Tear down lobby-level transport now that the match is done. Next
+            // lobby visit starts with a fresh socket (and any stale peers will
+            // need to re-join).
+            closeLobbyTransport();
+
             if (outcome == MatchOutcome::ReturnToMenu) {
                 // After a Local match we drop the user back to the lobby; after a
                 // SinglePlayer match they go all the way back to the main menu.
@@ -1425,9 +1925,10 @@ int runWindow(uint64_t initial_seed) {
 } // namespace
 
 int main(int argc, char** argv) {
-    bool        headless    = false;
-    int         total_ticks = 5000;
-    uint64_t    seed        = 42;
+    bool        headless      = false;
+    int         total_ticks   = 5000;
+    uint64_t    seed          = 42;
+    bool        seed_explicit = false; // user passed --seed?
     std::string replay_save;
     std::string replay_load;
 
@@ -1438,7 +1939,8 @@ int main(int argc, char** argv) {
         } else if (arg == "--ticks" && i + 1 < argc) {
             total_ticks = std::atoi(argv[++i]);
         } else if (arg == "--seed" && i + 1 < argc) {
-            seed = std::strtoull(argv[++i], nullptr, 10);
+            seed          = std::strtoull(argv[++i], nullptr, 10);
+            seed_explicit = true;
         } else if (arg == "--replay-save" && i + 1 < argc) {
             replay_save = argv[++i];
         } else if (arg == "--replay-load" && i + 1 < argc) {
@@ -1448,5 +1950,26 @@ int main(int argc, char** argv) {
 
     if (!replay_load.empty()) return runReplayHeadless(replay_load);
     if (headless)             return runHeadless(seed, total_ticks, replay_save);
+
+    // GUI launch (runWindow): if the user didn't pin a specific seed, draw a
+    // fresh one from the wall clock so every launch produces a different
+    // world layout (food spawn, viruses, blackholes, wormholes, geysers).
+    // Otherwise the first match of every launch is byte-identical -- which
+    // was the bug behind "wormholes always spawn in the same place".
+    // Headless / replay paths keep their deterministic seed so the
+    // determinism test + replay round-trip aren't disturbed.
+    if (!seed_explicit) {
+        const auto now_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        seed = static_cast<uint64_t>(now_ns);
+        // Sprinkle in argv-derived entropy so launches in the same wall
+        // clock tick still differ across builds / CI clones.
+        for (int i = 0; i < argc; ++i) {
+            for (const char* p = argv[i]; *p; ++p) {
+                seed = (seed * 1099511628211ull) ^ static_cast<uint8_t>(*p);
+            }
+        }
+        std::printf("[cell_royale] randomised match seed: %llu\n",
+                    static_cast<unsigned long long>(seed));
+    }
     return runWindow(seed);
 }

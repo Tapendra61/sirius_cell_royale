@@ -17,9 +17,13 @@ enum class MenuAction {
     Quit,
 };
 
-// Title-screen scene. Owns its own animated background (drifting cells) and renders
-// the title + two buttons + a footer. Reads lifetime stats from the loaded SaveData
-// so the menu shows the player's level and best run.
+// Title-screen scene. Renders a layered "microscopic" backdrop (gradient + slow
+// drifting blobs + a particle dust field + a soft halo behind the title) plus
+// the title, buttons, and lifetime stats panel. The old version used 26 large
+// floating circles for the bg; we replaced that with a tiered particle system
+// because the circles read as "screensaver" instead of "alive". The title no
+// longer pulses its font size each frame (which jittered between integer
+// pixel sizes) -- instead a soft glow halo behind it breathes via alpha.
 class MainMenu {
 public:
     MainMenu();
@@ -28,14 +32,22 @@ public:
     MenuAction render(int screen_w, int screen_h, const SaveData& save);
 
 private:
-    struct BgCell {
-        float x, y, vx, vy, r;
-        Color color;
+    // Unified background sprite. We tier on radius:
+    //   r in [1, 3]     -- "dust" (lots of these; brightest layer)
+    //   r in [4, 10]    -- "motes" (mid layer; soft glow rim)
+    //   r in [150, 320] -- "blobs" (a few; almost invisible large fills that
+    //                      give the screen a sense of depth + organic feel)
+    struct Particle {
+        float x, y;
+        float vx, vy;
+        float r;
+        Color tint;       // tinting color (alpha varies per-tier)
+        float phase;      // for per-particle alpha shimmer
     };
 
     void ensureBgInit(int screen_w, int screen_h);
 
-    std::vector<BgCell> bg_cells_;
+    std::vector<Particle> particles_;
     bool   bg_inited_           = false;
     int    bg_init_w_           = 0;
     int    bg_init_h_           = 0;

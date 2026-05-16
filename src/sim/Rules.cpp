@@ -40,6 +40,12 @@ void decayVec(Vec2& v, float decay_per_sec, float dt) {
 // Spawn `pieces` cells around `pos` in an evenly-spaced fan, each with launch velocity
 // outward and a shared recombine timer. Respects max_cells_per_player. Used by virus
 // explosions; doSplit has its own variant (splits in the player's aim direction).
+//
+// Pieces are laid out as a ring tangent to itself -- each piece's centre is at
+// `ring_r = piece_radius / sin(pi / N)` from `pos`, so adjacent pieces just
+// touch instead of overlapping at the centre. Previously every piece spawned
+// at `pos` and visibly stacked into a single blob until launch_vel pushed
+// them apart, which read as "one weird cell" for the first half second.
 void spawnExplosionChildren(World& world, PlayerId owner, Vec2 pos, float total_mass,
                             const Tuning& t, std::vector<GameEvent>& events,
                             EntityId source_id, uint8_t source_personality_tag) {
@@ -52,14 +58,32 @@ void spawnExplosionChildren(World& world, PlayerId owner, Vec2 pos, float total_
     const Tick recombine_at =
         world.currentTick() + secondsToTicks(t.recombine_delay_sec);
 
+    // Tangent-ring radius: for N pieces evenly spaced on a circle, adjacent
+    // centres are `2 * ring_r * sin(pi/N)` apart. We want that distance to
+    // equal `2 * piece_radius` so adjacent pieces just touch. Solve for
+    // ring_r => piece_radius / sin(pi/N). With N=2 that's piece_radius (two
+    // pieces on opposite sides touching at the original centre); at N=8
+    // it's ~2.6 * piece_radius.
+    const float piece_r = cellRadius(each_mass);
+    float ring_r = 0.0f;
+    if (pieces > 1) {
+        const float s = std::sin(kPi / static_cast<float>(pieces));
+        if (s > 1e-4f) ring_r = piece_r / s;
+        // Tiny extra gap so adjacent pieces are non-overlapping by ~1px,
+        // which prevents the spatial-grid collision pass from flickering.
+        ring_r += 1.0f;
+    }
+
     for (int i = 0; i < pieces; ++i) {
         float angle = i * (2.0f * kPi / pieces);
         Vec2  dir{std::cos(angle), std::sin(angle)};
-        EntityId nid = world.spawnCell(owner, pos, each_mass);
+        Vec2  spawn_pos = pos + dir * ring_r;
+        EntityId nid = world.spawnCell(owner, spawn_pos, each_mass);
         // spawnCell may realloc; resolve by id, never by index.
         if (auto* nc = world.findCell(nid)) {
             nc->launch_vel       = dir * t.launch_velocity;
-            nc->target           = pos + dir * 200.0f;
+            // Target is well past the spawn ring so launch continues outward.
+            nc->target           = pos + dir * (ring_r + 200.0f);
             nc->recombine_at     = recombine_at;
             nc->personality_tag  = source_personality_tag;
         }
@@ -72,9 +96,14 @@ void spawnExplosionChildren(World& world, PlayerId owner, Vec2 pos, float total_
 void stepCells(World& world, const Tuning& t, float dt) {
     const Tick now = world.currentTick();
     for (auto& c : world.cellsMut()) {
-        // Cells hiding / mid-entry / mid-exit are driven by processBlackHoles --
-        // don't let the normal seek-velocity overwrite the animation positions.
+        // Cells hiding / mid-entry / mid-exit are driven by processBlackHoles
+        // (BH) or processWormholes (WH) -- don't let the normal seek-velocity
+        // overwrite the animation positions. The entry_anim check catches
+        // wormhole phase 1 (cell pinned at source, shrinking); BH entry
+        // already gets caught by the hiding_in check above so this is just
+        // a defence-in-depth duplicate for that case.
         if (c.hiding_in != INVALID_ENTITY) continue;
+        if (c.entry_anim_until > now)      continue;
         if (c.exit_anim_until > now)       continue;
         decayVec(c.launch_vel, t.launch_decay, dt);
 
@@ -326,7 +355,8 @@ void processVirusPushes(World& world, const Tuning& t) {
     }
 }
 
-void processRecombine(World& world, const Tuning& /*t*/) {
+void processRecombine(World& world, const Tuning& /*t*/,
+                      std::vector<GameEvent>& events) {
     auto& cells = world.cellsMut();
     if (cells.size() < 2) return;
     const Tick now = world.currentTick();
@@ -349,11 +379,101 @@ void processRecombine(World& world, const Tuning& /*t*/) {
             // Touching is enough -- recombine_at has already enforced the cooldown.
             if (d > ar + br) continue;
 
+            // Merge point: roughly the midpoint between the two centres,
+            // mass-weighted toward the heavier cell so the visual ring
+            // doesn't pop off-centre when a tiny piece merges into a big
+            // one.
+            const float total_mass = cells[i].mass + cells[j].mass;
+            const float wj = cells[j].mass / total_mass;
+            Vec2 merge_pos{
+                cells[i].pos.x + (cells[j].pos.x - cells[i].pos.x) * wj,
+                cells[i].pos.y + (cells[j].pos.y - cells[i].pos.y) * wj,
+            };
+
             cells[i].mass += cells[j].mass;
             dead[j] = 1;
+
+            RecombineEvent ev;
+            ev.player   = cells[i].owner;
+            ev.at       = merge_pos;
+            ev.new_mass = cells[i].mass;
+            events.push_back(ev);
         }
     }
     compactDead(cells, dead);
+}
+
+void resolveOwnerOverlaps(World& world) {
+    auto& cells = world.cellsMut();
+    if (cells.size() < 2) return;
+    const Tick now = world.currentTick();
+
+    // O(N^2) pairwise sweep over same-owner cells. N is bounded by
+    // max_cells_per_player * (1 + bot count), typically <800 worst-case, and
+    // most cells are singletons so the inner skip-on-owner-mismatch keeps the
+    // actual work tiny in practice.
+    //
+    // The push only applies while at least one cell of the pair is still in
+    // the post-split recombine cooldown (recombine_at > now). Once both
+    // cells' cooldowns expire, they touch and merge via processRecombine on
+    // the same tick instead -- so this never interferes with the recombine
+    // path.
+    //
+    // The push is symmetric (half the overlap each) which keeps positions
+    // deterministic regardless of iteration order. Cells mid-animation
+    // (hiding in BH, wormhole transit, BH entry/exit) are skipped so we
+    // don't fight those position controllers.
+    const size_t n = cells.size();
+    for (size_t i = 0; i < n; ++i) {
+        Cell& a = cells[i];
+        if (a.mass <= 0.0f) continue;
+        if (a.hiding_in != INVALID_ENTITY) continue;
+        if (a.entry_anim_until > now)      continue;
+        if (a.exit_anim_until  > now)      continue;
+
+        for (size_t j = i + 1; j < n; ++j) {
+            Cell& b = cells[j];
+            if (b.owner != a.owner) continue;
+            if (b.mass <= 0.0f) continue;
+            if (b.hiding_in != INVALID_ENTITY) continue;
+            if (b.entry_anim_until > now)      continue;
+            if (b.exit_anim_until  > now)      continue;
+            // Only push apart while at least one cell is still in the
+            // recombine cooldown. After both expire, processRecombine will
+            // merge them on touch.
+            if (a.recombine_at <= now && b.recombine_at <= now) continue;
+
+            const float ar = cellRadius(a.mass);
+            const float br = cellRadius(b.mass);
+            const float min_d = ar + br;
+            float dx = b.pos.x - a.pos.x;
+            float dy = b.pos.y - a.pos.y;
+            float dsq = dx * dx + dy * dy;
+            if (dsq >= min_d * min_d) continue; // not overlapping
+
+            // Degenerate co-located case (rare; both cells at exactly the
+            // same point). Pick a deterministic axis based on cell id parity
+            // so we always pull them apart in a stable direction.
+            if (dsq < 1e-4f) {
+                dx = (a.id < b.id) ? 1.0f : -1.0f;
+                dy = 0.0f;
+                dsq = 1.0f;
+            }
+
+            const float d   = std::sqrt(dsq);
+            const float overlap = min_d - d;
+            const float half    = overlap * 0.5f + 0.5f; // +0.5 keeps a 1px
+                                                          // gap so the next
+                                                          // tick's check
+                                                          // doesn't re-fire.
+            const float ux = dx / d;
+            const float uy = dy / d;
+            a.pos.x -= ux * half;
+            a.pos.y -= uy * half;
+            b.pos.x += ux * half;
+            b.pos.y += uy * half;
+        }
+    }
 }
 
 void respawnFood(World& world, const Tuning& t) {
@@ -879,6 +999,305 @@ void processComets(World& world, const Tuning& t, float dt,
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tidal current bands
+// ---------------------------------------------------------------------------
+//
+// Horizontal flow bands spanning the full world width. A cell is "in" a band
+// if its y-coordinate falls inside [band.pos.y - half_height, band.pos.y +
+// half_height]. Inside, we DRIFT the cell along `band.dir` (always ±x for
+// the standard bands) by `strength * dt` each tick. The drift falls off
+// toward the band edges so the transition in / out is smooth, and scales
+// inversely with sqrt(mass) so small cells are swept while mega-cells barely
+// feel it.
+//
+// We translate `c.pos` directly (NOT `c.vel`) because `stepCells` overwrites
+// `c.vel` every tick with `seek_vel + launch_vel` -- writing to vel here
+// would be silently discarded. By contrast, `c.pos` is preserved across the
+// step (stepCells only ADDS to it via `pos += total_vel * dt`), so a pre-
+// step position translation reads as the band physically carrying the cell.
+//
+// The player's seek still works on top: aim the cursor north and the cell
+// moves north while drifting east, exactly like a river current. To stay
+// stationary inside a band the player must aim "upstream" -- which is what
+// makes the bands tactical terrain instead of background flavor.
+//
+// Cells hiding inside a black hole are skipped (they're pinned).
+void applyTidalCurrents(World& world, const Tuning& t, float dt) {
+    if (world.currents().empty()) return;
+    const auto& currents = world.currents();
+    const Tick  now = world.currentTick();
+    for (auto& c : world.cellsMut()) {
+        if (c.hiding_in != INVALID_ENTITY) continue;
+        if (c.entry_anim_until > now)      continue;
+        if (c.exit_anim_until  > now)      continue;
+        // Mass-aware attenuation: a starter cell takes full strength, big
+        // cells still feel a meaningful push. We use the 4th root
+        // (pow(mass/start_mass, 0.25)) instead of sqrt because sqrt drops
+        // off too fast in the medium-mass range -- a 400-mass cell only got
+        // 50% of the push with sqrt, which felt like the current "gave up"
+        // halfway through normal play. 4th root keeps push roughly
+        // proportional to the cell's own natural speed (which itself scales
+        // as ~mass^-0.225 via cellSpeed's speed_falloff exponent), so a
+        // cell always drifts noticeably faster than it can swim regardless
+        // of size. Mega-cells still get ~32% push (down from ~10%) which
+        // is enough to feel it without being yeeted.
+        const float mass_ratio  = std::max(1.0f, c.mass / t.start_mass);
+        const float mass_factor = std::sqrt(std::sqrt(mass_ratio)); // 4th root
+        for (const auto& band : currents) {
+            const float h = band.half_height;
+            if (h <= 0.0f) continue;
+            const float ady = std::abs(c.pos.y - band.pos.y);
+            if (ady > h) continue;
+            // Smoothstep falloff: full strength on the centre line, 0 at
+            // the rim. Cells entering / leaving the band don't snap into /
+            // out of the flow.
+            const float u       = 1.0f - (ady / h);    // 0..1, 1 at centre
+            const float falloff = u * u * (3.0f - 2.0f * u);
+            const float drift   = (band.strength * falloff / mass_factor) * dt;
+            c.pos.x += band.dir.x * drift;
+            c.pos.y += band.dir.y * drift;
+            // Bands don't overlap by design (count=2 places them at 1/3
+            // and 2/3 world height with half_height < that gap), so we
+            // stop at the first match for performance.
+            break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wormholes
+// ---------------------------------------------------------------------------
+//
+// Two-phase transit: SHRINK at source, then GROW at destination. Visually
+// the cell collapses into the source wormhole, briefly disappears, then
+// emerges and grows out of the partner wormhole.
+//
+// Phase 1 (SHRINK at source, duration = phase_ticks):
+//   * cell.pos held at source (stepCells skips on entry_anim_until > now).
+//   * cell.entry_anim_until = now + phase_ticks.
+//   * cell.anim_origin = partner_pos (used to seed phase 2 lerp).
+//   * cell.anim_target = final_emerge_pos (used to seed phase 2 lerp).
+//   * cell.wormhole_transit_phase = 1.
+//   * buildSnapshot drives blackhole_visual_scale 1 -> 0 via the entry-anim
+//     code path -- the cell visibly shrinks at the source wormhole.
+//
+// Phase 1 -> Phase 2 transition (when entry_anim_until expires):
+//   * cell.pos snapped from source to partner centre. At this exact tick the
+//     visual_scale is 0 (entry-anim just ended, exit-anim just begun) so the
+//     teleport is invisible -- prev_snap shows source/tiny, curr shows
+//     partner/scale=0; client lerps pos but scale=0 hides it.
+//   * cell.exit_anim_until = now + phase_ticks.
+//   * cell.wormhole_transit_phase = 2.
+//
+// Phase 2 (GROW at destination, duration = phase_ticks):
+//   * cell.pos lerped from partner centre -> final_emerge_pos by
+//     processBlackHoles' shared exit-anim block (line 686).
+//   * blackhole_visual_scale grows 0 -> 1 via buildSnapshot's exit-anim path.
+//   * stepCells skips on exit_anim_until > now so the player's seek doesn't
+//     fight the emergence lerp.
+//   * processEating already grants prey-immunity to mid-exit-anim cells.
+//
+// Phase 2 -> idle (when exit_anim_until expires):
+//   * wormhole_transit_phase = 0. Normal play resumes.
+//
+// Total transit duration = 2 * blackhole_transition_sec (~0.7s by default).
+// Matched to that constant because buildSnapshot's scale ease references it
+// as the anim_ticks reference -- with phase_ticks = blackhole_transition_sec
+// the scale exactly spans 1 -> 0 (entry) and 0 -> 1 (exit) over each phase.
+//
+// Hiding cells (in a BH) and cells already mid-BH-animation are skipped so
+// we don't stomp on existing animations.
+void processWormholes(World& world, const Tuning& t) {
+    if (world.wormholes().empty()) return;
+    const Tick  now             = world.currentTick();
+    const Tick  cooldown_ticks  = std::max<Tick>(1, secondsToTicks(t.wormhole_cooldown_sec));
+    // Per-phase ticks. buildSnapshot's scale ease uses
+    // tuning.blackhole_transition_sec as the reference duration, so matching
+    // phase_ticks to that gives a clean 1->0 (shrink) and 0->1 (grow) curve.
+    const Tick  phase_ticks     = std::max<Tick>(1, secondsToTicks(t.blackhole_transition_sec));
+    const auto& wormholes       = world.wormholes();
+
+    for (auto& cell : world.cellsMut()) {
+        if (cell.mass <= 0.0f) continue;
+
+        // ---- Phase 2 -> idle ----
+        if (cell.wormhole_transit_phase == 2 && cell.exit_anim_until <= now) {
+            cell.wormhole_transit_phase = 0;
+        }
+
+        // ---- Phase 1 -> Phase 2 transition ----
+        // Cell finished shrinking at the source. Snap pos to partner centre
+        // and hand off to the exit-anim pipeline for the grow-out.
+        if (cell.wormhole_transit_phase == 1 && cell.entry_anim_until <= now) {
+            // anim_origin holds the partner centre (set at phase 1 start);
+            // anim_target holds the final emerge position.
+            const Vec2 partner_pos = cell.anim_origin;
+            const Vec2 final_pos   = cell.anim_target;
+
+            cell.pos                = partner_pos;
+            cell.entry_anim_until   = 0;
+            cell.exit_anim_until    = now + phase_ticks;
+            cell.target             = final_pos;
+            cell.vel                = {0.0f, 0.0f};
+            cell.launch_vel         = {0.0f, 0.0f};
+            cell.wormhole_transit_phase = 2;
+            // Extend invuln through the grow phase.
+            cell.invuln_until = std::max(cell.invuln_until, now + phase_ticks);
+            // anim_origin/anim_target stay as-is so processBlackHoles'
+            // exit-anim block lerps pos from partner -> final_pos.
+        }
+
+        // ---- New entry detection ----
+        // Only consider cells that aren't already transiting, aren't hiding
+        // in a BH, aren't mid-BH-animation, and have served their teleport
+        // cooldown.
+        if (cell.wormhole_transit_phase != 0) continue;
+        if (cell.hiding_in != INVALID_ENTITY) continue;
+        if (cell.entry_anim_until > now || cell.exit_anim_until > now) continue;
+        if (cell.wormhole_cooldown_until > now) continue;
+
+        for (const auto& w : wormholes) {
+            const Vec2 d = cell.pos - w.pos;
+            if (lengthSq(d) > w.radius * w.radius) continue;
+            // Found a wormhole this cell is inside. Look up its partner.
+            const Wormhole* partner = world.findWormhole(w.pair_id);
+            if (partner == nullptr) break; // pair missing (shouldn't happen)
+
+            // Compute the final emerge position (partner centre + outward
+            // kick along the cell's incoming velocity direction, so a
+            // player travelling east emerges heading east). Stored on
+            // anim_target now; consumed at the phase 1 -> 2 transition.
+            Vec2 final_pos = partner->pos;
+            const float vlen = length(cell.vel);
+            Vec2 emerge_dir{1.0f, 0.0f};
+            if (vlen > 1.0f) {
+                emerge_dir = cell.vel * (1.0f / vlen);
+            } else {
+                // No incoming velocity -- pick a deterministic direction
+                // from the cell's cursor target relative to the partner.
+                const Vec2 to_target = cell.target - partner->pos;
+                const float tlen = length(to_target);
+                if (tlen > 1.0f) {
+                    emerge_dir = to_target * (1.0f / tlen);
+                }
+            }
+            final_pos.x += emerge_dir.x * (partner->radius * 1.6f);
+            final_pos.y += emerge_dir.y * (partner->radius * 1.6f);
+
+            // Phase 1 setup: pin cell at source, start shrink.
+            // cell.pos stays at its current value (inside the source's
+            // radius). entry_anim_until ticks down for phase_ticks ticks
+            // while buildSnapshot drives the visual scale 1 -> 0.
+            cell.entry_anim_until        = now + phase_ticks;
+            cell.exit_anim_until         = 0;
+            cell.anim_origin             = partner->pos;  // for phase 2 lerp start
+            cell.anim_target             = final_pos;     // for phase 2 lerp end
+            cell.vel                     = {0.0f, 0.0f};
+            cell.launch_vel              = {0.0f, 0.0f};
+            cell.target                  = cell.pos;       // no drift during shrink
+            cell.wormhole_transit_phase  = 1;
+            // Invuln spans both phases + a small buffer.
+            cell.invuln_until            = std::max(cell.invuln_until,
+                                                    now + phase_ticks * 2 + 2);
+            cell.wormhole_cooldown_until = now + cooldown_ticks;
+            break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Geysers
+// ---------------------------------------------------------------------------
+//
+// State machine per geyser:
+//   Idle      -- wait for `next_event_tick`. When reached, advance to
+//                Telegraph and set next_event_tick = telegraph_end_tick.
+//   Telegraph -- visual warning ring grows. When `next_event_tick` is
+//                reached, advance to Erupt and spawn the food burst.
+//   Erupt     -- held for exactly one tick (so clients see the flash in at
+//                least one snapshot frame), then back to Idle with a fresh
+//                next_event_tick = now + jittered interval.
+//
+// Food is spawned with outward velocity so the burst spreads naturally;
+// stepFood's velocity decay does the rest. Mass uses the same rollFoodMass
+// as ambient food, weighted slightly toward rare drops so geysers feel
+// rewarding to contest.
+void processGeysers(World& world, const Tuning& t) {
+    if (world.geysers().empty()) return;
+    const Tick now              = world.currentTick();
+    const Tick telegraph_ticks  = std::max<Tick>(1,
+        secondsToTicks(t.geyser_telegraph_sec));
+
+    for (auto& g : world.geysersMut()) {
+        switch (g.state) {
+            case GeyserState::Idle: {
+                if (now >= g.next_event_tick) {
+                    g.state           = GeyserState::Telegraph;
+                    g.next_event_tick = now + telegraph_ticks;
+                }
+                break;
+            }
+            case GeyserState::Telegraph: {
+                if (now >= g.next_event_tick) {
+                    g.state = GeyserState::Erupt;
+                    g.last_erupted_at = now;
+                    // Spawn the food burst. Pick a deterministic count from
+                    // the world RNG, then drop pellets in a sunburst pattern
+                    // with outward velocity.
+                    const int n = world.rng().rangeInt(
+                        t.geyser_food_count_min,
+                        t.geyser_food_count_max + 1);
+                    for (int i = 0; i < n; ++i) {
+                        const float ang = (static_cast<float>(i) / static_cast<float>(n))
+                                         * 6.28318530718f
+                                         + world.rng().rangeFloat(-0.18f, 0.18f);
+                        const float spread = world.rng().rangeFloat(0.0f,
+                                                                    t.geyser_food_spread);
+                        const Vec2 dir{std::cos(ang), std::sin(ang)};
+                        const Vec2 pos{
+                            g.pos.x + dir.x * spread,
+                            g.pos.y + dir.y * spread,
+                        };
+                        const Vec2 vel{
+                            dir.x * t.geyser_food_eject_speed,
+                            dir.y * t.geyser_food_eject_speed,
+                        };
+                        // Bias the mass roll slightly toward rares so a
+                        // geyser eruption is meaningfully different from
+                        // ambient food. We use rollFoodMass and re-roll if
+                        // the first roll is common; this keeps the rng
+                        // determinism intact while skewing the distribution.
+                        float mass = rollFoodMass(world.rng());
+                        if (mass < 2.0f) {
+                            // ~50% chance to re-roll commons into something better.
+                            if (world.rng().nextFloat() < 0.5f) {
+                                mass = rollFoodMass(world.rng());
+                            }
+                        }
+                        world.spawnFood(pos, mass, vel, INVALID_PLAYER);
+                    }
+                }
+                break;
+            }
+            case GeyserState::Erupt: {
+                // Hold for exactly one tick so the visual lands at least one
+                // frame on every client, then reschedule.
+                if (now > g.last_erupted_at) {
+                    g.state = GeyserState::Idle;
+                    const float jitter = std::clamp(t.geyser_interval_jitter,
+                                                    0.0f, 0.9f);
+                    const float lo = t.geyser_interval_sec * (1.0f - jitter);
+                    const float hi = t.geyser_interval_sec * (1.0f + jitter);
+                    const float sec = world.rng().rangeFloat(lo, hi);
+                    g.next_event_tick = now + secondsToTicks(sec);
+                }
+                break;
+            }
+        }
+    }
+}
+
 float rollFoodMass(Rng& rng) {
     float r = rng.nextFloat();
     if (r < 0.005f) return 36.0f; // 0.5% legendary (purple-red, strong halo, 3x gold)
@@ -912,8 +1331,18 @@ void doSplit(World& world, PlayerId player, const Tuning& t,
         cells[i].mass         = new_mass;
         cells[i].recombine_at = recombine_at;
 
+        // Offset the child along `dir` so its edge just touches the parent's
+        // edge -- both halves have equal mass now, so the centre-to-centre
+        // distance is exactly 2 * new_radius (+ a tiny gap to keep the
+        // spatial-grid collision pass from flickering). Previously the child
+        // spawned at c_pos and visually overlapped the parent for the first
+        // ~0.5s until launch_vel pushed them apart, which read as "one weird
+        // small cell" until recombine.
+        const float    new_radius = cellRadius(new_mass);
+        const Vec2     child_pos  = c_pos + dir * (2.0f * new_radius + 1.0f);
+
         const uint8_t parent_tag = cells[i].personality_tag;
-        EntityId child_id = world.spawnCell(player, c_pos, new_mass);
+        EntityId child_id = world.spawnCell(player, child_pos, new_mass);
         if (auto* nc = world.findCell(child_id)) {
             nc->target           = c_target;
             nc->launch_vel       = dir * t.launch_velocity;

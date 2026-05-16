@@ -31,8 +31,16 @@ PersonalityWeights weightsFor(BotPersonality p) {
     case BotPersonality::Hunter:
         // The apex predator. Lobs blasts at fleeing prey to disrupt escape splits.
         // Smart-blast heuristic gates the actual firing so they don't blow the
-        // cooldown on a low-value target.
-        return {4500.0f, 4.0f, 32.0f, 0.95f, 0.45f, 2.0f, 0.0f, true, 1.25f, 5.0f, 0.32f, 0.3f, 0.7f, 0.35f};
+        // cooldown on a low-value target. Toned down from previous values:
+        //   chase_range_mult: 32 -> 26 (gives up the chase sooner instead of
+        //     committing across half the map every time)
+        //   split_aggression: 0.95 -> 0.80 (fewer reckless split-bombs)
+        //   human_target_bias: 5.0 -> 3.5 (still hard-locks the player but
+        //     not laser-glued to them)
+        // The intercept-lead-aim (0.7s) + dash telegraph + smart-blast gate
+        // are unchanged -- those are what make Hunter a Hunter; the dials
+        // we softened are pure aggression dials.
+        return {4500.0f, 4.0f, 26.0f, 0.80f, 0.45f, 2.0f, 0.0f, true, 1.25f, 3.5f, 0.32f, 0.3f, 0.7f, 0.35f};
     case BotPersonality::Hoarder:
         // The fortress. Doesn't blast -- they camp the corner and let prey come
         // to them. Wasting blasts on flyby targets is off-brand.

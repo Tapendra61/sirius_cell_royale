@@ -90,8 +90,19 @@ struct MatchEndEvent {
     Reason   reason        = Reason::TimeLimit;
 };
 
+// Same-owner recombine event. Fired by processRecombine when two cells of
+// the same player merge back together. Carries the merge position and the
+// total mass of the result so clients can scale the visual / audio feel
+// (bigger merges land harder). `player` lets the client tell "is this the
+// watched player?" without a cell lookup.
+struct RecombineEvent {
+    PlayerId player    = INVALID_PLAYER;
+    Vec2     at;
+    float    new_mass  = 0.0f; // total mass of the merged cell after recombine
+};
+
 using GameEvent = std::variant<AbsorbEvent, DeathEvent, SplitEvent, CritEvent,
                                NearMissEvent, PickupCollectedEvent, BlastEvent,
-                               CometEvent, MatchEndEvent>;
+                               CometEvent, MatchEndEvent, RecombineEvent>;
 
 } // namespace cr

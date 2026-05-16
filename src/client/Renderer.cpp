@@ -128,38 +128,106 @@ Color foodColor(const FoodSnap& f) {
     return Color{120, 220, 130, 255};                       // common (mass 1)
 }
 
-// Background grid clamped to the visible AABB. Saves drawing thousands of pixels of line
-// that the GPU would clip anyway, and shortens the world border to just the visible edges
-// where applicable.
+// Three-tier world grid clamped to the visible AABB. Tiers (from faintest to
+// strongest):
+//   sub   -- 100px subdivisions, almost-invisible "graph paper" texture
+//   main  -- 400px lines (the original grid), slightly polished color
+//   major -- 1600px accent dots at intersections so the player has a coarse
+//            distance reference at high zoom-out
+// Plus a polished world boundary: outer thick stroke + inner thin glow line.
+// All passes cull lines outside the visible AABB so a 16k x 16k world stays
+// cheap to draw.
 void drawWorldGrid(int world_w, int world_h, Vec2 view_min, Vec2 view_max) {
-    const int step = 400;
-    const Color line = {40, 44, 52, 255};
+    const int   sub_step   = 100;
+    const int   main_step  = 400;
+    const int   major_step = 1600;
+    const Color sub_line   = {32, 38, 48,  90};   // very subtle subdivisions
+    const Color main_line  = {52, 58, 72, 180};   // primary grid (slightly cooler/brighter than the old 40,44,52 so it reads against the gradient bg)
+    const Color dot_accent = {120, 145, 175, 200}; // major intersection dot
+
     const float xmin = std::max(view_min.x, 0.0f);
     const float xmax = std::min(view_max.x, static_cast<float>(world_w));
     const float ymin = std::max(view_min.y, 0.0f);
     const float ymax = std::min(view_max.y, static_cast<float>(world_h));
-    if (xmin > xmax || ymin > ymax) {
-        // View is entirely outside the world; still draw the border below.
-    } else {
-        int xs = static_cast<int>(std::floor(xmin / step)) * step;
-        int xe = static_cast<int>(std::ceil(xmax  / step)) * step;
-        int ys = static_cast<int>(std::floor(ymin / step)) * step;
-        int ye = static_cast<int>(std::ceil(ymax  / step)) * step;
-        for (int x = xs; x <= xe; x += step) {
-            if (x < 0 || x > world_w) continue;
-            DrawLine(x, static_cast<int>(ymin),
-                     x, static_cast<int>(ymax), line);
+
+    if (xmin < xmax && ymin < ymax) {
+        // ---- Sub grid (100px). ----
+        {
+            int xs = static_cast<int>(std::floor(xmin / sub_step)) * sub_step;
+            int xe = static_cast<int>(std::ceil(xmax  / sub_step)) * sub_step;
+            int ys = static_cast<int>(std::floor(ymin / sub_step)) * sub_step;
+            int ye = static_cast<int>(std::ceil(ymax  / sub_step)) * sub_step;
+            for (int x = xs; x <= xe; x += sub_step) {
+                if (x < 0 || x > world_w) continue;
+                if (x % main_step == 0) continue; // main grid will overdraw
+                DrawLine(x, static_cast<int>(ymin),
+                         x, static_cast<int>(ymax), sub_line);
+            }
+            for (int y = ys; y <= ye; y += sub_step) {
+                if (y < 0 || y > world_h) continue;
+                if (y % main_step == 0) continue;
+                DrawLine(static_cast<int>(xmin), y,
+                         static_cast<int>(xmax), y, sub_line);
+            }
         }
-        for (int y = ys; y <= ye; y += step) {
-            if (y < 0 || y > world_h) continue;
-            DrawLine(static_cast<int>(xmin), y,
-                     static_cast<int>(xmax), y, line);
+
+        // ---- Main grid (400px). ----
+        {
+            int xs = static_cast<int>(std::floor(xmin / main_step)) * main_step;
+            int xe = static_cast<int>(std::ceil(xmax  / main_step)) * main_step;
+            int ys = static_cast<int>(std::floor(ymin / main_step)) * main_step;
+            int ye = static_cast<int>(std::ceil(ymax  / main_step)) * main_step;
+            for (int x = xs; x <= xe; x += main_step) {
+                if (x < 0 || x > world_w) continue;
+                DrawLine(x, static_cast<int>(ymin),
+                         x, static_cast<int>(ymax), main_line);
+            }
+            for (int y = ys; y <= ye; y += main_step) {
+                if (y < 0 || y > world_h) continue;
+                DrawLine(static_cast<int>(xmin), y,
+                         static_cast<int>(xmax), y, main_line);
+            }
+        }
+
+        // ---- Major intersection dots (every 1600px). ----
+        // Tiny accent circles where four main grid lines meet. Gives the
+        // grid a sense of "graph paper" rhythm without changing the line
+        // structure. Two-pass (glow + core) so they have a hint of depth.
+        {
+            int xs = static_cast<int>(std::floor(xmin / major_step)) * major_step;
+            int xe = static_cast<int>(std::ceil(xmax  / major_step)) * major_step;
+            int ys = static_cast<int>(std::floor(ymin / major_step)) * major_step;
+            int ye = static_cast<int>(std::ceil(ymax  / major_step)) * major_step;
+            for (int x = xs; x <= xe; x += major_step) {
+                if (x < 0 || x > world_w) continue;
+                for (int y = ys; y <= ye; y += major_step) {
+                    if (y < 0 || y > world_h) continue;
+                    DrawCircle(x, y, 5.0f,
+                               Color{dot_accent.r, dot_accent.g, dot_accent.b, 50});
+                    DrawCircle(x, y, 2.0f, dot_accent);
+                }
+            }
         }
     }
+
+    // ---- World boundary: triple-stroke for depth ----
+    // Outer thick warm-grey stroke marks the hard edge.
+    // Inner thinner cool stroke + a faint inner glow gives it presence.
     DrawRectangleLinesEx(Rectangle{0.0f, 0.0f,
                                    static_cast<float>(world_w),
                                    static_cast<float>(world_h)},
-                         4.0f, Color{90, 100, 115, 255});
+                         4.0f, Color{96, 108, 128, 255});
+    // Slight inset thin highlight ring inside the world for a "framed" feel.
+    DrawRectangleLinesEx(Rectangle{6.0f, 6.0f,
+                                   static_cast<float>(world_w - 12),
+                                   static_cast<float>(world_h - 12)},
+                         1.5f, Color{140, 160, 200, 70});
+    // Far-inset faint glow so the boundary breathes inward instead of
+    // being a hard razor edge against the play area.
+    DrawRectangleLinesEx(Rectangle{14.0f, 14.0f,
+                                   static_cast<float>(world_w - 28),
+                                   static_cast<float>(world_h - 28)},
+                         1.0f, Color{140, 160, 200, 30});
 }
 
 // Procedural black-hole shader. Drawn onto a 1x1 white texture scaled to fit each
@@ -222,6 +290,109 @@ struct BlackHoleGfx {
     Texture2D  white{};
     int        loc_time    = -1;
     int        loc_horizon = -1;
+    bool       initialized = false;
+    bool       failed      = false;
+};
+
+// Procedural wormhole shader. Same overall approach as the black-hole shader
+// (full-screen quad + radial UV + rotating spiral) but tuned for a *bright*
+// blue portal feel rather than a destructive sink:
+//   * The "void" is a glowing cyan-white aperture instead of a black core
+//     -- this thing is a doorway, not a death.
+//   * The accretion disc has 4-armed spirals (vs 2-armed on BH) that wind
+//     INWARD into the aperture, then re-emerge faintly, suggesting energy
+//     transiting through the portal.
+//   * Outer halo is a slow indigo pulse so the pair on the minimap reads
+//     as "linked rifts" instead of "scary holes".
+//
+// `u_spin` is the snapshot-supplied spin_phase (radians), so two endpoints
+// of a pair counter-rotate by passing the same value with sign flipped.
+const char* const kWormholeFS = R"GLSL(
+#version 330
+
+in vec2 fragTexCoord;
+out vec4 finalColor;
+
+uniform float u_time;
+uniform float u_horizon;   // 0..1, "aperture" radius (visible bright core)
+uniform float u_spin;      // radians, host-supplied so all clients agree
+
+void main() {
+    vec2  uv = (fragTexCoord - 0.5) * 2.0;
+    float r  = length(uv);
+    if (r > 1.0) discard;
+
+    float theta = atan(uv.y, uv.x);
+
+    // Frame-dragging swirl. The 5.5 factor + pow(1-r, 1.3) winds streamlines
+    // tighter near the aperture so the spiral feels like it's being pulled
+    // *into* a doorway rather than just rotating uniformly.
+    float swirl = 5.5 * pow(1.0 - r, 1.3);
+    float spin  = theta + u_spin + u_time * 0.30 + swirl;
+
+    // Four-armed spiral (vs the black hole's two arms) -- gives the wormhole
+    // a denser, more "energized" feel. Higher arm-power sharpens the bands.
+    float arms = 0.5 + 0.5 * sin(spin * 4.0 + r * 6.0);
+    arms = pow(arms, 2.2);
+
+    // Secondary counter-spinning faint arm set, so the portal feels like
+    // overlapping currents instead of a single rotation.
+    float arms2 = 0.5 + 0.5 * sin(-spin * 2.0 + r * 3.5 + u_time * 0.6);
+    arms2 = pow(arms2, 4.0) * 0.55;
+
+    float arms_total = clamp(arms + arms2, 0.0, 1.0);
+
+    // Disc brightness: peaks JUST OUTSIDE the aperture, falls off both
+    // inward (where the bright core takes over) and outward (into the halo).
+    float aperture_edge = smoothstep(u_horizon * 0.95, u_horizon * 1.10, r);
+    float outer_falloff = 1.0 - smoothstep(u_horizon * 1.3, 0.95, r);
+    float disc          = aperture_edge * outer_falloff;
+
+    // Palette: deep indigo void at the outer rim -> dark purple-blue mid
+    // disc -> dim magenta-violet spiral arms -> a DARK glowing aperture
+    // (slightly brighter than the void but never white). Reads as a
+    // brooding cosmic rift rather than a friendly portal.
+    vec3 col_void  = vec3(0.04, 0.02, 0.12); // outer dark indigo
+    vec3 col_disc  = vec3(0.18, 0.08, 0.36); // mid-spiral deep purple-blue
+    vec3 col_arms  = vec3(0.55, 0.18, 0.55); // spiral arms: muted magenta/red-violet
+    vec3 col_core  = vec3(0.12, 0.05, 0.22); // aperture: dark purple-blue (slightly
+                                             // brighter than the void but still dark)
+
+    float depth = smoothstep(1.0, u_horizon * 1.1, r); // 0 at edge, 1 near core
+    vec3  base  = mix(col_void, col_disc, depth);
+    vec3  color = mix(base, col_arms, disc * arms_total);
+
+    // Aperture core: the wormhole settles into a DIM glowing purple-blue
+    // inside the inner radius -- not white, not black. Subtle pulse so the
+    // core breathes without ever lighting up the surroundings.
+    float core_mask = 1.0 - smoothstep(u_horizon * 0.55, u_horizon * 1.02, r);
+    float pulse = 0.90 + 0.10 * sin(u_time * 2.2);
+    color = mix(color, col_core * pulse, core_mask);
+
+    // Rim glow at the aperture boundary -- a soft warm-purple ring (not
+    // cyan-white) so it stays inside the moody palette. Squared signed
+    // distance instead of pow(x, 2.0), which is undefined for negative x
+    // in GLSL.
+    float rim_d = (r - u_horizon) * 16.0;
+    float rim   = exp(-rim_d * rim_d);
+    color += vec3(0.45, 0.18, 0.55) * rim * 0.55;
+
+    // Outer alpha: soft fade so the disc blends into the world background.
+    // Slightly more generous than the black hole's 0.55 cutoff so the
+    // wormhole's halo extends a touch further -- helps the pair feel
+    // "linked" peripherally.
+    float alpha = smoothstep(1.0, 0.50, r);
+
+    finalColor = vec4(color, alpha);
+}
+)GLSL";
+
+struct WormholeGfx {
+    Shader     shader{};
+    Texture2D  white{};
+    int        loc_time    = -1;
+    int        loc_horizon = -1;
+    int        loc_spin    = -1;
     bool       initialized = false;
     bool       failed      = false;
 };
@@ -397,6 +568,7 @@ struct CometGfx {
 
 BlackHoleGfx g_bh_gfx;
 CometGfx     g_comet_gfx;
+WormholeGfx  g_wh_gfx;
 
 void ensureBlackHoleGfx() {
     if (g_bh_gfx.initialized || g_bh_gfx.failed) return;
@@ -432,6 +604,36 @@ void unloadBlackHoleGfx() {
         // Shader compile failed but still left an id behind on some drivers; nuke it.
         UnloadShader(g_bh_gfx.shader);
         g_bh_gfx = BlackHoleGfx{};
+    }
+}
+
+void ensureWormholeGfx() {
+    if (g_wh_gfx.initialized || g_wh_gfx.failed) return;
+
+    g_wh_gfx.shader = LoadShaderFromMemory(nullptr, kWormholeFS);
+    if (g_wh_gfx.shader.id == 0) {
+        g_wh_gfx.failed = true;
+        return;
+    }
+    g_wh_gfx.loc_time    = GetShaderLocation(g_wh_gfx.shader, "u_time");
+    g_wh_gfx.loc_horizon = GetShaderLocation(g_wh_gfx.shader, "u_horizon");
+    g_wh_gfx.loc_spin    = GetShaderLocation(g_wh_gfx.shader, "u_spin");
+
+    Image img = GenImageColor(1, 1, WHITE);
+    g_wh_gfx.white = LoadTextureFromImage(img);
+    UnloadImage(img);
+
+    g_wh_gfx.initialized = true;
+}
+
+void unloadWormholeGfx() {
+    if (g_wh_gfx.initialized) {
+        UnloadTexture(g_wh_gfx.white);
+        UnloadShader(g_wh_gfx.shader);
+        g_wh_gfx = WormholeGfx{};
+    } else if (g_wh_gfx.failed && g_wh_gfx.shader.id != 0) {
+        UnloadShader(g_wh_gfx.shader);
+        g_wh_gfx = WormholeGfx{};
     }
 }
 
@@ -656,6 +858,360 @@ void drawBlackHole(const BlackHoleSnap& b, double now_sec) {
             float a = i * (2.0f * kPi / n) + t * omega;
             Vector2 p{c.x + std::cos(a) * orbit_r, c.y + std::sin(a) * orbit_r};
             DrawCircleV(p, 2.5f, Color{240, 215, 255, 230});
+        }
+    }
+}
+
+// ---- Tidal current band ----
+// A horizontal river stretching the full world width. The visible region the
+// renderer covers is just the on-screen slice -- we never paint thousands of
+// off-screen pixels. Visual design (no arrows, no hard centre-line):
+//   * A feathered cyan-tinted fill with smoothstep alpha at the top + bottom
+//     edges so the band fades into the world.
+//   * Three parallax lanes of *streaks* (short tapered line segments) drifting
+//     along `dir`. Far lanes are dim + slow, near lanes are bright + fast --
+//     gives water-like depth without a literal "this way" indicator.
+//   * A few longer, fainter "current threads" -- horizontal hairline ribbons
+//     scrolling along the band that hint at flow without competing with the
+//     cells.
+//
+// `view_min` / `view_max` clip the visible slice so work scales with what's
+// on-screen, not the 16k-wide world.
+void drawTidalCurrent(const CurrentSnap& c, double now_sec,
+                      int world_w, Vec2 view_min, Vec2 view_max) {
+    const float t = static_cast<float>(now_sec);
+    const float h = c.half_height;
+    if (h <= 0.0f) return;
+
+    const float band_x0 = 0.0f;
+    const float band_x1 = static_cast<float>(world_w);
+    const float band_y0 = c.pos.y - h;
+    const float band_y1 = c.pos.y + h;
+    const float band_yc = c.pos.y;
+
+    const float vx0 = std::max(view_min.x, band_x0);
+    const float vx1 = std::min(view_max.x, band_x1);
+    if (vx0 >= vx1) return;
+    if (band_y1 < view_min.y || band_y0 > view_max.y) return;
+
+    // --- Soft fill with feathered top/bottom edges ---
+    // Sub-strip composite approximates a smoothstep alpha gradient (full at
+    // the centre, 0 at the rim). More strips = smoother fade; 7 is enough
+    // for the eye to read it as continuous.
+    constexpr int kStripsPerSide = 7;
+    const float strip_h = h / static_cast<float>(kStripsPerSide);
+    for (int i = -kStripsPerSide; i < kStripsPerSide; ++i) {
+        const float sy0 = band_yc + i * strip_h;
+        const float sy1 = sy0 + strip_h;
+        const float yc_off = (sy0 + sy1) * 0.5f - band_yc;
+        const float ssy0 = std::max(sy0, view_min.y);
+        const float ssy1 = std::min(sy1, view_max.y);
+        if (ssy0 >= ssy1) continue;
+        float u = 1.0f - (std::abs(yc_off) / h);
+        u = std::clamp(u, 0.0f, 1.0f);
+        // Steeper-than-smoothstep falloff so the band fades quickly at the
+        // rim but stays solid in the middle -- gives a clearer "this is the
+        // water" silhouette.
+        const float s = u * u * u * (u * (u * 6.0f - 15.0f) + 10.0f); // quintic smoothstep
+        // Brighter peak alpha + slight floor so the dim edges still register.
+        const unsigned char a = static_cast<unsigned char>(6.0f + s * 32.0f);
+        DrawRectangle(static_cast<int>(vx0),
+                      static_cast<int>(ssy0),
+                      static_cast<int>(vx1 - vx0),
+                      static_cast<int>(ssy1 - ssy0),
+                      Color{55, 130, 195, a});
+    }
+
+    // --- Long flowing "current threads" ---
+    // A handful of nearly-invisible horizontal hairlines that scroll across
+    // the band at the flow speed. They give a subtle sense of motion across
+    // the whole width without the visual weight of a centre line. Each
+    // thread is at a unique y-offset and has its own phase. Drawn under
+    // the streak particles so the streaks pop on top.
+    constexpr int kThreads = 6;
+    const float thread_speed = std::max(60.0f, c.strength * 1.4f);
+    for (int i = 0; i < kThreads; ++i) {
+        // Distribute threads across the band height, biased toward centre.
+        // Map i in [0, kThreads) to a u in [0, 1] then bias.
+        const float u  = (static_cast<float>(i) + 0.5f) / static_cast<float>(kThreads);
+        // Bias toward centre: 0.5 + (u - 0.5)^3 * sign. Keeps edges sparse.
+        const float bu = 0.5f + (u - 0.5f) * (u - 0.5f) * (u - 0.5f) * 3.5f;
+        const float ty = band_y0 + std::clamp(bu, 0.05f, 0.95f) * (band_y1 - band_y0);
+        // Per-thread alpha falloff toward the edges.
+        const float edge_t = 1.0f - std::abs(bu - 0.5f) * 2.0f;
+        const float edge_a = std::clamp(edge_t * 1.4f, 0.0f, 1.0f);
+        // Per-thread phase so they're not synchronized.
+        uint32_t   h1 = static_cast<uint32_t>(c.id) * 0x9E3779B9u
+                      + static_cast<uint32_t>(i) * 0x85EBCA6Bu;
+        const float phase_off = ((h1 >> 8) & 0xFFFFu) / 65535.0f * 1.0f;
+        // Tiny vertical wobble so threads breathe.
+        const float wobble = std::sin(t * 0.6f + (h1 & 0xFFFu) * 0.001f) * 4.0f;
+        const float y      = ty + wobble;
+
+        // Render the thread as a series of short dashes scrolling along x.
+        const float dash_len   = 38.0f;
+        const float gap_len    = 110.0f;
+        const float cycle      = dash_len + gap_len;
+        const float scroll     = t * thread_speed * c.dir.x + phase_off * cycle;
+        // Snap to cycle grid. Start one cycle before the visible slice so a
+        // dash entering from the side renders cleanly.
+        const int ix0 = static_cast<int>(std::floor((vx0 - scroll) / cycle)) - 1;
+        const int ix1 = static_cast<int>(std::ceil ((vx1 - scroll) / cycle)) + 1;
+        for (int ix = ix0; ix <= ix1; ++ix) {
+            const float dash_x0 = ix * cycle + scroll;
+            const float dash_x1 = dash_x0 + dash_len;
+            const float ddx0 = std::max(dash_x0, vx0);
+            const float ddx1 = std::min(dash_x1, vx1);
+            if (ddx0 >= ddx1) continue;
+            const unsigned char a = static_cast<unsigned char>(35.0f * edge_a);
+            DrawLineEx(Vector2{ddx0, y}, Vector2{ddx1, y}, 1.5f,
+                       Color{150, 200, 235, a});
+        }
+    }
+
+    // --- Streak particles in parallax lanes ---
+    // Three lanes at different scales/speeds for depth. Each "particle" is
+    // rendered as a tapered streak (a short bright head + a dimmer trailing
+    // tail) so the water reads as flowing, not bubbling.
+    struct LaneCfg {
+        float density_stride;   // smaller = more particles
+        float speed_mult;       // 1.0 = base; <1 = far/slow, >1 = near/fast
+        float streak_len;       // pixel length of each streak
+        float head_alpha;       // brightest pixel alpha
+        float thickness;        // line thickness
+        int   y_div;            // dither: only every Nth row gets a particle
+    };
+    const LaneCfg lanes[] = {
+        // far layer: subtle, long, slow
+        { 220.0f, 0.55f, 28.0f, 70.0f,  1.5f, 1 },
+        // mid layer: balanced
+        { 130.0f, 0.85f, 22.0f, 130.0f, 1.8f, 1 },
+        // near layer: bright, faster, more density
+        {  85.0f, 1.20f, 18.0f, 200.0f, 2.2f, 1 },
+    };
+    const float base_speed_px = std::max(50.0f, c.strength * 1.4f);
+
+    for (int li = 0; li < 3; ++li) {
+        const LaneCfg& L = lanes[li];
+        const float stride = L.density_stride;
+        const float lane_speed = base_speed_px * L.speed_mult;
+        const float phase = (t * lane_speed * c.dir.x) / stride;
+        // Stable per-lane hash so different bands don't draw identical streaks.
+        const uint32_t lane_hash = static_cast<uint32_t>(c.id) * 2654435761u
+                                 + static_cast<uint32_t>(li) * 0xB7E15163u;
+        const float lane_jitter = ((lane_hash >> 8) & 0xFFFFu) / 65535.0f;
+
+        const int ix0 = static_cast<int>(std::floor(vx0 / stride)) - 1;
+        const int ix1 = static_cast<int>(std::ceil (vx1 / stride)) + 1;
+        for (int ix = ix0; ix <= ix1; ++ix) {
+            // World-x of the streak HEAD.
+            const float px = (static_cast<float>(ix) + lane_jitter
+                              + std::fmod(phase, 1.0f)) * stride;
+            if (px < vx0 - L.streak_len || px > vx1 + L.streak_len) continue;
+            if (px < band_x0 || px > band_x1) continue;
+
+            // Deterministic per-particle hash for y-offset + size jitter.
+            uint32_t h2 = static_cast<uint32_t>(ix) * 0x85EBCA6Bu
+                        + lane_hash;
+            // y in [-0.85, +0.85] * h so streaks rarely sit at the very rim.
+            float y_norm = ((h2 >> 8) & 0xFFFFu) / 65535.0f;       // 0..1
+            y_norm = (y_norm - 0.5f) * 1.7f;                       // -0.85..0.85
+            // Per-particle wobble keeps the lane organic across time.
+            float wobble = std::sin(t * 1.5f + (h2 & 0xFFFu) * 0.0017f) * 5.0f;
+            const float py = band_yc + y_norm * h + wobble;
+
+            // Edge-aware alpha: dim toward the band rim AND toward the lane
+            // extremes so streaks at very high or very low y read as fading.
+            const float edge_t = 1.0f - std::abs(y_norm) / 0.85f;
+            const float edge_a = std::clamp(edge_t * 1.4f, 0.0f, 1.0f);
+
+            // Tail x is "behind" the head along the flow direction. Negative
+            // sign because if flow is +x, streak trails to the LEFT.
+            const float head_x = px;
+            const float tail_x = px - c.dir.x * L.streak_len;
+
+            const unsigned char head_a = static_cast<unsigned char>(L.head_alpha * edge_a);
+            const unsigned char mid_a  = static_cast<unsigned char>(L.head_alpha * 0.6f * edge_a);
+            const unsigned char tail_a = static_cast<unsigned char>(L.head_alpha * 0.18f * edge_a);
+
+            // Render as three overlapping line segments to fake a tapered
+            // alpha gradient (raylib DrawLineEx doesn't support per-vertex
+            // alpha). Tail segment is longest + dimmest; head is shortest +
+            // brightest. Visually reads as a comet-tail streak.
+            const float t1_x = px - c.dir.x * L.streak_len * 0.66f;
+            const float t2_x = px - c.dir.x * L.streak_len * 0.33f;
+            DrawLineEx(Vector2{tail_x, py}, Vector2{t1_x, py}, L.thickness * 0.6f,
+                       Color{140, 195, 235, tail_a});
+            DrawLineEx(Vector2{t1_x,  py}, Vector2{t2_x, py}, L.thickness * 0.85f,
+                       Color{180, 215, 245, mid_a});
+            DrawLineEx(Vector2{t2_x,  py}, Vector2{head_x, py}, L.thickness,
+                       Color{220, 240, 255, head_a});
+            // Bright head pip: a tiny circle at the leading tip so the
+            // streak looks like the head is "pulling" the trail.
+            DrawCircleV(Vector2{head_x, py}, L.thickness * 0.6f,
+                        Color{235, 250, 255, head_a});
+        }
+    }
+}
+
+// ---- Wormhole ----
+// Shader-driven blue swirl, modelled on the black-hole shader but tuned for
+// a *portal* feel rather than a destructive sink:
+//   * Cool blue / cyan palette instead of red-orange.
+//   * BRIGHT cyan-white aperture in the centre (vs the black hole's dark
+//     event horizon) -- this is a doorway, not the abyss.
+//   * Four-armed spiral with a counter-rotating second arm set so the
+//     portal feels "energised".
+//
+// The shader receives `u_spin = wh.spin_phase` from the snapshot, so every
+// client renders the swirl at the same angle on the same tick. With the
+// host's spin_phase advancing deterministically (Simulation::buildSnapshot)
+// the two endpoints of a pair end up perfectly counter-rotated visually
+// because we negate spin for the partner inside the shader call below.
+void drawWormhole(const WormholeSnap& wh, double now_sec) {
+    ensureWormholeGfx();
+    const Vector2 center{wh.pos.x, wh.pos.y};
+    const float   r = wh.radius;
+    const float   t = static_cast<float>(now_sec);
+
+    // Outer pull-ring tell -- soft dark-purple disc + thin rim ring,
+    // matching the moodier palette of the shader pass. Shows the capture
+    // radius without lighting up the screen.
+    {
+        float pulse = 0.5f + 0.5f * std::sin(t * 1.0f);
+        unsigned char a = static_cast<unsigned char>(24 + pulse * 18);
+        DrawCircleV(center, r * 1.55f,
+                    Color{60, 30, 110, static_cast<unsigned char>(a / 2)});
+        DrawCircleLinesV(center, r * 1.55f,
+                         Color{130, 80, 180, static_cast<unsigned char>(a)});
+    }
+
+    if (g_wh_gfx.initialized) {
+        // Shader pass: a 1x1 white texture stretched to a square covering
+        // the disc. The fragment shader handles all the visual heavy
+        // lifting (spiral, aperture, rim glow). disc_extent slightly larger
+        // than radius gives the alpha falloff room to fade out smoothly.
+        const float disc_extent = r * 2.0f;
+        const Rectangle dst{center.x - disc_extent, center.y - disc_extent,
+                            disc_extent * 2.0f, disc_extent * 2.0f};
+        // Aperture in shader UV space: uv is [-1, 1] across dst, so r/disc
+        // is the normalised aperture radius.
+        const float horizon_norm = r / disc_extent;
+        // Sign-flip the spin every other endpoint of a pair (id is odd
+        // for the second endpoint thanks to spawnWormholePair's
+        // increment order) so paired portals counter-rotate visually.
+        const float spin = wh.spin_phase * ((wh.id & 1u) ? -1.0f : 1.0f);
+
+        BeginShaderMode(g_wh_gfx.shader);
+        SetShaderValue(g_wh_gfx.shader, g_wh_gfx.loc_time,    &t,            SHADER_UNIFORM_FLOAT);
+        SetShaderValue(g_wh_gfx.shader, g_wh_gfx.loc_horizon, &horizon_norm, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(g_wh_gfx.shader, g_wh_gfx.loc_spin,    &spin,         SHADER_UNIFORM_FLOAT);
+        DrawTexturePro(g_wh_gfx.white,
+                       Rectangle{0, 0, 1, 1},
+                       dst,
+                       Vector2{0, 0},
+                       0.0f,
+                       WHITE);
+        EndShaderMode();
+    } else {
+        // Fallback if shader compilation failed: dim purple core + magenta
+        // rim. Less interesting but the portal stays visible.
+        DrawCircleV(center, r * 1.10f, Color{40, 20, 70, 220});
+        DrawCircleV(center, r * 0.60f, Color{30, 12, 55, 240});
+        DrawCircleLinesV(center, r,    Color{140, 60, 160, 230});
+    }
+}
+
+// ---- Geyser ----
+// Three visual phases mapping to GeyserSnap::state:
+//   0 = Idle: dim bottom pool + slow lazy ring at the base.
+//   1 = Telegraph: warning ring grows + flickers + brightens as it approaches
+//        eruption. phase_norm reads as "how imminent".
+//   2 = Erupt: bright burst flare with radiating spokes. Held one tick.
+void drawGeyser(const GeyserSnap& g, double now_sec) {
+    const Vector2 c{g.pos.x, g.pos.y};
+    const float   r = g.radius;
+    const float   t = static_cast<float>(now_sec);
+
+    // ---- Base pool (always present) ----
+    // Dark cyan-teal disc with a slightly brighter rim. Reads as a calm
+    // pool when Idle; the higher-state layers paint over it.
+    {
+        DrawCircleV(c, r * 0.95f, Color{20, 50, 70, 210});
+        DrawCircleV(c, r * 0.70f, Color{30, 70, 95, 220});
+        DrawCircleLinesV(c, r, Color{90, 160, 200, 110});
+    }
+
+    switch (g.state) {
+        case 0: { // Idle
+            // Slow rotating cross of faint hints at the base. Cheap visual
+            // "this thing exists" without competing with active threats.
+            float pulse = 0.5f + 0.5f * std::sin(t * 0.6f);
+            unsigned char a = static_cast<unsigned char>(35 + pulse * 35);
+            float k = t * 0.3f;
+            for (int i = 0; i < 4; ++i) {
+                float ang = k + i * (kPi * 0.5f);
+                Vector2 p{c.x + std::cos(ang) * r * 0.55f,
+                          c.y + std::sin(ang) * r * 0.55f};
+                DrawCircleV(p, 3.5f, Color{120, 200, 220, a});
+            }
+            // "Charging" radial sweep: maps phase_norm to a thin filled wedge
+            // around the rim so attentive players can read "next eruption
+            // soon" from the visual alone.
+            if (g.phase_norm > 0.05f) {
+                const int n = std::min<int>(28, static_cast<int>(g.phase_norm * 28.0f));
+                for (int i = 0; i < n; ++i) {
+                    float ang = -kPi * 0.5f + i * (kPi * 2.0f / 28.0f);
+                    Vector2 p{c.x + std::cos(ang) * r * 0.92f,
+                              c.y + std::sin(ang) * r * 0.92f};
+                    DrawCircleV(p, 2.0f, Color{120, 220, 240, 180});
+                }
+            }
+            break;
+        }
+        case 1: { // Telegraph
+            // Warning ring grows from r*0.4 -> r*1.6 across phase_norm.
+            // Color shifts cyan -> warm orange as eruption approaches so the
+            // player feels the rising urgency.
+            float p = std::clamp(g.phase_norm, 0.0f, 1.0f);
+            float ring_r = r * (0.4f + p * 1.2f);
+            unsigned char ir = static_cast<unsigned char>(120 + p * 130);
+            unsigned char ig = static_cast<unsigned char>(220 - p * 90);
+            unsigned char ib = static_cast<unsigned char>(240 - p * 180);
+            // Pulsing alpha gives a "growing urgency" beat.
+            float beat = 0.5f + 0.5f * std::sin(t * (3.0f + p * 12.0f));
+            unsigned char a = static_cast<unsigned char>(160 + beat * 95 * p);
+            DrawCircleLinesV(c, ring_r,
+                             Color{ir, ig, ib, a});
+            DrawCircleLinesV(c, ring_r * 1.04f,
+                             Color{ir, ig, ib,
+                                   static_cast<unsigned char>(a * 0.5f)});
+            // Rising spout silhouette inside -- vertical streak suggesting
+            // the upcoming eruption.
+            float spout_h = r * 0.5f * p;
+            DrawCircleV(Vector2{c.x, c.y - spout_h * 0.3f},
+                        r * 0.20f * (0.6f + p * 0.6f),
+                        Color{200, 230, 250,
+                              static_cast<unsigned char>(120 + p * 100)});
+            break;
+        }
+        case 2: { // Erupt
+            // One-tick flash: bright burst + 12 outward spokes. Held for one
+            // sim tick on the host (one snapshot frame); clients will see
+            // it for ~33ms which reads clearly against the surrounding play.
+            DrawCircleV(c, r * 1.55f, Color{255, 220, 140, 90});
+            DrawCircleV(c, r * 1.10f, Color{255, 230, 170, 160});
+            DrawCircleV(c, r * 0.65f, Color{255, 245, 200, 220});
+            for (int i = 0; i < 12; ++i) {
+                float ang = (i * (kPi * 2.0f / 12.0f));
+                Vector2 a{c.x + std::cos(ang) * r * 0.65f,
+                          c.y + std::sin(ang) * r * 0.65f};
+                Vector2 b{c.x + std::cos(ang) * r * 1.85f,
+                          c.y + std::sin(ang) * r * 1.85f};
+                DrawLineEx(a, b, 4.0f, Color{255, 220, 130, 220});
+            }
+            DrawCircleLinesV(c, r * 1.55f, Color{255, 200, 110, 200});
+            break;
         }
     }
 }
@@ -962,6 +1518,28 @@ void unloadRendererGpuResources() {
     // procedural shaders / textures get introduced.
     unloadBlackHoleGfx();
     unloadCometGfx();
+    unloadWormholeGfx();
+}
+
+void Renderer::drawScreenBackdrop(int sw, int sh) const {
+    // Vertical gradient base. Subtle (top ~12 brightness -> bottom ~24)
+    // so the grid still reads cleanly against it. We're going for "deepening
+    // toward the bottom" rather than a strong mood gradient.
+    DrawRectangleGradientV(0, 0, sw, sh,
+                           Color{12, 14, 22, 255},
+                           Color{20, 24, 36, 255});
+
+    // Soft corner vignette: four directional gradients that fade from black
+    // at the edges to transparent toward the center. Together they look
+    // approximately radial without the cost of a real radial gradient.
+    DrawRectangleGradientV(0, 0, sw, 140,
+                           Color{0, 0, 0, 120}, Color{0, 0, 0, 0});
+    DrawRectangleGradientV(0, sh - 140, sw, 140,
+                           Color{0, 0, 0, 0}, Color{0, 0, 0, 120});
+    DrawRectangleGradientH(0, 0, 120, sh,
+                           Color{0, 0, 0, 90}, Color{0, 0, 0, 0});
+    DrawRectangleGradientH(sw - 120, 0, 120, sh,
+                           Color{0, 0, 0, 0}, Color{0, 0, 0, 90});
 }
 
 void Renderer::drawWorld(const Interpolator& interp,
@@ -983,6 +1561,33 @@ void Renderer::drawWorld(const Interpolator& interp,
     // Single GetTime() call for the whole frame; used by halo pulses, invuln flashes, etc.
     const double now_sec = GetTime();
 
+    // Tidal current bands: lowest layer of "ambient terrain". Each band
+    // stretches the full world width but the visible-slice clip inside
+    // drawTidalCurrent keeps the work bounded by the camera AABB. AABB-cull
+    // by y only (x always overlaps a band that spans the world width).
+    for (const auto& cur : curr.currents) {
+        const float band_y0 = cur.pos.y - cur.half_height;
+        const float band_y1 = cur.pos.y + cur.half_height;
+        if (band_y1 < view_min.y || band_y0 > view_max.y) continue;
+        drawTidalCurrent(cur, now_sec, tuning.world_width, view_min, view_max);
+    }
+
+    // Geysers: stationary points; the eruption itself spawns food which
+    // takes care of being visible via the regular food loop. Drawn before
+    // black holes for the same layering reason.
+    for (const auto& g : curr.geysers) {
+        if (!circleInView(g.pos, g.radius * 2.0f, view_min, view_max)) continue;
+        drawGeyser(g, now_sec);
+    }
+
+    // Wormholes: drawn before black holes but after currents/geysers so the
+    // bright vortex sits on top of ambient flow without being covered by a
+    // black hole's accretion disc.
+    for (const auto& wh : curr.wormholes) {
+        if (!circleInView(wh.pos, wh.radius * 1.5f, view_min, view_max)) continue;
+        drawWormhole(wh, now_sec);
+    }
+
     // Black holes: drawn before food/viruses/cells so the swirling visuals appear
     // as a backdrop, with cells layered on top -- except hiding cells, which the
     // black hole's occupancy dots represent instead.
@@ -992,7 +1597,28 @@ void Renderer::drawWorld(const Interpolator& interp,
     }
 
     // Food: frustum-cull first (3600 entries × 16k² world means typically <1% on-screen).
-    // High-tier ambient food gets a pulsing halo so rare drops stand out from far away.
+    // Visual-only size bump for food, tier-aware. The sim's foodRadius
+    // (eating collisions) stays unchanged; only the rendered body is
+    // enlarged. Common food keeps its current 1.40x scale; each higher
+    // tier gets a progressively bigger multiplier so rare drops are
+    // *obviously* rare from across the map. With sim radii of 4/5/5.5/
+    // 6.5/8.5/9.5 these scales produce visible diameters roughly
+    // 5.6/7.5/9.1/12/15.7/20 px -- a clear visual hierarchy.
+    auto foodVisualScale = [](float mass) {
+        if (mass >= 30.0f) return 2.10f; // legendary
+        if (mass >= 15.0f) return 1.85f; // settled / ejected pellets
+        if (mass >= 8.0f)  return 1.85f; // epic
+        if (mass >= 4.0f)  return 1.65f; // rare
+        if (mass >= 2.0f)  return 1.50f; // uncommon
+        return 1.40f;                    // common
+    };
+
+    // Render food with depth: per-pellet draw uses three (or four) layers --
+    // a soft ambient glow halo (everyone), an optional pulsing halo for rare+
+    // tiers (existing behaviour, re-scaled), the main coloured body, and a
+    // small upper-left highlight dot for a hint of dimensionality. The
+    // highlight position is deterministic from the food id so it doesn't
+    // dance frame-to-frame.
     for (const auto& f : curr.food) {
         if (!pointInView(f.pos, view_min, view_max)) continue;
         Vec2 pos = f.pos;
@@ -1005,7 +1631,8 @@ void Renderer::drawWorld(const Interpolator& interp,
             }
         }
         Color c = foodColor(f);
-        float r = foodRadius(f.mass);
+        const float r_sim    = foodRadius(f.mass);
+        const float r_body   = r_sim * foodVisualScale(f.mass);
         const bool stationary = lengthSq(f.vel) < 50.0f * 50.0f;
 
         // Legendary food (mass 36): pulse the body colour between deep purple and
@@ -1023,20 +1650,68 @@ void Renderer::drawWorld(const Interpolator& interp,
             c.b = static_cast<unsigned char>(cool.b + (hot.b - cool.b) * pulse);
         }
 
+        // ---- Layer 1: ambient soft glow (every pellet, including commons) ----
+        // Subtle so it doesn't carpet-bomb the view; lifts pellets off the
+        // grid backdrop. Tiered alpha so higher-mass food still reads as
+        // brighter than the common ones via this layer alone.
+        {
+            unsigned char ambient_a =
+                  f.mass >= 30.0f ? 75u
+                : f.mass >= 10.0f ? 55u
+                : f.mass >=  5.0f ? 45u
+                : f.mass >=  2.0f ? 35u
+                : /* common  */    28u;
+            DrawCircleV(Vector2{pos.x, pos.y}, r_body * 1.85f,
+                        Color{c.r, c.g, c.b, ambient_a});
+        }
+
+        // ---- Layer 2: rare+ pulsing halo (existing behaviour, re-tuned for the
+        //               larger body) ----
         if (stationary && f.mass >= 5.0f) {
             float phase = static_cast<float>(f.id % 64) * 0.1f;
             float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(now_sec) * 4.0f + phase);
-            // Legendary halo is brighter and bigger so the drop reads as "rare" from
-            // far across the world.
             float halo_strength = legendary ? 1.9f
                                 : (f.mass >= 10.0f ? 1.0f : 0.55f);
-            float halo_r_mult   = legendary ? 2.5f : 1.9f;
+            float halo_r_mult   = legendary ? 2.4f : 1.8f;
             unsigned char glow_a = static_cast<unsigned char>(
                 std::min(255.0f, (35.0f + pulse * 50.0f) * halo_strength));
-            DrawCircleV(Vector2{pos.x, pos.y}, r * halo_r_mult,
+            DrawCircleV(Vector2{pos.x, pos.y}, r_body * halo_r_mult,
                         Color{c.r, c.g, c.b, glow_a});
         }
-        DrawCircleV(Vector2{pos.x, pos.y}, r, c);
+
+        // ---- Layer 3: darkened rim for body definition ----
+        // Slightly larger circle in a darkened version of `c`, drawn under
+        // the main body. Gives the pellet a subtle outline without an
+        // explicit hard stroke.
+        {
+            Color rim{
+                static_cast<unsigned char>(c.r * 0.55f),
+                static_cast<unsigned char>(c.g * 0.55f),
+                static_cast<unsigned char>(c.b * 0.55f),
+                c.a,
+            };
+            DrawCircleV(Vector2{pos.x, pos.y}, r_body + 0.6f, rim);
+        }
+
+        // ---- Layer 4: main body ----
+        DrawCircleV(Vector2{pos.x, pos.y}, r_body, c);
+
+        // ---- Layer 5: upper-left highlight ----
+        // Small bright dot offset toward the "light source" (upper-left).
+        // Reads as a tiny specular highlight, giving the flat circle a hint
+        // of 3D. Brighter version of `c`, scaled inward by ~30% of the body
+        // radius so it sits firmly inside.
+        {
+            Color hi{
+                static_cast<unsigned char>(std::min(255, (int)c.r + 80)),
+                static_cast<unsigned char>(std::min(255, (int)c.g + 80)),
+                static_cast<unsigned char>(std::min(255, (int)c.b + 80)),
+                220,
+            };
+            const float hi_off = r_body * 0.35f;
+            DrawCircleV(Vector2{pos.x - hi_off, pos.y - hi_off},
+                        r_body * 0.30f, hi);
+        }
     }
 
     // Power-up pickups. They don't move, so no interpolation needed. Drawn before
@@ -1169,8 +1844,69 @@ void Renderer::drawMinimap(const Interpolator& interp,
 
     const Snapshot& snap = interp.curr();
 
-    // Black holes first (under everything else). Pull radius as a faint ring, event
-    // horizon as a filled purple disc.
+    // Tidal current bands: thin faint cyan horizontal strips spanning the
+    // full minimap width. Just the fill + a tiny direction tick -- no
+    // centre-line, matching the in-world band visual.
+    for (const auto& cur : snap.currents) {
+        const float h_px  = std::max(1.0f, cur.half_height * sy);
+        const float my    = toMy(cur.pos.y);
+        // Strip fill (full minimap width).
+        DrawRectangle(x0, static_cast<int>(my - h_px),
+                      box_w, static_cast<int>(h_px * 2.0f),
+                      Color{80, 150, 220, 35});
+        // Direction tick at the centre of the visible minimap so the player
+        // can read which way the current flows at a glance.
+        const float cx = x0 + box_w * 0.5f;
+        const Vector2 a{cx - cur.dir.x * 5.0f, my};
+        const Vector2 b{cx + cur.dir.x * 5.0f, my};
+        DrawLineEx(a, b, 1.5f, Color{220, 240, 255, 220});
+        // Arrowhead pip.
+        DrawCircleV(b, 1.5f, Color{220, 240, 255, 230});
+    }
+
+    // Geysers: small steady-state pip; brighter pip when erupting / about to
+    // erupt so attentive players can pick the next event without looking up.
+    for (const auto& g : snap.geysers) {
+        const float mx = toMx(g.pos.x);
+        const float my = toMy(g.pos.y);
+        if (g.state == 2 /* Erupt */) {
+            // Eruption flash on the minimap too -- big amber dot.
+            DrawCircleV(Vector2{mx, my}, 5.0f, Color{255, 220, 130, 255});
+            DrawCircleLinesV(Vector2{mx, my}, 7.0f, Color{255, 200, 110, 220});
+        } else if (g.state == 1 /* Telegraph */) {
+            unsigned char a = static_cast<unsigned char>(160 + g.phase_norm * 90);
+            DrawCircleV(Vector2{mx, my}, 3.5f, Color{255, 180, 90, a});
+        } else {
+            DrawCircleV(Vector2{mx, my}, 2.5f, Color{120, 200, 220, 220});
+        }
+    }
+
+    // Wormholes: paired endpoint dots connected by a thin link so the player
+    // can plan teleports from the minimap.
+    for (const auto& wh : snap.wormholes) {
+        const float mx = toMx(wh.pos.x);
+        const float my = toMy(wh.pos.y);
+        DrawCircleV(Vector2{mx, my}, 3.0f, Color{220, 200, 255, 230});
+        DrawCircleLinesV(Vector2{mx, my}, 5.0f, Color{170, 150, 240, 180});
+        // Pair-link line: drawn once per pair (the partner-side iteration
+        // would draw the same line, so we only render when this endpoint's
+        // id is the lower of the pair to avoid double-draw).
+        if (wh.id < wh.pair_id) {
+            const WormholeSnap* partner = nullptr;
+            for (const auto& other : snap.wormholes) {
+                if (other.id == wh.pair_id) { partner = &other; break; }
+            }
+            if (partner) {
+                const float px = toMx(partner->pos.x);
+                const float py = toMy(partner->pos.y);
+                DrawLineEx(Vector2{mx, my}, Vector2{px, py}, 1.0f,
+                           Color{160, 140, 220, 90});
+            }
+        }
+    }
+
+    // Black holes (under cells but over ambient terrain). Pull radius as a
+    // faint ring, event horizon as a filled purple disc.
     for (const auto& b : snap.blackholes) {
         const float mx = toMx(b.pos.x);
         const float my = toMy(b.pos.y);

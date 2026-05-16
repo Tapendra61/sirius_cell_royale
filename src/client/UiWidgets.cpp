@@ -194,6 +194,40 @@ bool drawChoice(Rectangle r, const char* label,
     return changed;
 }
 
+bool drawPresetRow(Rectangle r, const char* label,
+                   const char* const* options, int option_count, int* index) {
+    if (!options || !index || option_count <= 0) return false;
+
+    DrawText(label, static_cast<int>(r.x), static_cast<int>(r.y - 22), 16,
+             Color{220, 225, 240, 220});
+
+    bool changed = false;
+    const float gap   = 6.0f;
+    const float total = r.width - gap * (option_count - 1);
+    const float btn_w = total / option_count;
+    for (int i = 0; i < option_count; ++i) {
+        Rectangle br{r.x + i * (btn_w + gap), r.y, btn_w, r.height};
+        const bool selected = (i == *index);
+        Color fill = selected
+            ? Color{70, 150, 110, 255}
+            : Color{40, 50, 76, 255};
+        Color text_c = selected
+            ? Color{255, 250, 220, 255}
+            : Color{210, 220, 240, 220};
+        if (drawButton(br, options[i], 16, fill, text_c)) {
+            if (!selected) {
+                *index = i;
+                changed = true;
+            }
+        }
+        if (selected) {
+            // Bright accent ring around the active chip.
+            DrawRectangleRoundedLines(br, 0.25f, 6, Color{255, 220, 130, 220});
+        }
+    }
+    return changed;
+}
+
 bool drawToggle(Rectangle r, const char* label, bool* value) {
     if (!value) return false;
     DrawText(label, static_cast<int>(r.x), static_cast<int>(r.y - 22), 16,

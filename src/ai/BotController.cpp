@@ -353,23 +353,59 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
             d.chosen_state = BotState::SeekFood;
             d.move_target  = food->pos;
         } else {
-            d.chosen_state    = BotState::Wander;
-            Tick period_ticks = secondsToTicks(w.wander_period_sec);
-            if (now >= mind.wander_set_at + period_ticks
-                || lengthSq(mind.wander_target - self.pos) < 1600.0f) {
-                mind.wander_target = {
-                    rng.rangeFloat(0.0f, static_cast<float>(world.width())),
-                    rng.rangeFloat(0.0f, static_cast<float>(world.height())),
-                };
-                mind.wander_set_at = now;
+            // Before falling back to random wandering, see if there's a
+            // soon-erupting geyser within a reasonable range. Telegraphed
+            // geysers are a known-good food objective, so bots that aren't
+            // hunting prey will converge on them -- which is exactly the
+            // "natural fight zone" dynamic geysers were designed to create.
+            // We only consider geysers that are actively telegraphing OR are
+            // mid-eruption (the food cluster is still fresh at that point).
+            const Geyser* geyser_goal = nullptr;
+            float          best_geyser_score = 0.0f;
+            for (const auto& g : world.geysers()) {
+                if (g.state != GeyserState::Telegraph
+                    && g.state != GeyserState::Erupt) continue;
+                float d2 = lengthSq(g.pos - self.pos);
+                // Range cap: 4500px. Anything farther isn't worth abandoning
+                // a wander direction for, and bot AI shouldn't pull a cell
+                // halfway across a 16k world for one geyser.
+                if (d2 > 4500.0f * 4500.0f) continue;
+                // Score = 1 / (1 + distance). Telegraph state weighted more
+                // than Erupt (bots want to be IN POSITION when the food
+                // appears, not chase pellets after the fact).
+                float weight = (g.state == GeyserState::Telegraph) ? 1.2f : 0.7f;
+                float score  = weight / (1.0f + std::sqrt(d2) * 0.001f);
+                if (score > best_geyser_score) {
+                    best_geyser_score = score;
+                    geyser_goal       = &g;
+                }
             }
-            d.move_target = mind.wander_target;
-            if (w.corner_pull > 0.0f) {
-                Vec2 corner{
-                    self.pos.x < world.width()  * 0.5f ? 600.0f : world.width()  - 600.0f,
-                    self.pos.y < world.height() * 0.5f ? 600.0f : world.height() - 600.0f,
-                };
-                d.move_target = lerp(d.move_target, corner, w.corner_pull);
+            if (geyser_goal) {
+                d.chosen_state    = BotState::Wander;
+                d.move_target     = geyser_goal->pos;
+                // Refresh the wander cache so we don't immediately re-target
+                // somewhere random next tick.
+                mind.wander_target = geyser_goal->pos;
+                mind.wander_set_at = now;
+            } else {
+                d.chosen_state    = BotState::Wander;
+                Tick period_ticks = secondsToTicks(w.wander_period_sec);
+                if (now >= mind.wander_set_at + period_ticks
+                    || lengthSq(mind.wander_target - self.pos) < 1600.0f) {
+                    mind.wander_target = {
+                        rng.rangeFloat(0.0f, static_cast<float>(world.width())),
+                        rng.rangeFloat(0.0f, static_cast<float>(world.height())),
+                    };
+                    mind.wander_set_at = now;
+                }
+                d.move_target = mind.wander_target;
+                if (w.corner_pull > 0.0f) {
+                    Vec2 corner{
+                        self.pos.x < world.width()  * 0.5f ? 600.0f : world.width()  - 600.0f,
+                        self.pos.y < world.height() * 0.5f ? 600.0f : world.height() - 600.0f,
+                    };
+                    d.move_target = lerp(d.move_target, corner, w.corner_pull);
+                }
             }
         }
         mind.fled_threat_id = INVALID_ENTITY;

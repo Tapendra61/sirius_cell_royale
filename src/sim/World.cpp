@@ -122,6 +122,45 @@ EntityId World::spawnComet(Vec2 pos, Vec2 vel, float radius,
     return c.id;
 }
 
+EntityId World::spawnTidalCurrent(Vec2 pos, Vec2 dir, float half_height, float strength) {
+    TidalCurrent c;
+    c.id          = next_id_++;
+    c.pos         = pos;
+    c.dir         = dir;
+    c.half_height = half_height;
+    c.strength    = strength;
+    currents_.push_back(c);
+    return c.id;
+}
+
+std::pair<EntityId, EntityId> World::spawnWormholePair(Vec2 a, Vec2 b, float radius) {
+    Wormhole wa;
+    wa.id     = next_id_++;
+    wa.pos    = a;
+    wa.radius = radius;
+    Wormhole wb;
+    wb.id     = next_id_++;
+    wb.pos    = b;
+    wb.radius = radius;
+    // Cross-link before push_back so each endpoint's pair_id is correct.
+    wa.pair_id = wb.id;
+    wb.pair_id = wa.id;
+    wormholes_.push_back(wa);
+    wormholes_.push_back(wb);
+    return {wa.id, wb.id};
+}
+
+EntityId World::spawnGeyser(Vec2 pos, float radius, Tick first_event_tick) {
+    Geyser g;
+    g.id              = next_id_++;
+    g.pos             = pos;
+    g.radius          = radius;
+    g.state           = GeyserState::Idle;
+    g.next_event_tick = first_event_tick;
+    geysers_.push_back(g);
+    return g.id;
+}
+
 Cell* World::findCell(EntityId id) {
     for (auto& c : cells_) {
         if (c.id == id) return &c;
@@ -202,6 +241,20 @@ Comet* World::findComet(EntityId id) {
 const Comet* World::findComet(EntityId id) const {
     for (const auto& c : comets_) {
         if (c.id == id) return &c;
+    }
+    return nullptr;
+}
+
+Wormhole* World::findWormhole(EntityId id) {
+    for (auto& w : wormholes_) {
+        if (w.id == id) return &w;
+    }
+    return nullptr;
+}
+
+const Wormhole* World::findWormhole(EntityId id) const {
+    for (const auto& w : wormholes_) {
+        if (w.id == id) return &w;
     }
     return nullptr;
 }

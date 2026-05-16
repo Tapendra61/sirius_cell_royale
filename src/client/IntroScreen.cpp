@@ -12,7 +12,14 @@ namespace {
 // Seed for the intro's mini-sim. Deterministic so the demo plays the same way every
 // time we hit it -- if it ever looks weird in playtest, we can reproduce it.
 constexpr uint64_t kIntroSeed     = 0xC311'2025ULL;
-constexpr int      kIntroStartMass = 360; // above default split threshold (~300)
+// Tuned for the new 19s script. The cell splits at 4s (halving its mass),
+// then drifts + ejects + eats for ~8s before the Mass Blast (Q) fires at
+// 12.8s. Q requires >= 300 mass on the caster. With base 700 -> 350 post-
+// split, even after ~8s of decay (~4/s) + 2 ejects (-36) we land near 280
+// from decay alone but food intake keeps the largest cell comfortably above
+// 300 so the blast fires reliably. Doubles as "the demo cell starts big",
+// which reads as the cinematic-trailer mood we want here anyway.
+constexpr int      kIntroStartMass = 700;
 
 constexpr float kSimDt = 1.0f / 30.0f;
 constexpr int   kTicksPerSec = 30;
@@ -48,18 +55,43 @@ void IntroScreen::buildScript() {
     const Vec2 c{static_cast<float>(tuning_.world_width)  * 0.5f,
                  static_cast<float>(tuning_.world_height) * 0.5f};
 
-    // Each row: (when, what, where for Move). Movement targets are offsets from the
-    // world centre, picked to give a curving exploration path through food clusters.
+    // Each row: (when, what, where for Move). Movement targets are offsets
+    // from the world centre, picked to give a curving exploration path
+    // through food clusters. The script is sequenced to line up with the
+    // text overlays in render() -- each ability fires ~0.3s BEFORE its
+    // overlay appears, so the visual cue lands first and the text confirms
+    // what the player just saw.
     const ScriptCmd rows[] = {
+        // ----- 0-4s: drift + eat food (MOVE beat) -----
         {secToTick(0.5f),  CmdKind::Move,  Vec2{c.x + 800.0f,  c.y - 500.0f}},
         {secToTick(2.0f),  CmdKind::Move,  Vec2{c.x + 1400.0f, c.y + 600.0f}},
+
+        // ----- 4-6s: SPLIT beat -----
         {secToTick(4.0f),  CmdKind::Split, {}},
         {secToTick(4.5f),  CmdKind::Move,  Vec2{c.x + 2200.0f, c.y + 200.0f}},
+
+        // ----- 6-8s: DASH beat -----
         {secToTick(6.5f),  CmdKind::Dash,  {}},
         {secToTick(7.5f),  CmdKind::Move,  Vec2{c.x + 1800.0f, c.y - 900.0f}},
-        {secToTick(9.5f),  CmdKind::Move,  Vec2{c.x - 600.0f,  c.y - 1200.0f}},
-        {secToTick(11.5f), CmdKind::Move,  Vec2{c.x - 1500.0f, c.y - 300.0f}},
-        {secToTick(13.0f), CmdKind::Move,  Vec2{c.x - 900.0f,  c.y + 900.0f}},
+
+        // ----- 8-11s: EJECT (W) beat. Drift, then eject twice so the
+        //              player clearly sees the small pellets shoot out.
+        {secToTick(9.0f),  CmdKind::Eject, {}},
+        {secToTick(9.3f),  CmdKind::Eject, {}},
+        {secToTick(9.8f),  CmdKind::Move,  Vec2{c.x + 600.0f,  c.y - 1500.0f}},
+
+        // ----- 11-14s: MASS BLAST (Q) beat -----
+        // Move toward a denser bot cluster so the blast actually pushes
+        // things. The world centre tends to have plenty of bots given the
+        // default tuning.
+        {secToTick(11.0f), CmdKind::Move,  Vec2{c.x,           c.y + 200.0f}},
+        {secToTick(12.8f), CmdKind::Blast, {}},
+
+        // ----- 14-19s: final drift; the "good luck" + Royale teaser beats
+        //               play over this. Slow curve back through the centre.
+        {secToTick(14.0f), CmdKind::Move,  Vec2{c.x - 800.0f,  c.y - 300.0f}},
+        {secToTick(15.5f), CmdKind::Move,  Vec2{c.x - 1500.0f, c.y + 400.0f}},
+        {secToTick(17.0f), CmdKind::Move,  Vec2{c.x - 700.0f,  c.y + 900.0f}},
     };
     script_.assign(std::begin(rows), std::end(rows));
 }
@@ -76,6 +108,8 @@ void IntroScreen::queuePendingCommands() {
             case CmdKind::Move:  cmd.payload = MoveCmd{sc.move_target}; break;
             case CmdKind::Split: cmd.payload = SplitCmd{};              break;
             case CmdKind::Dash:  cmd.payload = DashCmd{};               break;
+            case CmdKind::Eject: cmd.payload = EjectCmd{};              break;
+            case CmdKind::Blast: cmd.payload = BlastCmd{};              break;
         }
         sim_.queueCommand(cmd);
     }
@@ -143,7 +177,12 @@ bool IntroScreen::update(float frame_dt) {
 }
 
 void IntroScreen::render(int sw, int sh) {
-    ClearBackground(Color{18, 22, 30, 255});
+    // Match the in-match backdrop: solid clear in the gradient's top tone,
+    // then the screen-space gradient + vignette painted on top before the
+    // world camera transform begins. Keeps the intro consistent with the
+    // gameplay frame's "framed" look instead of a flat dark rectangle.
+    ClearBackground(Color{12, 14, 22, 255});
+    renderer_.drawScreenBackdrop(sw, sh);
 
     // World.
     Camera2D cam = camera_.toCamera2D(sw, sh);
@@ -176,37 +215,49 @@ void IntroScreen::render(int sw, int sh) {
     }
 
     // --- Scripted text overlays ---
-    // Each entry: (start, end, optional small subtitle, main text, font size). Alpha
-    // fades in over the first 0.3s and out over the last 0.3s of the window so
-    // transitions are gentle. Times line up with the gameplay script above:
-    //   0.0 - 2.0  : "CELL ROYALE" title
-    //   2.4 - 4.3  : "EAT FOOD TO GROW" -- player is eating during this window
-    //   4.3 - 6.3  : "SPLIT (SPACE)" -- split fires at 4.0s in the script
-    //   6.6 - 8.6  : "DASH (SHIFT)" -- dash fires at 6.5s
-    //   9.0 - 11.0 : "GROW BIG. EAT BOTS." -- generic gameplay tagline
-    //   13.5- 15.0 : "GOOD LUCK." -- final beat into menu
+    // Each entry: (start, end, main text, optional small eyebrow above, font
+    // size). Alpha fades in/out at the edges of each window so transitions
+    // are gentle. Times line up with the gameplay script above:
+    //   0.0  - 2.5  : "CELL ROYALE" -- branded title
+    //   2.7  - 4.2  : "EAT FOOD TO GROW" -- player drifts through food
+    //   4.3  - 6.3  : "SPLIT" -- split fires at 4.0s
+    //   6.6  - 8.6  : "DASH" -- dash fires at 6.5s
+    //   8.9  - 10.8 : "EJECT MASS" -- eject pellets fire at 9.0 / 9.3s
+    //   11.2 - 13.0 : (drift toward bots, no overlay -- breathing room)
+    //   13.0 - 14.8 : "MASS BLAST" -- blast fires at 12.8s, overlay confirms
+    //   15.0 - 16.8 : "PLAY ROYALE FOR LAN MULTIPLAYER"
+    //   17.2 - 19.0 : "GOOD LUCK." -- final beat
     struct Overlay {
         float       start, end;
-        const char* main;
-        const char* sub;     // optional small subtitle above the main line
+        const char* main;     // main line (large)
+        const char* eyebrow;  // small uppercase eyebrow ABOVE the main line
+        const char* sub;      // small subtitle BELOW the main line
         int         size;
         Color       color;
     };
-    const Color kAccent = Color{255, 215, 130, 255};
+    const Color kAccent = Color{255, 220, 140, 255};   // warm gold
+    const Color kCyan   = Color{170, 220, 255, 255};   // multiplayer accent
     const Color kWhite  = Color{240, 240, 245, 255};
     const Overlay overlays[] = {
-        {0.0f,  2.0f,  "CELL ROYALE",         nullptr,         64, kAccent},
-        {2.4f,  4.3f,  "EAT FOOD TO GROW",    nullptr,         36, kWhite},
-        {4.3f,  6.3f,  "SPLIT  (space)",      nullptr,         36, kWhite},
-        {6.6f,  8.6f,  "DASH  (shift)",       nullptr,         36, kWhite},
-        {9.0f,  11.0f, "GROW BIG.  EAT BOTS.", nullptr,        32, kWhite},
-        {13.0f, 15.0f, "GOOD LUCK.",          nullptr,         36, kAccent},
+        // Title -- bigger and with a quiet eyebrow "the agar arena".
+        {0.0f,  2.5f,  "CELL ROYALE",        "agar arena",         nullptr,             68, kAccent},
+        // Core gameplay loop.
+        {2.7f,  4.2f,  "EAT TO GROW",        "objective",          "your cursor leads", 36, kWhite},
+        // Movement / abilities (each has its key as a subtitle).
+        {4.3f,  6.3f,  "SPLIT",              "ability",            "SPACE",             36, kWhite},
+        {6.6f,  8.6f,  "DASH",               "ability",            "SHIFT  --  4s cooldown", 36, kWhite},
+        {8.9f,  10.8f, "EJECT MASS",         "ability",            "W  --  feed viruses, push enemies", 32, kWhite},
+        {13.0f, 14.8f, "MASS BLAST",         "ability",            "Q  --  6s cooldown, requires 300 mass", 32, kWhite},
+        // Multiplayer teaser.
+        {15.0f, 16.8f, "BATTLE ON A LAN",    "new!",               "main menu  >  ROYALE  >  LOCAL",    30, kCyan},
+        // Closing beat.
+        {17.2f, 19.0f, "GOOD LUCK.",         nullptr,              nullptr,             40, kAccent},
     };
 
     for (const Overlay& o : overlays) {
         if (elapsed_sec_ < o.start || elapsed_sec_ > o.end) continue;
         const float dur     = o.end - o.start;
-        const float fade    = std::min(0.3f, dur * 0.25f);
+        const float fade    = std::min(0.35f, dur * 0.30f);
         const float t       = elapsed_sec_ - o.start;
         float alpha = 1.0f;
         if (t < fade)             alpha = t / fade;
@@ -218,25 +269,77 @@ void IntroScreen::render(int sw, int sh) {
         Color shadow{0, 0, 0, static_cast<unsigned char>(a * 0.7f)};
         int tw = MeasureText(o.main, o.size);
         int tx = sw / 2 - tw / 2;
-        int ty = sh / 3;
-        DrawText(o.main, tx + 3, ty + 3, o.size, shadow);
+        int ty = static_cast<int>(sh * 0.36f);
+
+        // Soft glow halo behind the main line -- breathes alpha based on
+        // the overlay's fade-in/out so it builds + decays with the text
+        // instead of being a constant blob. Cyan for the MP teaser, warm
+        // gold for the others.
+        Color halo = (o.color.b > o.color.r)
+            ? Color{120, 180, 240, static_cast<unsigned char>(alpha * 70)}
+            : Color{255, 200, 110, static_cast<unsigned char>(alpha * 70)};
+        DrawCircle(sw / 2, ty + o.size / 2, std::max(140, tw),
+                   Color{halo.r, halo.g, halo.b,
+                         static_cast<unsigned char>(halo.a * 0.45f)});
+        DrawCircle(sw / 2, ty + o.size / 2, std::max(90, tw * 2 / 3), halo);
+
+        // Eyebrow (small uppercase tag above the main line) + flanking
+        // accent rules so the text feels "branded" instead of floating.
+        if (o.eyebrow) {
+            int eb_sz = std::max(11, o.size / 6);
+            int eb_w  = MeasureText(o.eyebrow, eb_sz);
+            int eb_y  = ty - eb_sz - 18;
+            DrawRectangle(sw / 2 - eb_w / 2 - 60, eb_y + eb_sz / 2,
+                          50, 1, Color{halo.r, halo.g, halo.b, a});
+            DrawRectangle(sw / 2 + eb_w / 2 + 10, eb_y + eb_sz / 2,
+                          50, 1, Color{halo.r, halo.g, halo.b, a});
+            DrawText(o.eyebrow, sw / 2 - eb_w / 2, eb_y, eb_sz,
+                     Color{halo.r, halo.g, halo.b,
+                           static_cast<unsigned char>(a * 0.95f)});
+        }
+
+        // Main line -- two-pass shadow + body.
+        DrawText(o.main, tx + 4, ty + 5, o.size,
+                 Color{0, 0, 0, static_cast<unsigned char>(a * 0.45f)});
+        DrawText(o.main, tx + 2, ty + 2, o.size, shadow);
         DrawText(o.main, tx,     ty,     o.size, body);
+
+        // Subtitle BELOW the main line.
         if (o.sub) {
-            int subsz = std::max(12, o.size / 3);
+            int subsz = std::max(13, o.size / 3);
             int sub_w = MeasureText(o.sub, subsz);
+            DrawText(o.sub, sw / 2 - sub_w / 2 + 1,
+                     ty + o.size + 14 + 1, subsz,
+                     Color{0, 0, 0, static_cast<unsigned char>(a * 0.6f)});
             DrawText(o.sub, sw / 2 - sub_w / 2,
-                     ty - subsz - 4, subsz,
-                     Color{200, 210, 230, a});
+                     ty + o.size + 14, subsz,
+                     Color{210, 220, 235,
+                           static_cast<unsigned char>(a * 0.92f)});
         }
     }
 
+    // Progress bar at the very bottom -- a thin line that fills over the
+    // course of the intro. Gives the player a visual cue for "how much
+    // longer" without nagging text.
+    {
+        const float prog = std::clamp(elapsed_sec_ / kDurationSec, 0.0f, 1.0f);
+        const int bar_w = static_cast<int>(sw * 0.50f);
+        const int bar_x = (sw - bar_w) / 2;
+        const int bar_y = sh - 18;
+        DrawRectangle(bar_x, bar_y, bar_w, 2, Color{255, 220, 140, 35});
+        DrawRectangleGradientH(bar_x, bar_y - 1,
+                               static_cast<int>(bar_w * prog), 4,
+                               Color{255, 220, 140, 0},
+                               Color{255, 220, 140, 180});
+    }
+
     // "Press any key to skip" hint -- only after the title fades, low key.
-    if (elapsed_sec_ > 2.0f && elapsed_sec_ < kDurationSec - kFadeOutDurationSec) {
+    if (elapsed_sec_ > 2.5f && elapsed_sec_ < kDurationSec - kFadeOutDurationSec) {
         const char* hint = "press any key to skip";
-        const int   h_size = 16;
+        const int   h_size = 14;
         int hint_w = MeasureText(hint, h_size);
-        DrawText(hint, sw / 2 - hint_w / 2, sh - 36, h_size,
-                 Color{180, 190, 210, 160});
+        DrawText(hint, sw / 2 - hint_w / 2, sh - 38, h_size,
+                 Color{180, 190, 210, 150});
     }
 }
 

@@ -26,6 +26,11 @@ public:
     void spawnAbsorbBurst(Vec2 pos, float mass_gained, Color color);
     void spawnDeathBurst(Vec2 pos, float mass, Color color);
     void spawnSplitPuff(Vec2 pos, Color color);
+    // Same-owner recombine. An inward-converging ring of particles plus a
+    // soft outward "settle" pulse so the merge reads as energy snapping
+    // back together. `mass` is the resulting cell's total mass after the
+    // combine; bigger merges get a wider implosion + more particles.
+    void spawnRecombineRing(Vec2 pos, float mass, Color color);
     void spawnNearMissSparks(Vec2 pos, Color color);
     void spawnDashTrail(Vec2 pos, Vec2 vel, Color color);
 

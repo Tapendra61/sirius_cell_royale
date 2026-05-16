@@ -19,7 +19,16 @@ void applySoftBounds(World& world, const Tuning& t);
 // Per-tick interactions
 void processEating(World& world, const Tuning& t, std::vector<GameEvent>& events);
 void processVirusPushes(World& world, const Tuning& t);
-void processRecombine(World& world, const Tuning& t);
+// Merges same-owner cells whose recombine cooldowns have elapsed and that
+// are touching. Fires a RecombineEvent into `events` for each merge so the
+// client can play feel + audio + particles.
+void processRecombine(World& world, const Tuning& t, std::vector<GameEvent>& events);
+// Pushes overlapping same-owner cells apart while their recombine cooldown is
+// still active. Without this, all pieces of a split player seek the same
+// cursor and stack on top of each other; with it they keep just-touching
+// contact along their circumferences (and merge naturally once
+// `recombine_at` expires via processRecombine). Standard Agar.io behaviour.
+void resolveOwnerOverlaps(World& world);
 void respawnFood(World& world, const Tuning& t);
 void respawnViruses(World& world, const Tuning& t);
 
@@ -55,6 +64,27 @@ constexpr float kBlackHoleEntryFloor = 0.20f;
 void processComets(World& world, const Tuning& t, float dt,
                    Tick& next_spawn_tick_inout,
                    std::vector<GameEvent>& events);
+
+// Static directional flow fields. For each cell inside a current's radius,
+// bias velocity in the current's direction by `strength * dt / massFactor`
+// where massFactor grows with cell mass so small cells are swept more
+// strongly than mega-cells. Stateless; safe to call every tick. Runs before
+// stepCells so the bias is integrated into position alongside the cell's own
+// velocity (no double-step).
+void applyTidalCurrents(World& world, const Tuning& t, float dt);
+
+// Wormhole teleports. For each cell whose centre falls inside a wormhole's
+// radius (and whose per-cell cooldown has elapsed), warp it to the partner
+// endpoint with momentum preserved. Sets the cooldown so the cell doesn't
+// immediately re-enter the partner's radius and pong back. Hiding cells are
+// skipped (they're already pinned inside a black hole).
+void processWormholes(World& world, const Tuning& t);
+
+// Periodic geyser eruptions. Each geyser cycles Idle -> Telegraph -> Erupt.
+// State transitions are driven by `next_event_tick`. On Erupt this function
+// spawns a burst of food pellets in a radial pattern with outward velocity.
+// Stateless w.r.t. global storage; per-geyser state lives on the entity.
+void processGeysers(World& world, const Tuning& t);
 
 // Triggered by commands
 void doSplit(World& world, PlayerId player, const Tuning& t, std::vector<GameEvent>& events);

@@ -53,6 +53,14 @@ void unloadRendererGpuResources();
 // zoom 1, only ~0.4% of the food is on-screen.
 class Renderer {
 public:
+    // Paints the screen-space backdrop (subtle vertical gradient + soft
+    // corner vignette). Called by Client BEFORE BeginMode2D so it doesn't
+    // scroll with the camera -- a fixed frame that makes the play area feel
+    // more grounded than a flat clear color. Independent from drawWorld so
+    // it can be re-used for the chroma render-target path (which also wants
+    // the gradient baked in).
+    void drawScreenBackdrop(int screen_w, int screen_h) const;
+
     void drawWorld(const Interpolator&     interp,
                    const Tuning&           tuning,
                    float                   alpha,

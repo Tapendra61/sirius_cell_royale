@@ -86,6 +86,60 @@ struct Tuning {
     float comet_speed              = 900.0f; // world units per second
     float comet_first_after_sec    = 45.0f;  // delay before the first comet of a match
 
+    // [currents] -- horizontal tidal-current bands that stretch across the
+    // entire map width. Cells whose y falls inside a band get pushed along
+    // the band's direction (±x). With `count=2` (default) we get one band
+    // running left->right above the equator and one band running right->left
+    // below it, like ocean currents. Force scales inversely with sqrt(mass).
+    // Pure ambient terrain -- no damage, no kill, no slowdown for big cells.
+    int   tidal_band_count    = 2;       // number of horizontal bands (0 disables)
+    float tidal_band_height   = 650.0f;  // half-height: total vertical reach is 2*this.
+                                          // Slimmer than the original "vast ocean"
+                                          // setting so the bands read as actual
+                                          // rivers cutting across the world.
+    float tidal_band_strength = 360.0f;  // px/sec drift on a start_mass cell at the
+                                          // centreline. base_speed is ~280, so a
+                                          // starter cell is pushed slightly faster
+                                          // than it can move on its own -- swept
+                                          // along but the player can still fight it
+                                          // meaningfully. Scales inversely with
+                                          // sqrt(mass) so a 1600-mass cell feels
+                                          // ~90 px/s and a 10k mega-cell barely 36.
+                                          // Lets small cells use bands as a fast
+                                          // highway without being overwhelming.
+
+    // [wormholes] -- teleport pairs. Cells entering an endpoint warp to the
+    // partner endpoint, with momentum preserved. A per-cell cooldown prevents
+    // loop-back through the same wormhole. Both endpoints share a `pair_id`.
+    int   wormhole_pair_count   = 2;      // number of PAIRS spawned at world init (so 2 = 4 endpoints)
+    float wormhole_radius       = 70.0f;  // capture radius (small + sharp; visuals
+                                          // are bright so anything bigger feels overwhelming)
+    float wormhole_cooldown_sec = 3.0f;   // per-cell teleport-cooldown after a warp
+    // Minimum world-units distance between the two endpoints of a pair so a
+    // wormhole isn't trivial (entering and exiting in the same spot). At
+    // 6000 in a 16k world the partner is usually somewhere on the other
+    // side of the map -- a teleport actually warps you somewhere new.
+    float wormhole_pair_min_distance = 6000.0f;
+    // Minimum centre-to-centre distance between wormhole endpoints (across
+    // ALL pairs) so they don't cluster.
+    float wormhole_min_separation = 3500.0f;
+
+    // [geysers] -- periodic food eruption points. Cycles Idle (quiet) ->
+    // Telegraph (warning ring grows) -> Erupt (one tick of food spawn). Each
+    // eruption flings N food pellets outward in a radial pattern with
+    // outward velocity so the burst spreads naturally.
+    int   geyser_count            = 5;      // number of geysers spawned at world init
+    float geyser_radius           = 180.0f; // base visual radius
+    float geyser_interval_sec     = 28.0f;  // mean time between eruptions (per geyser)
+    float geyser_interval_jitter  = 0.30f;  // +/- fraction of the interval (RNG)
+    float geyser_telegraph_sec    = 3.0f;   // warning window
+    float geyser_first_after_sec  = 15.0f;  // first eruption window starts this far in
+    int   geyser_food_count_min   = 14;     // food pellets per eruption (min)
+    int   geyser_food_count_max   = 22;     // food pellets per eruption (max)
+    float geyser_food_eject_speed = 520.0f; // initial outward velocity of erupted food
+    float geyser_food_spread      = 90.0f;  // radial spread (px) of spawn positions
+    float geyser_min_separation   = 3000.0f;
+
     // [bots]
     // VS AI / SinglePlayer default. Royale modes (LocalHost / LocalClient) override
     // this to 0 at match start so a multiplayer lobby isn't pre-populated with bots

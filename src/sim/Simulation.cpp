@@ -73,6 +73,107 @@ Simulation::Simulation(uint64_t seed, Tuning tuning)
         world_.spawnBlackHole(pos, tuning_.blackhole_radius,
                               tuning_.blackhole_pull_radius);
     }
+
+    // ---- Tidal current bands ----
+    // Horizontal strips spanning the full world width. With the default
+    // count=2 we get one band at 25% world height running left->right and
+    // one at 75% running right->left -- like opposing ocean currents. The
+    // count is generalised so 4 bands gives 20/40/60/80%, etc.; direction
+    // alternates per band starting L->R.
+    {
+        const int n = std::max(0, tuning_.tidal_band_count);
+        const float world_w = static_cast<float>(world_.width());
+        const float world_h = static_cast<float>(world_.height());
+        for (int i = 0; i < n; ++i) {
+            // Evenly distribute band centres across the world height.
+            // i=0 lands at 1/(n+1), i=n-1 lands at n/(n+1). For n=2 that's
+            // 1/3 and 2/3 -- close to the requested "upper / lower" feel.
+            // For n=1 it lands at 0.5 (equator).
+            const float frac = static_cast<float>(i + 1) /
+                               static_cast<float>(n + 1);
+            const float band_y = world_h * frac;
+            // Alternate direction starting with +x (left -> right).
+            const float dx = (i % 2 == 0) ? +1.0f : -1.0f;
+            const Vec2  dir{dx, 0.0f};
+            const Vec2  pos{world_w * 0.5f, band_y};
+            world_.spawnTidalCurrent(pos, dir,
+                                     tuning_.tidal_band_height,
+                                     tuning_.tidal_band_strength);
+        }
+    }
+
+    // ---- Wormhole pairs ----
+    // Place each pair as two endpoints separated by at least
+    // wormhole_pair_min_distance so a teleport actually moves you meaningfully.
+    // Also keep wormhole_min_separation between ANY two endpoints (across all
+    // pairs) so the visuals don't overlap.
+    {
+        const float margin = std::max(tuning_.wormhole_radius + 100.0f, 400.0f);
+        auto pickEndpoint = [&](Vec2& out_pos) {
+            for (int attempt = 0; attempt < 64; ++attempt) {
+                Vec2 cand{
+                    world_.rng().rangeFloat(margin,
+                                            static_cast<float>(world_.width())  - margin),
+                    world_.rng().rangeFloat(margin,
+                                            static_cast<float>(world_.height()) - margin),
+                };
+                bool ok = true;
+                for (const auto& w : world_.wormholes()) {
+                    if (distance(w.pos, cand) < tuning_.wormhole_min_separation) {
+                        ok = false; break;
+                    }
+                }
+                if (ok) { out_pos = cand; return; }
+                out_pos = cand; // fallback if separation can't be satisfied
+            }
+        };
+        for (int i = 0; i < tuning_.wormhole_pair_count; ++i) {
+            Vec2 a, b;
+            pickEndpoint(a);
+            // Pick b far enough from a.
+            bool placed = false;
+            for (int attempt = 0; attempt < 64 && !placed; ++attempt) {
+                pickEndpoint(b);
+                if (distance(a, b) >= tuning_.wormhole_pair_min_distance) {
+                    placed = true;
+                }
+            }
+            // pickEndpoint always writes; even if separation failed we accept
+            // the last candidate to avoid a constructor stall.
+            world_.spawnWormholePair(a, b, tuning_.wormhole_radius);
+        }
+    }
+
+    // ---- Geysers ----
+    // Stationary food-eruption points. Each starts with a deterministic
+    // first_event_tick spaced out so they don't all erupt simultaneously --
+    // the first one fires at `geyser_first_after_sec`, subsequent ones are
+    // offset by half the interval each.
+    {
+        const float margin = std::max(tuning_.geyser_radius + 200.0f, 400.0f);
+        const Tick  first_tick = secondsToTicks(tuning_.geyser_first_after_sec);
+        const Tick  stagger    = secondsToTicks(tuning_.geyser_interval_sec * 0.5f);
+        for (int i = 0; i < tuning_.geyser_count; ++i) {
+            Vec2 pos{0.0f, 0.0f};
+            for (int attempt = 0; attempt < 64; ++attempt) {
+                pos = Vec2{
+                    world_.rng().rangeFloat(margin,
+                                            static_cast<float>(world_.width())  - margin),
+                    world_.rng().rangeFloat(margin,
+                                            static_cast<float>(world_.height()) - margin),
+                };
+                bool ok = true;
+                for (const auto& g : world_.geysers()) {
+                    if (distance(g.pos, pos) < tuning_.geyser_min_separation) {
+                        ok = false; break;
+                    }
+                }
+                if (ok) break;
+            }
+            Tick first_event = first_tick + static_cast<Tick>(stagger * i);
+            world_.spawnGeyser(pos, tuning_.geyser_radius, first_event);
+        }
+    }
 }
 
 void Simulation::queueCommand(Command cmd) {
@@ -127,19 +228,41 @@ void Simulation::tick(float dt) {
     rules::applyMagnetPulls(world_, tuning_);
     rules::processBlackHoles(world_, tuning_, dt);
     rules::processComets(world_, tuning_, dt, next_comet_spawn_tick_, events_);
+    // Tidal currents must run BEFORE stepCells so the velocity bias they
+    // apply gets integrated into position on this same tick. Order vs.
+    // BlackHoles / Comets is intentional: BH suction wins over a drift
+    // current (more dramatic moment-to-moment), and a comet kill applies
+    // before motion so a cell that just got hit doesn't pretend to keep moving.
+    rules::applyTidalCurrents(world_, tuning_, dt);
     rules::stepCells(world_, tuning_, dt);
     rules::stepFood(world_, tuning_, dt);
     rules::applySoftBounds(world_, tuning_);
+    // Wormholes after stepCells so we teleport based on each cell's final
+    // post-motion position (matches the rendered position at end of tick).
+    // Cells warped here will appear at their new spot on the very next
+    // snapshot, so prev->curr interpolation jumps -- which is what we want
+    // (a teleport should read as instantaneous, not a smooth slide).
+    rules::processWormholes(world_, tuning_);
+    // Geysers can spawn food via world.spawnFood(), which invalidates the
+    // foods_grid. We call this AFTER stepFood but BEFORE rebuildGrids so
+    // the next-tick eating step sees the newly-erupted pellets.
+    rules::processGeysers(world_, tuning_);
 
     // 3. Rebuild spatial grids once positions have settled, so the eating step can use
     //    them. Grids store vector indices; valid until the first push_back / compactDead
     //    in this tick (i.e. through processEating's queries but stale after).
+    // Resolve same-owner overlaps BEFORE rebuilding spatial grids so the
+    // eating pass sees the post-push positions. Pushes are tiny (sub-pixel
+    // in steady state, larger only right after a split) and don't change
+    // the cell array's order or count, so grid rebuilding still works.
+    rules::resolveOwnerOverlaps(world_);
+
     world_.rebuildGrids();
 
     // 4. Interactions (collision-driven).
     rules::processEating(world_, tuning_, events_);
     rules::processVirusPushes(world_, tuning_);
-    rules::processRecombine(world_, tuning_);
+    rules::processRecombine(world_, tuning_, events_);
     rules::processPickupCollection(world_, tuning_, events_);
 
     // 5. World upkeep.
@@ -389,6 +512,85 @@ Snapshot Simulation::buildSnapshot() const {
             cs.telegraph_norm = 1.0f;
         }
         s.comets.push_back(cs);
+    }
+
+    // Currents: horizontal bands. Static positions; renderer uses them to
+    // seed the streaming particle visual.
+    s.currents.reserve(world_.currents().size());
+    for (const auto& c : world_.currents()) {
+        CurrentSnap cs;
+        cs.id          = c.id;
+        cs.pos         = c.pos;
+        cs.dir         = c.dir;
+        cs.half_height = c.half_height;
+        cs.strength    = c.strength;
+        s.currents.push_back(cs);
+    }
+
+    // Wormholes: per-pair entries. spin_phase is computed from the current
+    // tick so all clients render the same swirl angle (no client-side time
+    // drift). Slow rotation -- the visual reads as gentle vortex, not strobe.
+    s.wormholes.reserve(world_.wormholes().size());
+    for (const auto& w : world_.wormholes()) {
+        WormholeSnap ws;
+        ws.id         = w.id;
+        ws.pair_id    = w.pair_id;
+        ws.pos        = w.pos;
+        ws.radius     = w.radius;
+        // 0.7 rad/sec ~= one full rotation per ~9 seconds.
+        ws.spin_phase = std::fmod(static_cast<float>(now) * (0.7f / kSimHz),
+                                  6.28318530718f);
+        s.wormholes.push_back(ws);
+    }
+
+    // Geysers: state + phase_norm tell the renderer which visual to draw.
+    s.geysers.reserve(world_.geysers().size());
+    for (const auto& g : world_.geysers()) {
+        GeyserSnap gs;
+        gs.id     = g.id;
+        gs.pos    = g.pos;
+        gs.radius = g.radius;
+        gs.state  = static_cast<uint8_t>(g.state);
+        // phase_norm: position within the current state. For Idle / Telegraph
+        // we walk from prev-transition-tick toward next_event_tick. For
+        // Erupt it's always 1 (single tick).
+        switch (g.state) {
+            case GeyserState::Idle: {
+                // The Idle phase starts at the *previous* erupt's end. Use
+                // last_erupted_at + 1 (right after erupt) as the lower bound;
+                // if we haven't erupted yet, use 0 -- the renderer treats
+                // phase_norm in Idle as a low-priority "charging" cue.
+                const Tick start = (g.last_erupted_at == 0) ? Tick{0}
+                                                            : g.last_erupted_at + 1;
+                const Tick total = (g.next_event_tick > start)
+                                       ? (g.next_event_tick - start)
+                                       : Tick{1};
+                const Tick el    = (now >= start) ? (now - start) : Tick{0};
+                gs.phase_norm = std::clamp(
+                    static_cast<float>(el) / static_cast<float>(total),
+                    0.0f, 1.0f);
+                break;
+            }
+            case GeyserState::Telegraph: {
+                // Telegraph window: total = telegraph_ticks, elapsed = now -
+                // (next_event_tick - telegraph_ticks).
+                const float ticks_total = std::max(1.0f,
+                    tuning_.geyser_telegraph_sec * kSimHz);
+                const Tick  start = (g.next_event_tick > static_cast<Tick>(ticks_total))
+                                        ? (g.next_event_tick - static_cast<Tick>(ticks_total))
+                                        : Tick{0};
+                const Tick  el    = (now >= start) ? (now - start) : Tick{0};
+                gs.phase_norm = std::clamp(
+                    static_cast<float>(el) / ticks_total,
+                    0.0f, 1.0f);
+                break;
+            }
+            case GeyserState::Erupt: {
+                gs.phase_norm = 1.0f;
+                break;
+            }
+        }
+        s.geysers.push_back(gs);
     }
 
     // Match timer: seconds remaining at the moment this snapshot was built.

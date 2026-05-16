@@ -11,8 +11,8 @@ placeholder; it'll match this document when it ships.
 | Mode | How to start | What it does |
 |---|---|---|
 | **VS AI** | Main Menu → `VS AI` (or press Enter / Space) | Single-player sandbox. Authoritative sim runs locally; bots fill the world (host-controlled via the `bots` console command). |
-| **Royale → Local → Host** | Main Menu → `ROYALE` → `LOCAL` → `HOST` → `START GAME` | Opens a UDP listener on port 7456. Other players on your LAN can join. You own the sim; clients render snapshots you broadcast. |
-| **Royale → Local → Join** | Main Menu → `ROYALE` → `LOCAL` → `JOIN` → enter `host:port` (default `127.0.0.1:7456`) → `JOIN` | Connects to a host. Your local sim stops ticking; you render the host's world and your inputs are forwarded upstream. |
+| **Royale → Local → Host** | Main Menu → `ROYALE` → `LOCAL` → `HOST` → wait for joiners → `START GAME` | Pressing `HOST` opens the UDP listener (port 7456) immediately and starts a LAN announcer so peers see you in their browser. Peers join *into the lobby*, exchange names, and appear in your player list. Hitting `START GAME` launches the match for everyone at the same instant. |
+| **Royale → Local → Join** | Main Menu → `ROYALE` → `LOCAL` → `JOIN` → pick a discovered host (or enter `host:port`) → `JOIN` | Connects to the host and lands in the host's lobby. You see the player list and wait while the host gathers everyone. The match starts automatically when the host hits `START GAME`. |
 | **Royale → Global** | Main Menu → `ROYALE` → `GLOBAL` | Placeholder. Matchmaking-backed online play, planned for Phase 10. |
 
 Same-machine loopback is supported: start a Host instance, then start a Join instance
@@ -214,6 +214,97 @@ Each effect has an aura ring around the cell while active.
 - Despawns once it exits the world. The kill is logged as **COMET** in the
   killfeed.
 
+### Tidal current bands (ambient terrain)
+
+- **What they are**: 2 horizontal river-style bands (default
+  `tidal_band_count=2`) stretching the full world width. The upper band
+  flows **left → right**; the lower band flows **right → left** -- like
+  opposing ocean currents at ~33% and ~66% world height. With more bands
+  (set in tuning) the layout generalises to evenly-spaced strips with
+  alternating direction.
+- **Visuals**: a soft cyan strip with smooth feathered top/bottom edges,
+  a streaming particle field flowing along the direction, and a row of
+  bright cyan chevrons marking the flow at ~1200 px intervals. Particles
+  + chevrons scroll with the flow so the direction reads even at high
+  zoom-in.
+- **Effect**: any cell whose y-coordinate falls inside the band gets
+  **drifted** in the band's direction each tick (translated directly,
+  bypassing the seek/velocity pipeline). Smoothstep falloff (full at the
+  centre line, 0 at the rim) so cells entering / leaving don't snap into /
+  out of the flow. Drift scales as `strength / (mass / start_mass)^0.25`
+  (4th-root attenuation). The gentle curve keeps medium-mass cells in the
+  current's grip, roughly matching their own speed loss with size:
+  - 100-mass cell → 360 px/sec drift (vs base_speed 280). Swept along
+    faster than it can swim.
+  - 400-mass cell → ~255 px/sec drift. Still pushed faster than it can
+    swim against (cellSpeed ~164 at that mass).
+  - 1600-mass cell → ~180 px/sec. Still faster than cellSpeed (~121).
+  - 5000-mass cell → ~135 px/sec. Comparable to its own swim speed.
+  - 10 000-mass mega-cell → ~114 px/sec. Noticeable but no longer
+    overwhelming -- a big fish can still cross the river.
+  Mass-based, never lethal. The player's seek still works on top -- aim
+  the cursor north and the cell moves north while drifting east, exactly
+  like a river current. To stay stationary inside a band, aim the cursor
+  "upstream" (and small cells may not be able to hold position at all).
+- **Tactics**: ride the upper band east to chase a fleeing target;
+  ride the lower band west to flank the spawn line. The bands cross the
+  entire world so a small cell can use them as a free highway between
+  zones, while a mega-cell barely cares -- balancing the late game.
+- **Where they sit**: with `band_count=2` (default) the bands are placed
+  at world-y ≈ 33% and 67% with `band_height=650` (so each band is
+  ~1300 px thick out of a 16k-tall world -- like rivers, not oceans).
+  The spawn area at world centre sits in the current-free corridor
+  between them; cells need to move ±~2000 px from spawn to enter a band.
+- **Minimap**: thin horizontal cyan strips spanning the full minimap
+  width with a small direction tick at the centre.
+- **Tuning**: `[currents]` `band_count` (default 2; 0 disables) /
+  `band_height` (default 1400 = vertical half-reach) / `band_strength`
+  (default 130 = base px/sec).
+
+### Wormhole pairs
+
+- **What they are**: 2 pairs (4 endpoints; `wormhole_pair_count=2`) of
+  linked teleport portals. Each endpoint is paired with exactly one other --
+  step into one and you instantly exit at the partner with your momentum
+  preserved.
+- **Visuals**: spinning indigo vortex with rotating spokes, a bright violet
+  singularity core, and two diametric tendril pips. The two endpoints don't
+  draw a connecting line in the world (would clutter the play area) but the
+  minimap shows the pair link with a thin purple line so you can plan
+  teleports from a glance.
+- **Cooldown**: per-cell 3s cooldown after a teleport (`wormhole_cooldown_sec`).
+  Stops loop-back when the partner's radius is right next to whatever you
+  were running from. Hiding cells (in a black hole) and cells mid-BH
+  animation are skipped.
+- **Tactics**: bait predators toward an endpoint, then warp out. Surprise-
+  flank from the partner side. Combine with Dash for an explosive entry.
+- **Tuning**: `[wormholes]` pair_count / radius / cooldown_sec /
+  pair_min_distance / min_separation. Set pair_count = 0 to disable.
+
+### Mass geysers (periodic food objective)
+
+- **What they are**: 5 stationary points (`geyser_count=5`) that erupt food
+  on a timer. Each cycles **Idle → Telegraph → Erupt → Idle** independently;
+  the first geyser fires at `geyser_first_after_sec=15`, subsequent eruptions
+  are spaced `geyser_interval_sec=28` ± 30% jitter. Geysers are spawned with
+  a half-interval stagger so they don't all erupt simultaneously.
+- **Telegraph** (3s warning): a growing ring around the geyser shifts cyan →
+  orange as the eruption approaches; the ring's alpha pulses faster the
+  closer it gets. A minimap pip flashes amber.
+- **Eruption**: 14–22 food pellets (random per eruption) spawn in a radial
+  sunburst with outward velocity (520 u/s). Mass roll is biased toward rare
+  drops (commons get a 50% re-roll), so eruptions feel meaningfully better
+  than ambient food. The pellets decay outward via the normal food motion
+  step.
+- **Tactics**: a hot zone for fights. Camp the rim during telegraph; blast
+  competitors away with Q just before eruption; dash in to scoop the
+  centre. Bots are aware (see Bot AI below) so you'll have company.
+- **Minimap**: small teal pip when idle, amber pip during telegraph,
+  bright burst dot during eruption.
+- **Tuning**: `[geysers]` count / radius / interval_sec / interval_jitter /
+  telegraph_sec / first_after_sec / food_count_min/max / food_eject_speed /
+  food_spread / min_separation.
+
 ### Bot AI (VS AI / SinglePlayer)
 
 Six personalities with distinct behaviours. Each gets a letter in the
@@ -253,6 +344,15 @@ keeps them from spamming the 6-second cooldown:
 Bots use the same cooldown (6 s) and cost (20% of source mass) as the
 player.
 
+**Geyser hunting** — when a bot would otherwise wander randomly
+(no prey, no nearby food it cares about), it scans for the nearest
+geyser within ~4500 px that's actively telegraphing or erupting.
+Telegraph-state geysers get a 1.2× weight vs erupt-state 0.7× (bots
+prefer to be **in position** when the food appears rather than chase
+pellets after the fact). This creates natural contested zones around
+upcoming eruptions without any hand-written "cluster around an
+objective" behaviour.
+
 **Comet dodge** — every bot computes whether it's in the comet's
 forward kill lane (perpendicular distance < ~700 px, ahead of the
 comet by ≤ 7 radii). If so it abandons its current move target and
@@ -271,7 +371,7 @@ during the dodge so the swerve registers immediately.
 | Combo counter | Top-right (under Q-bar) | Pulsing `xN` when ≥ 2. Bigger / dimmer with chain length. |
 | Killfeed | Top-right, below combo | Last 5 inter-player kills. Player-involved kills get a gold accent. Comet kills label predator as **COMET** in hot orange. |
 | Q (Mass Blast) cooldown bar | Top-right corner | 220×18 px. Red → orange → bright yellow as it refills. "BLAST" overlay when ready; "NEED MASS" overlay when biggest cell is below 300. Subtle pulsing glow when castable. |
-| Minimap | Bottom-right corner | 200 px square. Shows black holes, all live cells (size scales with mass), comet path + position, and the camera frustum. Your cells get a white outline; elites get a red outline. |
+| Minimap | Bottom-right corner | 200 px square. Shows black holes, all live cells (size scales with mass), comet path + position, tidal current bands (thin cyan horizontal strips with a direction tick), wormhole pairs (purple endpoint dots with a thin link line between them), geysers (teal pip / amber telegraph / burst flash), and the camera frustum. Your cells get a white outline; elites get a red outline. |
 | Black hole stamina bar | Bottom-center (only while hiding) | Drains as your hide-time runs out. Hue shifts toward red when nearly empty. |
 | Debug stats | Bottom-left | FPS, current sim tick, watched cell mass + pos, zoom, dt multiplier. Tagged `[PAUSED]` when paused. |
 | Near-miss / crit flashes | Full-screen | Brief red / gold tint on close-encounter events. |
@@ -317,16 +417,84 @@ All channels are reliable. Default port: **UDP 7456**.
 
 ### Lobby flow
 
-1. Host hits `START GAME` in the lobby — the UDP socket opens, host begins
-   ticking.
-2. Each connecting peer:
-   - Host allocates the next free `PlayerId` (slot 1 stays the host's).
-   - Host spawns a fresh cell for them at a clear position with `start_mass`.
-   - Host ships a `WelcomeMsg{player_id, cell_id}` on channel 3.
-3. The peer's client receives the welcome, sets its watched cell, and begins
-   rendering snapshots.
-4. Inputs from each peer flow upstream as Commands; host queues them into its
-   sim alongside its own inputs.
+The lobby holds the socket open *before* the match starts so peers can join,
+exchange names, and see the player list while waiting. The host clicks
+`START GAME` when everyone is in.
+
+1. **Host hits `HOST`** in the picker.
+   - UDP socket opens on port 7456 immediately.
+   - LAN announcer starts broadcasting on the discovery port range
+     (47457–47459) so peers on the same network see the host in their
+     `JOIN` browser within ~1 second.
+   - Host's `LocalLobby` transitions to `HostWaiting` sub-state; the screen
+     splits into two columns: **Match Settings** on the left (the host can
+     tweak duration / max players / bot count while waiting) and **Players**
+     on the right (live roster, updates as peers join).
+
+2. **Peer hits `JOIN`** in the picker and either picks a discovered host or
+   types a direct `host:port` address.
+   - Peer's `LocalLobby` transitions to `JoinWaiting` sub-state.
+   - `NetworkTransport::connect()` is called; UDP socket opens.
+   - Peer waits on the "waiting for host..." screen until the host's
+     welcome arrives.
+
+3. **Each peer's CONNECT event** lands in the host's lobby loop, which:
+   - Allocates the next free `PlayerId` (slot 1 stays the host's).
+   - Adds the peer to `peer_to_player` but **does not spawn a cell yet**
+     (the match hasn't started — there's no sim ticking).
+   - Ships a **lobby Welcome** `WelcomeMsg{player_id, cell_id=INVALID,
+     host_name}` so the joiner knows their slot + the host's display name.
+   - Catches the new peer up on every already-known peer's name via
+     `PeerInfoMsg`s.
+
+4. **Peer receives the lobby Welcome** (recognised by `cell_id == INVALID`):
+   - Records the host's name + own player slot.
+   - Sends `ClientHelloMsg{name}` upstream so the host learns its name.
+   - Updates the lobby player list panel (host + self + any other already-
+     joined peers from PeerInfo messages).
+
+5. **Host receives `ClientHelloMsg`**, registers the peer's name in
+   `known_peer_names`, and broadcasts `PeerInfoMsg{pid, name}` to **all**
+   connected peers (so everyone's lobby panel stays in sync).
+
+6. **Host hits `START GAME`** (only the host has this button in `HostWaiting`).
+   - `runWindow` hands the live `NetworkTransport`, `peer_to_player`, and
+     `known_peer_names` down to `runMatch` (no reconnect — peers stay
+     connected).
+   - `runMatch` iterates the pre-joined peer map, spawns a cell for each at
+     a clear position, and ships a **match Welcome** `WelcomeMsg{player_id,
+     cell_id=valid_id, host_name}` per peer.
+   - The host begins ticking the sim + broadcasting snapshots.
+
+7. **Each peer's lobby loop** sees the match Welcome (recognised by
+   `cell_id != INVALID`) and transitions out of `JoinWaiting` into
+   `AppPhase::Match`. The first snapshot lands within ~1 frame and rendering
+   begins.
+
+Backing out of `HostWaiting` (`CANCEL` button or `Esc`) disconnects the host
+socket and stops the LAN announcer — peers will see their connection drop and
+return to the picker. Backing out of `JoinWaiting` (`LEAVE LOBBY` or `Esc`)
+disconnects the peer; the host sees their slot disappear via
+`pollDepartedPeer`.
+
+### Match settings (host-only, in HostWaiting)
+
+The HostWaiting screen shows a settings panel on the left side. All values are
+preset chips — click any chip to select it. Changes apply when the host hits
+`START GAME`. Settings persist across HostWaiting visits within the session
+(reset on `LocalLobby::reset`, which fires when leaving the lobby entirely).
+
+| Setting | Presets | Notes |
+|---|---|---|
+| **Match duration** | `1m` / `3m` / `5m` (default) / `10m` / `ENDLESS` | Endless disables the timer so the match runs until everyone leaves. Otherwise the host's sim emits a `MatchEndEvent` when the clock hits zero. |
+| **Max players** | `2` / `4` / `8` (default) / `16` | Hard cap on host + peers. Connections beyond the cap are accepted by ENet then immediately disconnected with a `[net] late-joiner rejected` / `[lobby] rejecting peer` log line. Enforced both during the lobby (`pollNewPeer` reject) and during the match (late-joiner gate). |
+| **Bots** | `OFF` (default) / `5` / `10` / `25` | Number of AI cells to spawn at match start. Overrides the Royale default of 0. The host can also use `bots N` in the dev console mid-match to retarget. |
+
+`MatchSettings` lives on `LocalLobby`. `runMatch` reads them from
+`MatchNetworkConfig.{match_duration_sec, max_players, bot_count}` and writes
+the corresponding `Tuning` fields on entry; the original values are restored
+at the single return point so a follow-up SP / VS-AI match doesn't inherit
+the Royale overrides.
 
 ### Rendering on the client
 
@@ -527,6 +695,17 @@ The full set is documented inline in `tuning.ini` itself. High-impact knobs:
 | `[comet]` | `event_interval_sec` | 75 | Mean time between comet events. |
 | `[comet]` | `radius` | 440 | Comet kill radius + visual size. |
 | `[comet]` | `first_after_sec` | 45 | Delay before the first comet of a match. |
+| `[currents]` | `band_count` | 2 | Horizontal tidal-current bands stretching across the world. 0 disables the feature. |
+| `[currents]` | `band_height` | 650 | Vertical half-reach of each band (total band height = 2× this). |
+| `[currents]` | `band_strength` | 360 | px/sec drift applied to a `start_mass` cell at the band centreline; scales as `1 / (mass/start_mass)^0.25` (4th-root attenuation) and feathers smoothly toward the rim. Cell position is translated directly each tick (the seek/velocity layer is independent). Tuned slightly above base_speed (~280) so small cells get swept but can still fight the current. The 4th-root curve keeps medium-mass cells (400-1600 mass) firmly in the current's grip rather than the sqrt attenuation that previously made the band irrelevant once you grew past starter size. |
+| `[wormholes]` | `pair_count` | 2 | Number of wormhole pairs (so 2 → 4 endpoints). 0 disables. |
+| `[wormholes]` | `radius` | 120 | Capture radius of each endpoint. |
+| `[wormholes]` | `cooldown_sec` | 3 | Per-cell teleport-cooldown so a warped cell doesn't immediately loop back. |
+| `[geysers]` | `count` | 5 | Number of food-eruption geysers. 0 disables. |
+| `[geysers]` | `interval_sec` | 28 | Mean time between eruptions per geyser. |
+| `[geysers]` | `telegraph_sec` | 3 | Warning window before eruption. |
+| `[geysers]` | `food_count_min/max` | 14 / 22 | Random pellet count per eruption. |
+| `[geysers]` | `food_eject_speed` | 520 | Initial outward velocity of erupted food. |
 
 `reload_tuning` re-reads this file at runtime — no restart needed.
 

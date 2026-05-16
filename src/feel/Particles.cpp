@@ -158,11 +158,102 @@ void ParticleSystem::spawnDeathBurst(Vec2 pos, float mass, Color color) {
 void ParticleSystem::spawnSplitPuff(Vec2 pos, Color color) {
     Color faded = color;
     faded.a = 0;
-    for (int i = 0; i < 16; ++i) {
+    // 1) Outward shockwave ring -- 20 evenly-spaced particles flying outward
+    //    at a uniform speed. Reads as a quick energy pulse radiating from
+    //    the split point. White-tinted for punch against any cell color.
+    {
+        constexpr int kRing = 20;
+        const float ring_speed = 380.0f;
+        for (int i = 0; i < kRing; ++i) {
+            const float a = (i * 2.0f * kPi) / kRing;
+            Vec2 v{std::cos(a) * ring_speed, std::sin(a) * ring_speed};
+            spawn(pos, v, 0.30f,
+                  Color{255, 255, 255, 220}, Color{255, 255, 255, 0},
+                  /*size_start=*/4.5f, /*size_end=*/0.5f);
+        }
+    }
+    // 2) Cell-colored puff -- 18 omnidirectional particles in the cell's
+    //    tint, mixed speeds + sizes for a chunky "cytoplasm splatter" look.
+    for (int i = 0; i < 18; ++i) {
         float angle = frand(0.0f, 2.0f * kPi);
-        float speed = frand(180.0f, 320.0f);
+        float speed = frand(220.0f, 480.0f);
         Vec2  vel{std::cos(angle) * speed, std::sin(angle) * speed};
-        spawn(pos, vel, frand(0.25f, 0.45f), color, faded, frand(3.0f, 6.0f), 1.0f);
+        spawn(pos, vel, frand(0.30f, 0.55f),
+              color, faded,
+              frand(4.0f, 8.0f), /*size_end=*/1.0f);
+    }
+    // 3) A few bright spark flecks -- small + fast + short-lived. Adds the
+    //    "snap" texture that the old puff was missing.
+    for (int i = 0; i < 8; ++i) {
+        float angle = frand(0.0f, 2.0f * kPi);
+        float speed = frand(450.0f, 720.0f);
+        Vec2  vel{std::cos(angle) * speed, std::sin(angle) * speed};
+        spawn(pos, vel, frand(0.12f, 0.22f),
+              Color{255, 250, 230, 255}, Color{255, 250, 230, 0},
+              /*size_start=*/2.5f, /*size_end=*/0.2f);
+    }
+}
+
+void ParticleSystem::spawnRecombineRing(Vec2 pos, float mass, Color color) {
+    Color faded = color;
+    faded.a = 0;
+    // Implosion radius scales with the resulting cell's radius so a large
+    // merge feels wider than a tiny one. Clamped so even a small merge has
+    // visible heft.
+    const float cell_r = std::sqrt(mass * 25.0f); // matches cellRadius()
+    const float implode_r = std::clamp(cell_r * 1.4f + 30.0f, 60.0f, 280.0f);
+    const float lifetime  = 0.45f;
+
+    // 1) Inward-converging ring: particles spawn ON the ring edge with
+    //    velocity pointing AT the centre. Because the particle integrator
+    //    has linear drag, the inward speed decays so particles slow as they
+    //    approach the centre -- they "settle" instead of overshooting. We
+    //    pick the speed so they cover most of the distance over the
+    //    lifetime.
+    constexpr int kRing = 22;
+    const float in_speed = implode_r * 3.0f; // covers ~implode_r in ~0.4s
+                                              // with the existing drag
+    for (int i = 0; i < kRing; ++i) {
+        const float a = (i * 2.0f * kPi) / kRing;
+        const Vec2  rim{pos.x + std::cos(a) * implode_r,
+                        pos.y + std::sin(a) * implode_r};
+        const Vec2  v{-std::cos(a) * in_speed, -std::sin(a) * in_speed};
+        spawn(rim, v, lifetime,
+              Color{255, 255, 255, 220}, Color{255, 255, 255, 0},
+              /*size_start=*/3.0f, /*size_end=*/0.5f);
+    }
+
+    // 2) Cell-colored inward streamers: 18 particles at random rim angles
+    //    with mixed inward speeds + slight tangential jitter so the
+    //    convergence doesn't look like a stiff geometric shape.
+    for (int i = 0; i < 18; ++i) {
+        const float a   = frand(0.0f, 2.0f * kPi);
+        const float r0  = implode_r * frand(0.85f, 1.05f);
+        const Vec2  rim{pos.x + std::cos(a) * r0, pos.y + std::sin(a) * r0};
+        const float spd = frand(in_speed * 0.7f, in_speed * 1.1f);
+        // Mostly inward + small perpendicular jitter (gives the streamers
+        // a subtle "swirling in" feel).
+        const Vec2 in_dir{-std::cos(a), -std::sin(a)};
+        const Vec2 perp  { in_dir.y, -in_dir.x};
+        const float jit  = frand(-0.30f, 0.30f);
+        const Vec2 v{(in_dir.x + perp.x * jit) * spd,
+                     (in_dir.y + perp.y * jit) * spd};
+        spawn(rim, v, frand(0.35f, 0.55f),
+              color, faded,
+              /*size_start=*/frand(4.0f, 7.0f), /*size_end=*/0.8f);
+    }
+
+    // 3) Soft outward "settle" pulse: a small burst that fans outward from
+    //    the centre AFTER the convergence reads, simulating the energy
+    //    snapping into place. Slow + brief so it doesn't fight the inward
+    //    motion visually.
+    for (int i = 0; i < 12; ++i) {
+        const float a   = frand(0.0f, 2.0f * kPi);
+        const float spd = frand(70.0f, 160.0f);
+        const Vec2 v{std::cos(a) * spd, std::sin(a) * spd};
+        spawn(pos, v, frand(0.22f, 0.36f),
+              Color{255, 255, 255, 180}, Color{255, 255, 255, 0},
+              /*size_start=*/3.0f, /*size_end=*/0.2f);
     }
 }
 
