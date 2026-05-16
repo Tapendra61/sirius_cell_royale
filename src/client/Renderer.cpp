@@ -452,42 +452,19 @@ void main() {
     float edge = 1.0 + wobble;
 
     // Soft alpha falloff at the wobbly rim. The body holds full alpha
-    // until 92% of the edge, then smoothly fades to 0 just past it.
-    float fade_start = edge * 0.92;
+    // until 96% of the edge, then smoothly fades to 0 just past it --
+    // narrow fade band keeps the colour solid almost all the way to
+    // the silhouette so the blob reads at the same brightness as the
+    // old flat circle.
+    float fade_start = edge * 0.96;
     float fade_end   = edge * 1.02;
     float body_a     = 1.0 - smoothstep(fade_start, fade_end, r);
     if (body_a < 0.004) discard;
 
-    vec3 col = u_color;
-
-    // Inner shading: slightly darken toward the rim so the blob reads as
-    // a 3D droplet, not a flat disc. Centre stays slightly brighter than
-    // the base color.
-    float t_edge    = clamp(r / edge, 0.0, 1.0);
-    float edge_dark = smoothstep(0.55, 1.0, t_edge);
-    col *= mix(1.06, 0.72, edge_dark);
-
-    // Crisp darker rim band just before the alpha fade -- gives the blob
-    // a visible silhouette without an explicit DrawCircleLines pass.
-    float rim_band = smoothstep(0.92, 0.99, t_edge)
-                   * (1.0 - smoothstep(0.99, 1.05, t_edge));
-    col = mix(col, col * 0.45, rim_band * 0.65);
-
-    // Upper-left specular highlight. Fixed in screen-space (uses uv, not
-    // the velocity frame) so the "light source" stays steady as the cell
-    // moves. Gaussian falloff in normalized space.
-    vec2  hi_pos     = vec2(-0.45, -0.45);
-    float hi_d       = length(uv - hi_pos);
-    float hi_falloff = exp(-hi_d * hi_d * 6.0);
-    col += vec3(1.0, 1.0, 1.0) * hi_falloff * 0.32;
-
-    // Faint cool back-light opposite the highlight for depth.
-    vec2  bk_pos     = vec2(0.45, 0.45);
-    float bk_d       = length(uv - bk_pos);
-    float bk_falloff = exp(-bk_d * bk_d * 9.0);
-    col += vec3(0.60, 0.70, 0.80) * bk_falloff * 0.08;
-
-    finalColor = vec4(col, body_a * u_alpha);
+    // Flat colour. No inner shading, no rim darkening, no highlight --
+    // the cell just gets the same fill it had before, in a slightly
+    // wobbly shape.
+    finalColor = vec4(u_color, body_a * u_alpha);
 }
 )GLSL";
 
@@ -1599,18 +1576,18 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec, bool fl
         DrawCircleV(Vector2{pos.x, pos.y}, r, fill);
     }
 
-    // High-contrast accessibility outline: thick white stroke layered ON TOP
-    // of the shader body. The blob's wobbly silhouette is approximated by
-    // the circle outline -- close enough for the accessibility intent (cell
-    // edge visible against busy backgrounds), and gives users a clear
-    // boundary even if the shader's rim band is subtle on their display.
+    // Outline ring -- always drawn so cells read clearly against the
+    // backdrop. The circle is a perfect ring, not following the wobble,
+    // which means the silhouette will protrude past it by a few pixels
+    // when the blob wobbles outward. That's intentional -- the outline
+    // marks the average / "rest" radius while the wobble is a subtle
+    // motion-effect on top.
     if (s_high_contrast) {
+        // 3-pass thick white outline (accessibility).
         DrawCircleLinesV(Vector2{pos.x, pos.y}, r,        Color{255, 255, 255, 255});
         DrawCircleLinesV(Vector2{pos.x, pos.y}, r + 1.0f, Color{255, 255, 255, 220});
         DrawCircleLinesV(Vector2{pos.x, pos.y}, r - 1.0f, Color{255, 255, 255, 180});
-    } else if (c.god) {
-        // God-mode dev cells get a bright gold ring on top of the shader
-        // body so the dev flag is unmistakable.
+    } else {
         DrawCircleLinesV(Vector2{pos.x, pos.y}, r, outline);
     }
 
