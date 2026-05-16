@@ -40,16 +40,6 @@ Color colorForPlayer(PlayerId p);
 void setPlayerName(PlayerId p, const char* name);
 void clearPlayerNames();
 
-// Per-cell wobble pulse. Pushed in by the event handler when an absorb /
-// split / blast / recombine event involves a specific cell so the cell's
-// blob silhouette wobbles briefly. Decayed each frame by Client at the
-// same cadence the particle system updates. At rest (no velocity, no
-// recent pulse) the cell renders as a perfect circle.
-void bumpCellWobblePulse(EntityId id, float amount);
-void decayCellWobblePulses(float dt);
-void clearCellWobblePulses();
-float cellWobblePulse(EntityId id);
-
 // Free GPU resources owned by the renderer (the black-hole shader + 1x1 texture).
 // Must be called before raylib's CloseWindow() -- otherwise the shader / texture leak
 // at shutdown and (under some drivers) raylib logs a "trying to delete after context

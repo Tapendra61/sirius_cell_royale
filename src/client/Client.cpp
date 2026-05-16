@@ -30,12 +30,8 @@ Client::Client(EntityId watched_cell, PlayerId watched_player)
     run_start_sec_ = GetTime();
     // Renderer holds a process-wide player-name table that survives across
     // matches; wipe it at construction so the previous match's names don't
-    // leak in on the next one. Same for the cell-wobble-pulse map -- stale
-    // entries from the previous match's cell ids would briefly wobble
-    // unrelated cells in the new match (cell ids reset per-Simulation but
-    // the map outlives them).
+    // leak in on the next one.
     cr::clearPlayerNames();
-    cr::clearCellWobblePulses();
     // Procedural ambient music is intentionally NOT auto-started -- the synthesised
     // pad sounds buzzy; wire in a real music asset and call audio_.playMusic() to
     // turn it back on. The dev console `music_on` command will also start it for
@@ -344,13 +340,6 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                 CellRef pred  = lookupCell(e.predator);
                 Color   color = pred.found ? colorForPlayer(pred.owner) : RAYWHITE;
                 particles_.spawnAbsorbBurst(e.at, e.mass_gained, color);
-                // Blob wobble on the predator. Mass-scaled so eating a fat
-                // target wobbles more than chomping a food pellet -- a
-                // pellet (mass 1) gives ~0.3 amp, a big absorb (~50 mass)
-                // saturates at the 1.2 cap.
-                bumpCellWobblePulse(e.predator,
-                                    std::clamp(0.30f + e.mass_gained / 60.0f,
-                                               0.30f, 1.20f));
 
                 // Skip "+1" food micro-popups (would spam) but show pellets / cell absorbs.
                 if (e.mass_gained >= 5.0f) {
@@ -509,13 +498,6 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                 if (from.found) {
                     particles_.spawnSplitPuff(from.pos, colorForPlayer(e.player));
                 }
-                // Wobble the parent + new child. Splits are violent events,
-                // so saturate the pulse (1.0). Virus pops emit the same
-                // event with into = INVALID; we just bump `from` then.
-                bumpCellWobblePulse(e.from, 1.0f);
-                if (e.into != INVALID_ENTITY) {
-                    bumpCellWobblePulse(e.into, 1.0f);
-                }
                 // SplitEvents with INVALID_ENTITY child indicate a virus explosion.
                 // Player virus pops always audible; bot virus pops only if visible --
                 // otherwise 60 viruses + 50 bots produce a constant pop fog from off-screen.
@@ -590,8 +572,6 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                 // blast origin, screen shake + chroma flash if it's the player's blast.
                 const Color color = colorForPlayer(e.player);
                 particles_.spawnBlastBurst(e.at, e.radius, color);
-                // Recoil wobble on the blaster.
-                bumpCellWobblePulse(e.source, 1.20f);
                 if (e.player == watched_player_) {
                     shake_.addTrauma(0.6f);
                     chroma_.addShift(0.45f);
@@ -684,9 +664,6 @@ void Client::updateFrame(float frame_dt, double now_sec, const Tuning& tuning) {
     hitstop_.update(frame_dt);
     particles_.update(frame_dt);
     popups_.update(frame_dt);
-    // Per-cell blob-wobble pulses decay alongside the particle system so the
-    // visual deformation fades out at the same rate as the absorb burst.
-    decayCellWobblePulses(frame_dt);
     chroma_.update(frame_dt);
     hud_.update(frame_dt, now_sec, tuning.combo_window_sec);
     audio_.update();
