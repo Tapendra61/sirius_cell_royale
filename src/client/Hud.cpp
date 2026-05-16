@@ -46,6 +46,11 @@ void Hud::onPlayerNearMissAttacker() { near_miss_red_  = std::max(near_miss_red_
 void Hud::onPlayerNearMissPrey()     { near_miss_gold_ = std::max(near_miss_gold_, 1.0f); }
 void Hud::onCrit()                   { crit_flash_     = std::max(crit_flash_,    1.0f); }
 
+void Hud::setMutation(MutationKind k, double start_sec) {
+    mutation_kind_      = k;
+    mutation_start_sec_ = start_sec;
+}
+
 void Hud::pushKillfeed(const KillfeedEntry& entry) {
     // Shift older entries down (index 0 = most recent). Drop the oldest if full.
     int keep = std::min(recent_kills_count_, kKillfeedMax - 1);
@@ -89,6 +94,71 @@ SummaryAction Hud::render(int screen_w, int screen_h, const Cell* watched, Tick 
     if (near_miss_gold_ > 0.0f) {
         unsigned char a = static_cast<unsigned char>(near_miss_gold_ * 70.0f);
         DrawRectangle(0, 0, screen_w, screen_h, Color{220, 180, 40, a});
+    }
+
+    // ----- Mutation banner + corner badge -----
+    // Per-match world trait rolled at match start. The banner is the loud
+    // "MUTATION: FEAST -- food everywhere" reveal that fades in/holds/fades
+    // out over the first ~6 seconds. After that a small persistent badge in
+    // the top-left keeps the player oriented on what's affecting the match.
+    // Skipped entirely for None (vanilla play).
+    if (mutation_kind_ != MutationKind::None) {
+        const MutationInfo& mi = mutationInfoFor(mutation_kind_);
+        const double t = GetTime() - mutation_start_sec_;
+        // Timing: 0.4s fade-in, 4.5s hold, 1.1s fade-out = 6.0s total
+        constexpr double kFadeIn  = 0.4;
+        constexpr double kHold    = 4.5;
+        constexpr double kFadeOut = 1.1;
+        constexpr double kTotal   = kFadeIn + kHold + kFadeOut;
+        float banner_alpha = 0.0f;
+        if (t < 0.0) {
+            banner_alpha = 0.0f;
+        } else if (t < kFadeIn) {
+            banner_alpha = static_cast<float>(t / kFadeIn);
+        } else if (t < kFadeIn + kHold) {
+            banner_alpha = 1.0f;
+        } else if (t < kTotal) {
+            banner_alpha = static_cast<float>(1.0 - (t - kFadeIn - kHold) / kFadeOut);
+        }
+        if (banner_alpha > 0.001f) {
+            const int label_fs = sc(16);
+            const int name_fs  = sc(40);
+            const int desc_fs  = sc(18);
+            const char* label  = "MUTATION";
+            const char* name   = mi.name;
+            const char* desc   = mi.description;
+            int label_w = MeasureText(label, label_fs);
+            int name_w  = MeasureText(name,  name_fs);
+            int desc_w  = MeasureText(desc,  desc_fs);
+            int box_w   = std::max({label_w, name_w, desc_w}) + sc(64);
+            int box_h   = sc(120);
+            int box_x   = screen_w / 2 - box_w / 2;
+            int box_y   = sc(36);
+            // Drop-in offset: banner slides down from -20px to its rest
+            // position during the fade-in for a subtle entrance feel.
+            float drop_t = std::clamp(static_cast<float>(t / kFadeIn), 0.0f, 1.0f);
+            int   drop_y = static_cast<int>((1.0f - drop_t) * -20.0f);
+            unsigned char a8 = static_cast<unsigned char>(banner_alpha * 235.0f);
+            DrawRectangle(box_x, box_y + drop_y, box_w, box_h, Color{16, 22, 40, a8});
+            DrawRectangleLines(box_x, box_y + drop_y, box_w, box_h,
+                               Color{200, 160, 255,
+                                     static_cast<unsigned char>(banner_alpha * 230.0f)});
+            unsigned char fg = static_cast<unsigned char>(banner_alpha * 255.0f);
+            DrawText(label, screen_w / 2 - label_w / 2, box_y + drop_y + sc(10),
+                     label_fs, Color{200, 160, 255, fg});
+            DrawText(name,  screen_w / 2 - name_w / 2,  box_y + drop_y + sc(30),
+                     name_fs,  Color{255, 240, 200, fg});
+            DrawText(desc,  screen_w / 2 - desc_w / 2,  box_y + drop_y + sc(82),
+                     desc_fs,  Color{220, 220, 240, fg});
+        }
+        // Persistent corner badge (top-left) once the banner is fully gone.
+        // Tiny, low-contrast -- ambient reminder, not attention-grab.
+        if (t > kTotal) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "[%s]", mi.name);
+            int fs = sc(14);
+            DrawText(buf, 12, 12, fs, Color{200, 160, 255, 200});
+        }
     }
 
     // ----- Combo counter (only when alive / playing) -----

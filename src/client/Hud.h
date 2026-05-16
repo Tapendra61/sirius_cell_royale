@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Mutations.h"
 #include "core/Types.h"
 #include "meta/Missions.h"
 #include "sim/World.h"
@@ -92,6 +93,15 @@ public:
     enum class PauseRole : uint8_t { SinglePlayer = 0, MpHost = 1, MpClient = 2 };
     void setPauseRole(PauseRole r) { pause_role_ = r; }
 
+    // Per-match Mutation -- the randomized world trait rolled by the host
+    // at match start. Hud displays a "MUTATION: <name>" banner that fades
+    // in/out over the first few seconds of the match, plus a small badge in
+    // the top-right corner for the rest of the match. `start_sec` is the
+    // monotonic clock value (raylib's GetTime()) at which the match begins,
+    // so the banner timeline is independent of frame rate / pause.
+    void setMutation(MutationKind k, double start_sec);
+    MutationKind mutation() const { return mutation_kind_; }
+
 private:
     SummaryAction renderSummary(int screen_w, int screen_h, const MatchSummary& s);
     SummaryAction renderPauseOverlay(int screen_w, int screen_h);
@@ -111,6 +121,12 @@ private:
     int           recent_kills_count_         = 0; // active entries in [0, kKillfeedMax)
 
     PauseRole     pause_role_                 = PauseRole::SinglePlayer;
+
+    // Mutation banner state. mutation_kind_ defaults to None which suppresses
+    // both the banner and the corner badge (vanilla SP matches don't roll a
+    // mutation outside this system).
+    MutationKind  mutation_kind_       = MutationKind::None;
+    double        mutation_start_sec_  = 0.0;
 };
 
 } // namespace cr

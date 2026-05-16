@@ -360,6 +360,50 @@ darts perpendicular to the comet's velocity — picks the side it's
 already closer to so the exit is fastest. EMA smoothing is bypassed
 during the dodge so the swerve registers immediately.
 
+### Mutations (per-match world trait)
+
+Every match rolls one **Mutation** at start — a randomized world trait
+that modifies the active Tuning before the simulation ticks. Goal: no
+two matches feel the same. The mutation is deterministic per seed (same
+seed → same mutation), so replays + the determinism test keep working.
+
+In multiplayer the host rolls and the kind is shipped to every joining
+client in the `WelcomeMsg` (wire version bumped to 3) — both sides
+apply the same Tuning modifications so client-side prediction stays
+consistent with host physics.
+
+**HUD reveal** — a centered "MUTATION: \<NAME\>" banner with the
+flavor-text tagline fades in over 0.4 s, holds for 4.5 s, fades out
+over 1.1 s. After fade, a tiny `[Name]` badge in the top-left stays
+visible for the rest of the match so the player remembers what's
+warping the world.
+
+| Mutation         | Effect                                                                                 |
+|------------------|----------------------------------------------------------------------------------------|
+| **Feast**        | `food_target × 2`, `pickup_target × 2`. Easy growth, fast escalation.                  |
+| **Bloom**        | `food_target × 2` (no pickup change). Gentler-than-Feast food bump.                    |
+| **Famine**       | `food_target / 3` (floor 50), `pickup_target / 2`. Scavenger hunt.                     |
+| **Outbreak**     | `virus_count × 3`. Map is a minefield -- splits are dangerous.                         |
+| **Speed Demon**  | `base_speed × 1.5`. Twitch reflex match.                                               |
+| **Heavy**        | `base_speed × 0.6`, `speed_falloff × 0.5`. Slower base but mass barely slows you.      |
+| **Comet Storm**  | `comet_event_interval_sec × 0.25`, `comet_first_after_sec × 0.33`. Constant threat.    |
+| **Blackhole Fever** | `blackhole_count × 3`, `blackhole_min_separation × 0.5`. Swiss cheese map.           |
+| **Geyser Rush**  | `geyser_count × 3`, `geyser_interval_sec × 0.33`, separation halved. Food fountains.   |
+| **Pickup Frenzy**| `pickup_target × 4`. Shield / magnet / stealth uptime feels permanent.                 |
+| **Tidal Surge**  | `tidal_band_strength × 2.5`. Currents push faster than cells can move.                 |
+| **Glass Cannon** | Cheaper splits / blasts / dashes (mass thresholds × 0.6, cost × 0.7, cooldowns × 0.5). |
+
+**None** is also a valid kind — used for forward-compat (a newer host
+sends an unknown index) and as the test/dev opt-out. Vanilla SP matches
+launched outside `runMatch` (e.g. headless determinism test) never see
+a mutation; only `runMatch` rolls one.
+
+**Tuning**: no `tuning.ini` keys yet — mutations modify the loaded
+tuning in place. To force-disable the system for a debugging session,
+comment out the `applyMutation(tuning, active_mutation)` call in
+`runMatch`. To force a specific mutation, replace the `pickRandomMutation`
+call with the desired `MutationKind` value.
+
 ---
 
 ## 7. HUD reference
@@ -376,6 +420,8 @@ during the dodge so the swerve registers immediately.
 | Debug stats | Bottom-left | FPS, current sim tick, watched cell mass + pos, zoom, dt multiplier. Tagged `[PAUSED]` when paused. |
 | Near-miss / crit flashes | Full-screen | Brief red / gold tint on close-encounter events. |
 | Comet warning banner | Top-center | "!! COMET INCOMING !!" with fade in/out + dark backdrop strip. |
+| Mutation banner | Top-center (match start) | "MUTATION: \<NAME\>" + flavor-text reveal. Fades in over 0.4s, holds 4.5s, fades out over 1.1s. |
+| Mutation badge | Top-left (post-reveal) | Tiny `[Name]` reminder of the active world trait. Stays for the rest of the match. |
 | Summary panel | Center (on death) | Final mass, best combo, time alive, XP, missions. PLAY AGAIN / MAIN MENU. |
 
 ---

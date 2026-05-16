@@ -2,6 +2,7 @@
 
 #include "core/Command.h"
 #include "core/Events.h"
+#include "core/Mutations.h"
 #include "core/Snapshot.h"
 
 #include <cstddef>
@@ -21,7 +22,8 @@ constexpr uint8_t kSnapshotVersion    = 4; // v2 adds CellSnap::blast_cooldown_n
                                             // v4 adds currents / wormholes / geysers
 constexpr uint8_t kCommandVersion     = 1;
 constexpr uint8_t kEventVersion       = 2; // v2 adds RecombineEvent variant
-constexpr uint8_t kWelcomeVersion     = 2; // v2 adds host_name
+constexpr uint8_t kWelcomeVersion     = 3; // v2 adds host_name
+                                            // v3 adds mutation_kind (per-match world trait)
 constexpr uint8_t kClientHelloVersion = 2; // v2 adds explicit player_id
 constexpr uint8_t kPeerInfoVersion    = 1;
 
@@ -43,10 +45,15 @@ constexpr uint8_t kMaxWirePlayerNameLen = 16;
 // v2 also includes the HOST's display name so the joining peer immediately knows
 // who's hosting (their killfeed / leaderboard / nameplate uses it). The joining
 // peer's own name + any *other* peers' names arrive via PeerInfoMsg messages.
+// v3 adds the per-match Mutation -- a world trait rolled by the host at match
+// start (3x viruses, comets storm, etc.). Client applies the same Mutation to
+// its local Tuning copy so both sides agree on world parameters; the HUD reads
+// the kind to show the match-start banner.
 struct WelcomeMsg {
-    PlayerId    player_id = INVALID_PLAYER;
-    EntityId    cell_id   = INVALID_ENTITY;
-    std::string host_name;
+    PlayerId     player_id     = INVALID_PLAYER;
+    EntityId     cell_id       = INVALID_ENTITY;
+    std::string  host_name;
+    MutationKind mutation_kind = MutationKind::None;
 };
 
 // Client -> host. Carries the joining peer's display name (from SaveData::

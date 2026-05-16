@@ -501,12 +501,16 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                       const cr::codec::WelcomeMsg* preconsumed_welcome = nullptr,
                       cr::PlayerId next_peer_pid_seed = 2,
                       bool transport_already_announcing = false) {
+    // Snapshot the caller's tuning so we can restore at the single return
+    // point below. Mode-specific overrides (bots / match duration) and the
+    // per-match Mutation both modify `tuning` in place; the saved copy is the
+    // ground truth we'll restore to.
+    const cr::Tuning saved_tuning = tuning;
+
     // Mode-specific tuning overrides. Royale modes (LocalHost / LocalClient)
     // pull bot count + match duration from the host's lobby panel
     // (net_cfg.bot_count / net_cfg.match_duration_sec); SinglePlayer respects
-    // tuning.ini. Both overrides are restored at the single return point below.
-    const int saved_bot_target_count   = tuning.bot_target_count;
-    const int saved_match_duration_sec = tuning.match_duration_sec;
+    // tuning.ini.
     if (mode == MatchMode::LocalHost) {
         tuning.bot_target_count = std::max(0, net_cfg.bot_count);
         // 0 in the settings panel means "endless" which the sim's match-end
@@ -519,6 +523,33 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
         // arrives from the host inside each snapshot, so we leave tuning's
         // value at the SP default.
         tuning.bot_target_count = 0;
+    }
+
+    // ---- Per-match Mutation ----
+    // Roll a world trait (3x viruses, comet storm, etc.) deterministically
+    // from the match seed. Host + SP pick locally; LocalClient takes the
+    // host's roll from the preconsumed Welcome so both sides apply the same
+    // Tuning modifications (client-side prediction uses base_speed etc., so
+    // the kinds must match exactly). Applied BEFORE Simulation construction
+    // so the sim sees the mutated tuning from tick 1.
+    cr::MutationKind active_mutation = cr::MutationKind::None;
+    if (mode == MatchMode::LocalClient) {
+        if (preconsumed_welcome != nullptr) {
+            active_mutation = preconsumed_welcome->mutation_kind;
+        }
+        // No preconsumed welcome: leave at None for now. The inline welcome
+        // handler in the main loop will applyMutation() once the host's
+        // welcome packet arrives -- close enough since the client's local
+        // Simulation never ticks (only client-side prediction reads tuning).
+    } else {
+        active_mutation = cr::pickRandomMutation(seed);
+    }
+    cr::applyMutation(tuning, active_mutation);
+    {
+        const cr::MutationInfo& mi = cr::mutationInfoFor(active_mutation);
+        std::printf("[match] mutation: %s -- %s (seed=%llu)\n",
+                    mi.name, mi.description,
+                    static_cast<unsigned long long>(seed));
     }
 
     cr::Simulation sim(seed, tuning);
@@ -555,6 +586,14 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
     if (mode == MatchMode::LocalHost)   pause_role = cr::Hud::PauseRole::MpHost;
     if (mode == MatchMode::LocalClient) pause_role = cr::Hud::PauseRole::MpClient;
     client.setPauseRole(pause_role);
+
+    // Drive the HUD's mutation banner. The banner timeline uses GetTime() as
+    // a monotonic clock, so we pass it here as the "match start" timestamp.
+    // For LocalClient without a preconsumed welcome, active_mutation is still
+    // None at this point -- the inline welcome handler below will call
+    // setMutation again with the host's roll once it arrives.
+    client.hud().setMutation(active_mutation, GetTime());
+
     client.camera().snapTo(
         cr::Vec2{static_cast<float>(tuning.world_width)  * 0.5f,
                  static_cast<float>(tuning.world_height) * 0.5f},
@@ -719,9 +758,10 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                 client.setPlayerName(pid, name_it->second);
             }
             cr::codec::WelcomeMsg w;
-            w.player_id = pid;
-            w.cell_id   = new_cell;
-            w.host_name = save.player_name;
+            w.player_id     = pid;
+            w.cell_id       = new_cell;
+            w.host_name     = save.player_name;
+            w.mutation_kind = active_mutation;
             cr::NetworkTransport::PeerHandle ph;
             ph.enet_peer = peer_ptr;
             net_transport.sendWelcomeTo(ph, w);
@@ -871,9 +911,10 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                 // peer's HUD shows it immediately. Their own name arrives
                 // later via ClientHello.
                 cr::codec::WelcomeMsg welcome;
-                welcome.player_id = new_pid;
-                welcome.cell_id   = new_cell;
-                welcome.host_name = save.player_name;
+                welcome.player_id     = new_pid;
+                welcome.cell_id       = new_cell;
+                welcome.host_name     = save.player_name;
+                welcome.mutation_kind = active_mutation;
                 net_transport.sendWelcomeTo(ph, welcome);
                 // Catch the joining peer up on every OTHER peer's name we
                 // already know -- ship one PeerInfo per known peer so the
@@ -969,6 +1010,25 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                     client.setPlayerName(/*host slot*/ 1, w.host_name);
                 }
                 client.setPlayerName(w.player_id, save.player_name);
+                // Late application of the per-match Mutation -- this branch
+                // only fires when the client entered runMatch WITHOUT a
+                // preconsumed welcome (rare; normal flow preconsumes during
+                // the lobby phase). Local sim is already constructed by now,
+                // but client-side prediction still reads from `tuning` so
+                // catching up here keeps speed / split thresholds in sync
+                // with the host.
+                if (active_mutation == cr::MutationKind::None
+                    && w.mutation_kind != cr::MutationKind::None) {
+                    active_mutation = w.mutation_kind;
+                    cr::applyMutation(tuning, active_mutation);
+                    // Refresh the HUD banner so the player sees the reveal
+                    // at first-paint time (rather than missing it because the
+                    // initial setMutation call ran with None).
+                    client.hud().setMutation(active_mutation, GetTime());
+                    const cr::MutationInfo& mi = cr::mutationInfoFor(active_mutation);
+                    std::printf("[match] mutation applied from welcome: %s -- %s\n",
+                                mi.name, mi.description);
+                }
                 cr::codec::ClientHelloMsg hello;
                 hello.player_id = w.player_id;
                 hello.name      = save.player_name;
@@ -1327,11 +1387,11 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
     if (!using_shared_transport) {
         net_transport.disconnect();
     }
-    // Restore the outer tuning's bot_target_count so a subsequent VS AI match
-    // doesn't inherit the multiplayer override of 0. Idempotent for SP (we
-    // wrote the saved value over itself).
-    tuning.bot_target_count   = saved_bot_target_count;
-    tuning.match_duration_sec = saved_match_duration_sec;
+    // Restore the outer tuning so a subsequent match doesn't inherit either
+    // the mode overrides (bot_target_count / match_duration_sec) or the
+    // per-match Mutation modifications (food_target, virus_count, base_speed,
+    // etc.). Wholesale restore -- idempotent for SP, cheap for any mode.
+    tuning = saved_tuning;
     return outcome;
 }
 

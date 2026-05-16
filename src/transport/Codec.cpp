@@ -604,7 +604,10 @@ bool readName(Reader& r, std::string& out) {
 } // namespace
 
 // ---- Welcome (host -> peer) ----
-// On-wire: [type=Welcome][version=2][player_id][cell_id][host_name_len][host_name_bytes]
+// On-wire: [type=Welcome][version=3][player_id][cell_id][host_name_len][host_name_bytes][mutation_kind]
+//          v2 omitted mutation_kind. We don't accept v2 anymore -- mismatched
+//          versions get rejected at decode time, which is fine because the
+//          host + peer build from the same source tree in practice.
 
 bool encodeWelcome(const WelcomeMsg& m, std::vector<uint8_t>& out) {
     out.clear();
@@ -615,6 +618,10 @@ bool encodeWelcome(const WelcomeMsg& m, std::vector<uint8_t>& out) {
     w.writePOD(m.player_id);
     w.writePOD(m.cell_id);
     writeName(w, m.host_name);
+    // Mutation kind is a single byte at the tail. New variants in MutationKind
+    // append to the enum so old peers (forward-compat) see an unknown index --
+    // mutationInfoFor returns a generic "Unknown" record for those.
+    w.writePOD(static_cast<uint8_t>(m.mutation_kind));
     return true;
 }
 
@@ -629,6 +636,9 @@ bool decodeWelcome(const uint8_t* data, size_t len, WelcomeMsg& m) {
     r.readPOD(m.player_id);
     r.readPOD(m.cell_id);
     if (!readName(r, m.host_name)) return false;
+    uint8_t mut_byte = 0;
+    if (!r.readPOD(mut_byte)) return false;
+    m.mutation_kind = static_cast<MutationKind>(mut_byte);
     return !r.failed;
 }
 
