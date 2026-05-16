@@ -220,10 +220,10 @@ A formation of comets — one big main + 4–9 smaller satellites — sweeps acr
 the map together. Rarer than single comets (default first at 90s, then every
 ~180s), but when it lands the whole map is a kill grid for a few seconds.
 
-- **Composition**: 1 **main** comet at radius 825 (smaller than the
+- **Composition**: 1 **main** comet at radius 550 (smaller than the
   single-comet's 1575 — the formation should read as a swarm, not one giant
   with sprinkles) + N **satellites** where N ∈ [3, 6] (so 4–7 comets total).
-  Satellite radius rolls uniformly in [263, 525].
+  Satellite radius rolls uniformly in [175, 350].
 - **Color variants**: main is the original **Orange** fire palette.
   Satellites are split 50/50 between **Red** (crimson body, near-white core)
   and **Blue** (cobalt body, white-blue core). Telegraph lines + minimap dots
@@ -784,9 +784,9 @@ The full set is documented inline in `tuning.ini` itself. High-impact knobs:
 | `[comet]` | `first_after_sec` | 45 | Delay before the first comet of a match. |
 | `[comet_shower]` | `event_interval_sec` | 180 | Mean time between comet-shower events (separate cadence from single comets). |
 | `[comet_shower]` | `first_after_sec` | 90 | Delay before the first shower of a match. |
-| `[comet_shower]` | `main_radius` | 825 | Main (Orange) comet's kill radius during a shower. |
+| `[comet_shower]` | `main_radius` | 550 | Main (Orange) comet's kill radius during a shower. |
 | `[comet_shower]` | `satellite_min` / `satellite_max` | 3 / 6 | Inclusive range for the satellite count (4..7 comets total counting the main). |
-| `[comet_shower]` | `satellite_min_radius` / `satellite_max_radius` | 263 / 525 | Bounds on satellite kill radius. |
+| `[comet_shower]` | `satellite_min_radius` / `satellite_max_radius` | 175 / 350 | Bounds on satellite kill radius. |
 | `[comet_shower]` | `spread_perp` | 1800 | Perpendicular scatter of satellites around the main's path (each side). |
 | `[comet_shower]` | `spread_along` | 1500 | Longitudinal scatter along the velocity axis (earlier / later landing than the main). |
 | `[currents]` | `band_count` | 2 | Horizontal tidal-current bands stretching across the world. 0 disables the feature. |
