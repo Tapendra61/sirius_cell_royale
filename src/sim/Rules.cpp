@@ -1048,6 +1048,16 @@ void spawnCometShowerNow(World& world, const Tuning& t,
                                         CometVariant::Orange);
     events.push_back(CometEvent{main_id, CometEvent::Telegraph, entry, unit_dir});
 
+    // Track every comet's spawn position so we can reject candidate
+    // satellite placements that would land too close. We push the main's
+    // entry first so satellites can't sit on top of it; each accepted
+    // satellite appends so subsequent ones space against ALL prior comets.
+    // Plain std::vector (small N, no spatial grid needed) -- with sat_max <= 9
+    // we run at most 9 * kMaxRetries = ~270 distance checks per shower.
+    std::vector<Vec2> placed_positions;
+    placed_positions.reserve(static_cast<size_t>(t.comet_shower_satellite_max + 1));
+    placed_positions.push_back(entry);
+
     // ---- Satellites (Red / Blue) ----
     // Roll count in [min, max]; clamp to [0, 9] just in case the tuning has
     // pathological values. With default min=3, max=6 the spawn is 4..7
@@ -1059,29 +1069,54 @@ void spawnCometShowerNow(World& world, const Tuning& t,
     sat_max     = std::min(sat_max, 9); // hard cap so we don't choke the renderer
     const int sat_count = rng.rangeInt(sat_min, sat_max);
 
-    for (int i = 0; i < sat_count; ++i) {
-        // Perpendicular offset: symmetric around the main's axis. Cube-rooted
-        // so the distribution is roughly uniform across the band (without
-        // cube-root the centre would cluster). +/- spread_perp.
-        float perp_u  = rng.rangeFloat(-1.0f, 1.0f);
-        float perp_o  = perp_u * t.comet_shower_spread_perp;
-        // Longitudinal offset: bias to NEGATIVE side (behind the main along
-        // entry->exit) so satellites trail the main rather than lead it.
-        // Range [-spread_along, +0.4 * spread_along].
-        float along_o = rng.rangeFloat(-1.0f, 0.4f) * t.comet_shower_spread_along;
+    // Rejection-sampling parameters. With min_separation 600 and a roughly
+    // 3600 x 3000 scatter box, the slot density is loose enough that a
+    // free spot almost always exists within ~5 retries. 20 is a generous
+    // ceiling; if we genuinely can't find a clear slot we accept the last
+    // candidate so the cluster count remains the same (visible overlap is
+    // preferred over silently spawning fewer comets).
+    constexpr int kMaxRetries = 20;
+    const float   min_sep_sq  = t.comet_shower_min_separation
+                              * t.comet_shower_min_separation;
 
-        // Satellite entry position relative to the formation's entry point.
-        Vec2 sat_entry{
-            entry.x + perp.x * perp_o + unit_dir.x * along_o,
-            entry.y + perp.y * perp_o + unit_dir.y * along_o,
-        };
-        // Compute a matching exit point so the renderer's telegraph line
-        // shows where this satellite will end up (parallel to the main's
-        // path, offset by perp_o).
-        Vec2 sat_exit{
-            exit.x  + perp.x * perp_o,
-            exit.y  + perp.y * perp_o,
-        };
+    for (int i = 0; i < sat_count; ++i) {
+        // Roll a satellite position with rejection sampling against every
+        // already-placed comet. `accepted` flips true the moment we find a
+        // slot that clears min_separation from every prior position.
+        Vec2 sat_entry{0.0f, 0.0f};
+        Vec2 sat_exit{0.0f, 0.0f};
+        for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
+            // Perpendicular offset: symmetric around the main's axis,
+            // +/- spread_perp.
+            float perp_u  = rng.rangeFloat(-1.0f, 1.0f);
+            float perp_o  = perp_u * t.comet_shower_spread_perp;
+            // Longitudinal offset: bias to NEGATIVE side (behind the main
+            // along entry->exit) so satellites trail the main rather than
+            // lead it. Range [-spread_along, +0.4 * spread_along].
+            float along_o = rng.rangeFloat(-1.0f, 0.4f) * t.comet_shower_spread_along;
+
+            Vec2 cand_entry{
+                entry.x + perp.x * perp_o + unit_dir.x * along_o,
+                entry.y + perp.y * perp_o + unit_dir.y * along_o,
+            };
+            Vec2 cand_exit{
+                exit.x + perp.x * perp_o,
+                exit.y + perp.y * perp_o,
+            };
+
+            bool ok = true;
+            for (const auto& p : placed_positions) {
+                float dx = cand_entry.x - p.x;
+                float dy = cand_entry.y - p.y;
+                if (dx * dx + dy * dy < min_sep_sq) { ok = false; break; }
+            }
+            // Always remember the latest roll so the fallback "accept the
+            // last candidate" path has something to use even when every
+            // attempt failed the separation test.
+            sat_entry = cand_entry;
+            sat_exit  = cand_exit;
+            if (ok) break;
+        }
 
         float radius = rng.rangeFloat(t.comet_shower_satellite_min_radius,
                                       t.comet_shower_satellite_max_radius);
@@ -1098,6 +1133,7 @@ void spawnCometShowerNow(World& world, const Tuning& t,
                                         sat_entry, sat_exit,
                                         variant);
         events.push_back(CometEvent{sid, CometEvent::Telegraph, sat_entry, unit_dir});
+        placed_positions.push_back(sat_entry);
     }
 }
 

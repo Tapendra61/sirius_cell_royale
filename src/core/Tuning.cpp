@@ -109,6 +109,7 @@ bool LoadTuningFromFile(Tuning& out, const std::string& path) {
     readFloat(ini, "comet_shower", "satellite_max_radius", out.comet_shower_satellite_max_radius);
     readFloat(ini, "comet_shower", "spread_perp",         out.comet_shower_spread_perp);
     readFloat(ini, "comet_shower", "spread_along",        out.comet_shower_spread_along);
+    readFloat(ini, "comet_shower", "min_separation",      out.comet_shower_min_separation);
 
     readInt  (ini, "currents", "band_count",    out.tidal_band_count);
     readFloat(ini, "currents", "band_height",   out.tidal_band_height);

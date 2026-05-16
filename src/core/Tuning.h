@@ -135,6 +135,13 @@ struct Tuning {
                                                      // / later than the main so it
                                                      // feels like a sustained barrage
                                                      // rather than a single wall.
+    // Minimum centre-to-centre distance enforced between any two comets in the
+    // shower (including main vs each satellite). The spawner rejection-samples
+    // each satellite position up to kMaxRetries times; if no slot satisfies the
+    // separation we accept the last roll (so cluster count is preserved). With
+    // default 600 + max satellite radius 350 + main radius 550 we get partial
+    // overlap at worst -- comets never fully coincide on top of each other.
+    float comet_shower_min_separation     = 600.0f;
 
     // [currents] -- horizontal tidal-current bands that stretch across the
     // entire map width. Cells whose y falls inside a band get pushed along

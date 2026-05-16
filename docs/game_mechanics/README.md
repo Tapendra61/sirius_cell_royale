@@ -231,7 +231,11 @@ the map together. Rarer than single comets (default first at 90s, then every
 - **Spread**: all comets share the same world-spanning velocity direction
   (the formation flies in formation). Satellites scatter ±1800 units
   perpendicular to the main path and −1500..+600 longitudinally, so they
-  arrive in a staggered wave rather than a wall.
+  arrive in a staggered wave rather than a wall. The spawner uses rejection
+  sampling against a `min_separation` (default 600) so no two comets in the
+  shower spawn closer than that centre-to-centre — they can clip each
+  other's kill radius (intentional overlap = chained kill zones) but never
+  fully coincide.
 - **Telegraph + kill rules**: identical to the single comet — 3s telegraph
   per comet, instant kill on contact for cells without Shield / Black-hole
   hide. Each comet emits its own `CometEvent::Telegraph / Active /
@@ -789,6 +793,7 @@ The full set is documented inline in `tuning.ini` itself. High-impact knobs:
 | `[comet_shower]` | `satellite_min_radius` / `satellite_max_radius` | 175 / 350 | Bounds on satellite kill radius. |
 | `[comet_shower]` | `spread_perp` | 1800 | Perpendicular scatter of satellites around the main's path (each side). |
 | `[comet_shower]` | `spread_along` | 1500 | Longitudinal scatter along the velocity axis (earlier / later landing than the main). |
+| `[comet_shower]` | `min_separation` | 600 | Minimum centre-to-centre distance between any two comets in the shower. Rejection-sampled at spawn; if a slot can't be found after 20 tries the cluster count is preserved by accepting the last roll (visible overlap > silently dropping a comet). |
 | `[currents]` | `band_count` | 2 | Horizontal tidal-current bands stretching across the world. 0 disables the feature. |
 | `[currents]` | `band_height` | 650 | Vertical half-reach of each band (total band height = 2× this). |
 | `[currents]` | `band_strength` | 360 | px/sec drift applied to a `start_mass` cell at the band centreline; scales as `1 / (mass/start_mass)^0.25` (4th-root attenuation) and feathers smoothly toward the rim. Cell position is translated directly each tick (the seek/velocity layer is independent). Tuned slightly above base_speed (~280) so small cells get swept but can still fight the current. The 4th-root curve keeps medium-mass cells (400-1600 mass) firmly in the current's grip rather than the sqrt attenuation that previously made the band irrelevant once you grew past starter size. |
