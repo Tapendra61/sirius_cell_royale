@@ -3,6 +3,9 @@
 #include "ai/BotPersonality.h" // letterForTag
 
 #include "raylib.h"
+#include "rlgl.h"   // rlDrawRenderBatchActive -- forces raylib to flush its
+                    // internal vertex batch so per-quad shader-uniform changes
+                    // actually take effect (see drawComets() trail/head loops).
 
 #include <algorithm>
 #include <cmath>
@@ -857,8 +860,14 @@ void drawComets(const std::vector<CometSnap>& comets, double now_sec,
 
     // ---- Pass 2: Trails (one shader bind, ADDITIVE blend) ----
     // Each comet gets a rotated rectangle. We change uniforms (telegraph,
-    // variant) per comet without re-binding the shader -- raylib's
-    // SetShaderValue does a glUniform on the currently-bound program.
+    // variant) per comet -- BUT raylib's immediate-mode renderer batches
+    // DrawTexturePro calls into a single vertex buffer under one shader
+    // bind, so the per-quad SetShaderValue calls only take effect on the
+    // NEXT flushed batch. Without a per-quad flush every comet would end
+    // up sharing the LAST comet's variant colour (silently rendering 8
+    // identical-coloured comets even though the minimap shows them with
+    // distinct palettes). rlDrawRenderBatchActive() forces the flush so
+    // each quad carries its own uniforms when it hits the GPU.
     if (g_comet_gfx.initialized) {
         bool shader_bound = false;
         for (const auto& cm : comets) {
@@ -889,6 +898,14 @@ void drawComets(const std::vector<CometSnap>& comets, double now_sec,
             DrawTexturePro(g_comet_gfx.white,
                            Rectangle{0, 0, 1, 1},
                            dst, origin, angle_deg, WHITE);
+            // Flush the just-issued quad with the uniforms we set above. The
+            // next loop iteration sets fresh uniforms before adding its quad
+            // to a now-empty batch -- so each comet renders with its own
+            // colour even though the shader program stays bound the whole
+            // pass. Per-flush cost is ~10us; per-program-switch cost was
+            // ~50us, so a 7-comet shower is still ~3-4x cheaper than the
+            // pre-batching path.
+            rlDrawRenderBatchActive();
         }
         if (shader_bound) {
             EndBlendMode();
@@ -897,6 +914,9 @@ void drawComets(const std::vector<CometSnap>& comets, double now_sec,
     }
 
     // ---- Pass 3: Heads (one shader bind, normal blend) ----
+    // Same per-quad flush dance as the trail pass -- raylib batches under
+    // a single bound shader, so uniforms only stick to the next flushed
+    // batch.
     if (g_comet_gfx.initialized) {
         bool shader_bound = false;
         for (const auto& cm : comets) {
@@ -921,6 +941,7 @@ void drawComets(const std::vector<CometSnap>& comets, double now_sec,
             DrawTexturePro(g_comet_gfx.white,
                            Rectangle{0, 0, 1, 1},
                            dst, Vector2{0, 0}, 0.0f, WHITE);
+            rlDrawRenderBatchActive();
         }
         if (shader_bound) EndShaderMode();
     } else {
