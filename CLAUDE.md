@@ -28,11 +28,17 @@ HUD, multiplayer, dev console, tuning) before declaring a change "done."
 Sim A and Sim B must produce bit-identical snapshots at tick 1000 and tick
 1500. The codec round-trip and replay round-trip must also pass.
 
-### Bots default to 0
+### Bot defaults vary by mode
 
-`tuning.ini` ships `bot_target_count = 0` so test sessions start with a
-clean world. `bots N` in the dev console flips them on. Don't re-enable
-the default without an explicit reason.
+`tuning.ini` ships `bot_target_count = 50` for VS AI matches.
+**Royale modes** (LocalHost / LocalClient) override this to 0 at
+match start in `runMatch` — multiplayer lobbies start empty so the
+host opts in via the `bots N` console command. The outer tuning is
+restored at the bottom of `runMatch` so the next VS AI session sees
+the file value again.
+
+Don't change the default without an explicit reason. Don't break the
+VS-AI-on / Royale-off asymmetry.
 
 ### Multiplayer pause semantics
 

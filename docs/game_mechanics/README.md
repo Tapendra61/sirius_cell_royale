@@ -416,7 +416,7 @@ The full set is documented inline in `tuning.ini` itself. High-impact knobs:
 | `[blast]` | `cooldown_sec` | 4 | Q recharge time. |
 | `[dash]` | `cooldown_sec` | 4 | Dash recharge time. |
 | `[world]` | `width` / `height` | 16000 / 16000 | Playfield. |
-| `[bots]` | `target_count` | 0 | Default AI count. Use `bots N` to change at runtime. |
+| `[bots]` | `target_count` | 50 | VS AI default. Royale modes (LocalHost / LocalClient) override to 0 at match start; the host opts in with `bots N`. |
 | `[blackholes]` | `count` | 5 | Black holes per match. |
 | `[blackholes]` | `stamina_drain_sec` | 9 | Time from full → empty hide stamina. |
 | `[comet]` | `event_interval_sec` | 75 | Mean time between comet events. |

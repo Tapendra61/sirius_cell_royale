@@ -87,9 +87,11 @@ struct Tuning {
     float comet_first_after_sec    = 45.0f;  // delay before the first comet of a match
 
     // [bots]
-    // Default 0 so test sessions start with an empty world. The `bots N` dev console
-    // command (host-only in multiplayer) flips this on demand.
-    int   bot_target_count = 0;
+    // VS AI / SinglePlayer default. Royale modes (LocalHost / LocalClient) override
+    // this to 0 at match start so a multiplayer lobby isn't pre-populated with bots
+    // -- hosts opt in via the `bots N` console command. Headless tests use the
+    // Tuning struct's default (the value below) since they don't load tuning.ini.
+    int   bot_target_count = 50;
     float bot_spawn_interval_sec = 1.5f;
     float difficulty_scaling = 0.85f;
 
