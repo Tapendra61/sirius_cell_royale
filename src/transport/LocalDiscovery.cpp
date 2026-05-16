@@ -2,6 +2,9 @@
 
 #ifdef CR_NETWORK
 #  include <enet/enet.h>
+#  if !defined(_WIN32)
+#    include <sys/socket.h>   // for raw setsockopt fallback (SO_REUSEPORT)
+#  endif
 #endif
 
 #include <algorithm>
@@ -116,6 +119,32 @@ bool LocalDiscovery::startClient() {
             std::fprintf(stderr, "[discovery] enable REUSEADDR failed (client) errno=%d (%s)\n",
                          errno, std::strerror(errno));
         }
+        // Also set SO_REUSEPORT where supported. This is what actually lets
+        // two cell_royale instances on the same machine both bind udp/47457
+        // -- SO_REUSEADDR alone isn't enough on macOS/BSD for active UDP
+        // listeners. Without it, the second-to-bind hits EADDRINUSE even
+        // when the first instance is the only thing on that port. ENet's
+        // API doesn't expose SO_REUSEPORT, so we drop down to raw
+        // setsockopt on the ENetSocket fd (it's a plain `int` on POSIX).
+#if !defined(_WIN32) && defined(SO_REUSEPORT)
+        {
+            int one = 1;
+            if (setsockopt(static_cast<int>(s), SOL_SOCKET, SO_REUSEPORT,
+                           &one, sizeof(one)) < 0) {
+                // Non-fatal: we still try the bind. Old kernels without
+                // SO_REUSEPORT silently fail here; bind() will then fall
+                // back to SO_REUSEADDR semantics.
+                static bool logged_once = false;
+                if (!logged_once) {
+                    std::fprintf(stderr, "[discovery] SO_REUSEPORT setsockopt "
+                                          "failed errno=%d (%s); continuing "
+                                          "with REUSEADDR only\n",
+                                 errno, std::strerror(errno));
+                    logged_once = true;
+                }
+            }
+        }
+#endif
         if (enet_socket_set_option(s, ENET_SOCKOPT_NONBLOCK, 1) < 0) {
             std::fprintf(stderr, "[discovery] enable NONBLOCK failed (client) errno=%d (%s)\n",
                          errno, std::strerror(errno));
