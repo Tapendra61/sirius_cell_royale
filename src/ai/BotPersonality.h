@@ -17,7 +17,11 @@ enum class BotPersonality : uint8_t {
     Hunter   = 2,
     Hoarder  = 3,
     Reckless = 4,
-    Count    = 5,
+    // Apex: the late-game terror. Spawns only as an elite once the player is big
+    // (>= ~5000 mass). Huge, persistent lock-on, freely uses Q-blast to scatter
+    // the player's split pieces. Designed to keep VS AI threatening at any size.
+    Apex     = 5,
+    Count    = 6,
 };
 
 // Weight vector that turns into FSM transition probabilities and ranges.
@@ -40,6 +44,9 @@ struct PersonalityWeights {
                                 // higher = prefer epic/rare food over close common.
     float prey_lead_seconds;    // when chasing, aim at prey.pos + prey.vel * this. Hunter
                                 // gets ~0.5 to intercept; others 0 (aim at current pos).
+    float blast_aggression;     // 0..1; chance to fire Q-blast when in range with cooldown
+                                // ready. 0 = never (Cautious / non-aggressors); high values
+                                // turn the bot into a shockwave threat (Apex).
 };
 
 PersonalityWeights weightsFor(BotPersonality p);

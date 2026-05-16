@@ -56,6 +56,15 @@ struct BotMind {
     // it from being perfectly predictable.
     Tick           dash_windup_started = 0;
     Tick           dash_windup_until   = 0;
+
+    // Pack-flank offset (Hunter / Apex). When chasing the human player, the bot aims
+    // not at the player's centre but at a point offset perpendicularly from the
+    // chase line by `sin(flank_radians) * my_r * kFlankScale`. Each bot gets a
+    // random flank at spawn -- with multiple Hunters in pursuit they end up
+    // approaching from different sides instead of stacking on top of each other,
+    // which produces emergent "surround the prey" behaviour without explicit
+    // inter-bot communication.
+    float          flank_radians = 0.0f;
 };
 
 // What the bot decided to do this tick. Caller turns these into Commands.
@@ -64,6 +73,7 @@ struct BotDecision {
     bool     split        = false;
     bool     eject        = false;
     bool     dash         = false;
+    bool     blast        = false; // Q-blast (Mass Blast); BotDirector emits BlastCmd
     BotState chosen_state = BotState::Wander;
 };
 

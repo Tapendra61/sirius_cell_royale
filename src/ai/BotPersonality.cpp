@@ -4,8 +4,7 @@ namespace cr::ai {
 
 PersonalityWeights weightsFor(BotPersonality p) {
     // Field order matches the struct (top-to-bottom). Each row mirrors a one-line
-    // intent: "I am the ___ bot." Phase 6 tuning aims to give each personality a
-    // visible niche; Hunter remains the apex predator but isn't the only threat.
+    // intent: "I am the ___ bot." Last field on each row is blast_aggression.
     switch (p) {
     case BotPersonality::Greedy:
         // The food monarch: huge food vision, strongest value weighting, will snap at
@@ -13,34 +12,49 @@ PersonalityWeights weightsFor(BotPersonality p) {
         // as roaming fat targets that occasionally eat you back.
         return {/*view*/         3500.0f,
                 /*flee_mult*/       2.5f,
-                /*chase_mult*/      3.0f,  // tiny opportunistic chase (was 0)
-                /*split_aggro*/     0.2f,  // occasional split at close prey (was 0)
+                /*chase_mult*/      3.0f,
+                /*split_aggro*/     0.2f,
                 /*dash_eager*/      0.10f,
                 /*wander_period*/   4.0f,
                 /*corner_pull*/     0.0f,
                 /*fears_viruses*/   true,
-                /*max_mass_factor*/ 1.1f,  // can exceed player (was 0.9)
+                /*max_mass_factor*/ 1.1f,
                 /*human_bias*/      1.0f,
                 /*responsiveness*/  0.25f,
-                /*food_value_w*/    3.0f,  // even more value-focused (was 2.0)
-                /*prey_lead_sec*/   0.0f};
+                /*food_value_w*/    3.0f,
+                /*prey_lead_sec*/   0.0f,
+                /*blast_aggro*/     0.10f};
     case BotPersonality::Cautious:
-        // The unkillable survivor: longer vision, panicked flee range, panic dashes.
-        // Mass cap raised so a Cautious that's been hiding all match is actually big.
-        return {2500.0f, 25.0f, 0.0f, 0.0f, 0.20f, 6.0f, 0.0f, true, 0.85f, 1.0f, 0.12f, 1.0f, 0.0f};
+        // The unkillable survivor. Never blasts (defensive specialist).
+        return {2500.0f, 25.0f, 0.0f, 0.0f, 0.20f, 6.0f, 0.0f, true, 0.85f, 1.0f, 0.12f, 1.0f, 0.0f, 0.0f};
     case BotPersonality::Hunter:
-        // Still the apex predator -- lead-aim, sticky lock-on, dash telegraph. Mass cap
-        // and chase range nudged down to make room for the rest of the cast.
-        return {4500.0f, 4.0f, 32.0f, 0.95f, 0.45f, 2.0f, 0.0f, true, 1.25f, 5.0f, 0.32f, 0.3f, 0.7f};
+        // The apex predator. Now lobs blasts at fleeing prey to disrupt escape splits.
+        return {4500.0f, 4.0f, 32.0f, 0.95f, 0.45f, 2.0f, 0.0f, true, 1.25f, 5.0f, 0.32f, 0.3f, 0.7f, 0.55f};
     case BotPersonality::Hoarder:
-        // The fortress: enormous mass cap, wide bite radius from its corner, will now
-        // *split-launch* at close prey -- approaching their corner is a real trap.
-        return {1500.0f, 6.0f, 10.0f, 0.5f, 0.20f, 8.0f, 0.92f, true, 1.4f, 1.0f, 0.10f, 5.0f, 0.0f};
+        // The fortress. Blasts when prey gets close enough so the corner is even more
+        // hostile to camp -- punches them away or into a wall.
+        return {1500.0f, 6.0f, 10.0f, 0.5f, 0.20f, 8.0f, 0.92f, true, 1.4f, 1.0f, 0.10f, 5.0f, 0.0f, 0.45f};
     case BotPersonality::Reckless:
-        // The chaos lord: now also targets the player (2x bias), gets sticky lock-on
-        // (2s), longer chase, better prey-lead. Still no dash telegraph -- their dashes
-        // are random by design.
-        return {2800.0f, 1.5f, 28.0f, 1.0f, 1.0f, 1.0f, 0.0f, false, 1.35f, 2.0f, 0.55f, 0.8f, 0.4f};
+        // The chaos lord. Loves blasts, fires often (sometimes wastes them).
+        return {2800.0f, 1.5f, 28.0f, 1.0f, 1.0f, 1.0f, 0.0f, false, 1.35f, 2.0f, 0.55f, 0.8f, 0.4f, 0.75f};
+    case BotPersonality::Apex:
+        // The late-game terror. Slow, fearless, sticky lock-on, very high blast
+        // aggression -- splits the player + chases the largest piece. Spawns only
+        // as an elite (BotDirector gates this) so non-elite Apex doesn't exist.
+        return {/*view*/         5500.0f,
+                /*flee_mult*/       1.0f,  // doesn't flee meaningfully
+                /*chase_mult*/      45.0f, // chases across the map
+                /*split_aggro*/     0.85f, // split-pounces eagerly when ahead
+                /*dash_eager*/      0.30f,
+                /*wander_period*/   8.0f,
+                /*corner_pull*/     0.0f,
+                /*fears_viruses*/   true,  // still avoids them
+                /*max_mass_factor*/ 1.7f,  // can outgrow the player
+                /*human_bias*/      8.0f,  // locks onto the player hard
+                /*responsiveness*/  0.22f, // smooth & predatory, not jittery
+                /*food_value_w*/    1.2f,
+                /*prey_lead_sec*/   0.60f, // intercepts well
+                /*blast_aggro*/     0.95f}; // signature ability
     case BotPersonality::Count:
         break;
     }
@@ -54,6 +68,7 @@ const char* nameOf(BotPersonality p) {
     case BotPersonality::Hunter:   return "Hunter";
     case BotPersonality::Hoarder:  return "Hoarder";
     case BotPersonality::Reckless: return "Reckless";
+    case BotPersonality::Apex:     return "Apex";
     case BotPersonality::Count:    break;
     }
     return "?";
@@ -66,6 +81,7 @@ char letterOf(BotPersonality p) {
     case BotPersonality::Hunter:   return 'H';
     case BotPersonality::Hoarder:  return 'h';
     case BotPersonality::Reckless: return 'R';
+    case BotPersonality::Apex:     return 'A';
     case BotPersonality::Count:    break;
     }
     return '?';

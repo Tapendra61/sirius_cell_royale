@@ -214,6 +214,36 @@ Each effect has an aura ring around the cell while active.
 - Despawns once it exits the world. The kill is logged as **COMET** in the
   killfeed.
 
+### Bot AI (VS AI / SinglePlayer)
+
+Six personalities with distinct behaviours. Each gets a letter in the
+killfeed / leaderboard so you can tell them apart at a glance.
+
+| Letter | Name | Niche |
+|---|---|---|
+| `G` | Greedy | Food monarch. Huge food vision, strongest value weighting. Rarely chases cells. |
+| `C` | Cautious | Survival specialist. Long flee range, panic dashes. Never blasts; never elite-spawns. |
+| `H` | Hunter | Apex predator. Lead-aim chase, sticky lock-on (4s), dash telegraph, mid blast usage. |
+| `h` | Hoarder | Corner camper. Wide bite radius, splits aggressively when prey ventures into the corner. |
+| `R` | Reckless | Chaos lord. Locks onto the player, high split + blast usage, no dash telegraph. |
+| `A` | **Apex** | Late-game terror. Elite-only, spawns when the player reaches ≥ 5000 mass. Huge (110–160% of player mass), sticky chase, 95% blast aggression, locks onto the player hard. |
+
+**Elite scaling** — as the player grows, a rising share of new bot spawns
+become "elites" with mass scaled to your current peak. Elite chance ramps
+to 70% by mid-game. Elites can be up to 140% of your peak mass (Apex up to
+160%), so big-mass players face individual bots that can eat them.
+
+**Pack flank** — every Hunter and Apex bot is spawned with a random flank
+angle. When they're all chasing the player, each approaches from a
+slightly different perpendicular offset (scaled by distance), so a group
+ends up surrounding you instead of stacking on the same chase line.
+
+**Bot Q-blast** — Hunters / Apex / Reckless / Hoarder will fire the
+Mass Blast when their target (or attacker) is in blast range, they have
+≥ 300 mass, and the cooldown is ready. Mostly used as a disruption tool
+to scatter your split pieces. Bots blast at the same cooldown and cost
+as the player.
+
 ---
 
 ## 7. HUD reference

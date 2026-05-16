@@ -224,6 +224,16 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
             && rng.nextFloat() < 0.85f) {
             queueDashOrFire(mind, d, self, rng, now);
         }
+        // Panic blast: push the predator away. Same gates as the prey-chasing
+        // case (min mass + cooldown + range) but we skip the aggression roll
+        // when the threat is dangerously close -- survival overrides flavor.
+        if (w.blast_aggression > 0.0f
+            && self.mass >= t.blast_min_mass
+            && self.blast_cooldown_until <= now
+            && threat_d < t.blast_radius * 0.9f
+            && rng.nextFloat() < std::min(1.0f, w.blast_aggression * 1.5f)) {
+            d.blast = true;
+        }
         mind.fled_threat_id = threat->id;
         mind.flee_until     = now + secondsToTicks(0.5f);
     } else if (prey) {
@@ -233,6 +243,29 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
         Vec2 prey_target = prey->pos;
         if (w.prey_lead_seconds > 0.0f) {
             prey_target = prey_target + prey->vel * w.prey_lead_seconds;
+        }
+        // Pack-flank: for Hunters / Apex chasing the *human* player, nudge the
+        // aim point perpendicularly off the straight chase line by an amount
+        // proportional to the bot's own radius. Each bot has a distinct
+        // flank_radians (set at spawn), so a swarm of three Hunters ends up
+        // approaching the player from three sides instead of stacking. Bots
+        // already converge once close (the perpendicular shrinks relative to
+        // distance), so the kill move still works.
+        if ((mind.personality == BotPersonality::Hunter
+             || mind.personality == BotPersonality::Apex)
+            && prey->owner < kFirstBotPlayerId) {
+            Vec2 to_prey = prey_target - self.pos;
+            float dist  = std::sqrt(lengthSq(to_prey));
+            if (dist > 1.0f) {
+                Vec2 forward{to_prey.x / dist, to_prey.y / dist};
+                Vec2 perp{-forward.y, forward.x};
+                // Offset magnitude: bot's own radius * sin(flank). Scaled down as
+                // the bot closes -- at very close range we want a clean strike,
+                // not a brushing pass. ramp factor 0..1 in 0..2000 distance band.
+                float ramp = std::clamp(dist / 2000.0f, 0.0f, 1.0f);
+                float off  = std::sin(mind.flank_radians) * my_r * 3.5f * ramp;
+                prey_target = prey_target + perp * off;
+            }
         }
         d.move_target = prey_target;
         const bool in_pounce_range = prey_d < my_r * 2.5f;
@@ -251,6 +284,19 @@ BotDecision decide(BotMind& mind, const Cell& self, const World& world,
             && w.dash_eagerness > 0.0f
             && rng.nextFloat() < 0.85f) {
             queueDashOrFire(mind, d, self, rng, now);
+        }
+        // Q-blast: fire when prey is in blast range AND personality favors it.
+        // The blast pushes the prey + nearby food / cells outward, so it's most
+        // valuable as a *disruption* tool (scatter the player's split pieces;
+        // knock the prey away from a black hole they were diving for). The
+        // ability has a min-mass requirement and a cooldown -- the sim's
+        // doBlast no-ops if either is unmet, so a missed roll doesn't break.
+        if (w.blast_aggression > 0.0f
+            && self.mass >= t.blast_min_mass
+            && self.blast_cooldown_until <= now
+            && prey_d < t.blast_radius * 0.8f
+            && rng.nextFloat() < w.blast_aggression) {
+            d.blast = true;
         }
         mind.fled_threat_id = INVALID_ENTITY;
         mind.flee_until     = 0;

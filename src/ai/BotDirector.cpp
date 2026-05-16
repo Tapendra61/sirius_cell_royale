@@ -62,6 +62,7 @@ void BotDirector::tick(World& world, const Tuning& t,
         if (d.split) out.push_back(Command{bot.player, now, SplitCmd{}});
         if (d.eject) out.push_back(Command{bot.player, now, EjectCmd{}});
         if (d.dash)  out.push_back(Command{bot.player, now, DashCmd{}});
+        if (d.blast) out.push_back(Command{bot.player, now, BlastCmd{}});
     }
 }
 
@@ -77,33 +78,54 @@ void BotDirector::respawnBots(World& world, const Tuning& t) {
         bool           is_elite    = false;
 
         if (player_max_mass_ > 150.0f) {
+            // Elite spawn rate ramps faster than before AND caps higher (was 60%,
+            // now 70%) so end-game players genuinely have to fight back instead
+            // of cruising the food belt.
             float elite_chance =
-                std::min(0.60f, (player_max_mass_ - 150.0f) / 1500.0f);
+                std::min(0.70f, (player_max_mass_ - 150.0f) / 1500.0f);
             if (rng_.nextFloat() < elite_chance) {
                 is_elite = true;
-                // 70-130% of player mass; cap 8000. So some elites are directly above the
-                // player, capable of eating them on contact.
-                float frac = 0.70f + rng_.nextFloat() * 0.60f;
-                spawn_mass = std::max(t.start_mass,
-                                      std::min(8000.0f, player_max_mass_ * frac));
-                // Elite distribution rebalanced so Hunter no longer dominates the field:
-                // 35% Hunter, 25% Reckless, 22% Hoarder, 18% Greedy. Cautious never
-                // elite-spawns -- they're survival specialists, not aggressors.
+                // 70-140% of player mass. No fixed 8000 cap any more -- the
+                // previous cap meant a 15k-mass player faced 8k elites who
+                // couldn't eat them on contact. Elite mass now scales with the
+                // player so the threat tier keeps up at any size.
+                float frac = 0.70f + rng_.nextFloat() * 0.70f;
+                spawn_mass = std::max(t.start_mass, player_max_mass_ * frac);
+
+                // Elite distribution. Apex unlocks once the player is big
+                // enough (>= 5000 mass) and takes a chunk of the elite slots
+                // there -- the "you've grown too big, here's a real predator"
+                // moment. Hunter still leads the rest; Cautious never elite-
+                // spawns (survival specialist, not aggressor).
+                const bool apex_unlocked = (player_max_mass_ >= 5000.0f);
                 float pick = rng_.nextFloat();
-                if (pick < 0.35f)      personality = BotPersonality::Hunter;
-                else if (pick < 0.60f) personality = BotPersonality::Reckless;
-                else if (pick < 0.82f) personality = BotPersonality::Hoarder;
-                else                   personality = BotPersonality::Greedy;
+                if (apex_unlocked && pick < 0.25f) {
+                    personality = BotPersonality::Apex;
+                    // Apex spawns even bigger: 110-160% of player mass, so an
+                    // Apex with bad luck still threatens.
+                    float apex_frac = 1.10f + rng_.nextFloat() * 0.50f;
+                    spawn_mass = std::max(spawn_mass, player_max_mass_ * apex_frac);
+                } else if (pick < 0.50f) {
+                    personality = BotPersonality::Hunter;
+                } else if (pick < 0.70f) {
+                    personality = BotPersonality::Reckless;
+                } else if (pick < 0.87f) {
+                    personality = BotPersonality::Hoarder;
+                } else {
+                    personality = BotPersonality::Greedy;
+                }
             }
         }
 
-        // Spawn location. Elite Hunters AND Reckless drop near the player so they engage
-        // fast; everyone else (Hoarder, Greedy, non-elites) spawns elsewhere with a clear
-        // zone from existing big cells. Hoarder picks its own corner; Greedy roams.
+        // Spawn location. Elite Hunters, Reckless, AND Apex drop near the player
+        // so they engage fast; everyone else (Hoarder, Greedy, non-elites) spawns
+        // elsewhere with a clear zone from existing big cells. Hoarder picks its
+        // own corner; Greedy roams.
         Vec2 pos{};
         const bool spawn_near_player = is_elite
                                     && (personality == BotPersonality::Hunter
-                                        || personality == BotPersonality::Reckless)
+                                        || personality == BotPersonality::Reckless
+                                        || personality == BotPersonality::Apex)
                                     && player_seen_;
         if (spawn_near_player) {
             float angle = rng_.rangeFloat(0.0f, 2.0f * kPi);
@@ -148,13 +170,19 @@ void BotDirector::respawnBots(World& world, const Tuning& t) {
         mind.wander_target = pos;
         mind.wander_set_at = world.currentTick();
         mind.is_elite      = is_elite;
+        // Random flank angle so multiple Hunters/Apex chasing the same prey end up
+        // approaching from different sides (see BotMind::flank_radians).
+        mind.flank_radians = rng_.rangeFloat(0.0f, 2.0f * kPi);
         bots_.push_back(mind);
     }
 }
 
 BotPersonality BotDirector::pickPersonality() {
-    int n = static_cast<int>(BotPersonality::Count);
-    return static_cast<BotPersonality>(rng_.rangeInt(0, n - 1));
+    // Apex never appears in the random-non-elite pool -- it's a late-game
+    // elite-only personality (see respawnBots). We pick uniformly from the
+    // first five (Greedy..Reckless).
+    constexpr int kNonAxisCount = static_cast<int>(BotPersonality::Apex);
+    return static_cast<BotPersonality>(rng_.rangeInt(0, kNonAxisCount - 1));
 }
 
 void BotDirector::recordPlayerFinishingMass(float mass) {
