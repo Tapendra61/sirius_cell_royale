@@ -108,6 +108,10 @@ struct Snapshot {
     std::vector<PickupSnap>    pickups;
     std::vector<BlackHoleSnap> blackholes;
     std::vector<CometSnap>     comets;
+    // Seconds remaining in the current match. 0 when no match timer is
+    // active (Tuning::match_duration_sec == 0). Negative-clamped: once the
+    // match has ended the value reads 0, never goes below.
+    float                      match_time_left_sec = 0.0f;
 
     bool operator==(const Snapshot&) const = default;
 };

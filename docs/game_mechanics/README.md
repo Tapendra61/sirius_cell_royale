@@ -267,6 +267,7 @@ during the dodge so the swerve registers immediately.
 | Element | Position | What it shows |
 |---|---|---|
 | Leaderboard | Top-left corner | Top 15 players by total mass (summed across all of their cells). Each row: rank, cell-coloured dot, **display name** when known (player's chosen handle from Settings, or peers' names received via the welcome handshake), otherwise letter+id (e.g. `P1`, `H7`), mass. Your row is highlighted in gold. If you're outside the top 15, a separate "your rank" row is appended below with the same gold highlight. Builds from the latest snapshot so it works identically in SinglePlayer / LocalHost / LocalClient. |
+| Match timer | Top-center | `mm:ss` countdown of the match's remaining time. Hidden when `match_duration_sec == 0` (open-ended SP / sandbox). Pulses red in the last 10 seconds to signal the end is close. Built from `Snapshot::match_time_left_sec` so it works uniformly across modes. |
 | Combo counter | Top-right (under Q-bar) | Pulsing `xN` when ≥ 2. Bigger / dimmer with chain length. |
 | Killfeed | Top-right, below combo | Last 5 inter-player kills. Player-involved kills get a gold accent. Comet kills label predator as **COMET** in hot orange. |
 | Q (Mass Blast) cooldown bar | Top-right corner | 220×18 px. Red → orange → bright yellow as it refills. "BLAST" overlay when ready; "NEED MASS" overlay when biggest cell is below 300. Subtle pulsing glow when castable. |
@@ -392,6 +393,25 @@ All channels are reliable. Default port: **UDP 7456**.
 - Refuses to kick PlayerId 1 (the host's own slot) and any PID not currently
   bound to a peer.
 
+### Match end + winner
+
+- **Timer**: every Royale match runs on a configurable clock
+  (`match_duration_sec`, default 300 = 5 min in MP, 0 / disabled in SP).
+  Snapshots carry `match_time_left_sec` so every client renders the same
+  countdown in the top-center HUD strip.
+- **Winner**: when the timer hits zero, the host's sim emits a single
+  `MatchEndEvent` carrying the highest-total-mass player at that instant.
+  Ties go to whichever owner the cells vector lists first (deterministic
+  via the sim's iteration order).
+- **Overlay**: clients enter `GamePhase::MatchEnd`, the winner card pops
+  up (winner name + final mass + "returning in N..." countdown). The
+  player's own name highlights green if they won.
+- **Return**: after 6 seconds (or on click / Space / Enter) the client
+  triggers a return-to-menu. SP lands in the main menu; MP lands in the
+  LocalLobby. The host's runMatch teardown sends DISCONNECT to all
+  peers; clients that haven't auto-returned yet bounce on the
+  host-disconnect path.
+
 ### Player names
 
 - **Source**: set in Settings → IDENTITY → "Player name" (max 16 ASCII chars).
@@ -501,6 +521,7 @@ The full set is documented inline in `tuning.ini` itself. High-impact knobs:
 | `[dash]` | `cooldown_sec` | 4 | Dash recharge time. |
 | `[world]` | `width` / `height` | 16000 / 16000 | Playfield. |
 | `[bots]` | `target_count` | 50 | VS AI default. Royale modes (LocalHost / LocalClient) override to 0 at match start; the host opts in with `bots N`. |
+| `[match]` | `duration_sec` | 0 | Total match length in seconds. 0 = unlimited (SP / sandbox). Royale modes override to 300 (5 min) when starting a match if the value is 0. When the timer hits zero the sim emits `MatchEndEvent` and the client shows the winner overlay before returning to lobby/menu. |
 | `[blackholes]` | `count` | 5 | Black holes per match. |
 | `[blackholes]` | `stamina_drain_sec` | 9 | Time from full → empty hide stamina. |
 | `[comet]` | `event_interval_sec` | 75 | Mean time between comet events. |

@@ -62,6 +62,14 @@ private:
     // Tick at which the next crashing-comet world event should fire. Owned here (not
     // in Rules) so processComets stays stateless. Initialised in the constructor.
     Tick                   next_comet_spawn_tick_ = 0;
+
+    // Match-end bookkeeping. match_started_tick_ is the value of currentTick at the
+    // first tick() call (i.e. the start of the match). When Tuning::match_duration_sec
+    // > 0 the sim watches elapsed time and emits MatchEndEvent the moment it hits
+    // the duration -- the match_ended_ flag prevents the event firing more than once.
+    bool                   match_started_      = false;
+    Tick                   match_started_tick_ = 0;
+    bool                   match_ended_        = false;
 };
 
 } // namespace cr

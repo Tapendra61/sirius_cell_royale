@@ -90,6 +90,15 @@ void Simulation::tick(float dt) {
 
     const Tick now = world_.currentTick();
 
+    // Match-timer anchor. We can't initialise this in the constructor because
+    // the world spawns its initial cells AFTER construction (see runMatch),
+    // and match_started_tick_ should mark the first frame that gameplay
+    // actually advances. Set it once on the first tick.
+    if (!match_started_) {
+        match_started_tick_ = now;
+        match_started_      = true;
+    }
+
     // 0. Bots read last tick's state and queue this tick's commands.
     std::vector<Command> bot_commands;
     director_.tick(world_, tuning_, bot_commands);
@@ -143,6 +152,54 @@ void Simulation::tick(float dt) {
     // post-compaction + respawn changes. Cheap (~0.1ms) and removes a class of bugs
     // where bots would dereference stale indices into the food vector.
     world_.rebuildGrids();
+
+    // 7. Match-end check. Skipped when duration is 0 (sandbox / SP) or after
+    // the event has already fired this match. The winner is determined by
+    // total mass summed across each owner's cells; ties go to whichever owner
+    // we scan first (deterministic via the cells_ vector ordering).
+    if (!match_ended_ && tuning_.match_duration_sec > 0) {
+        const Tick duration_ticks = secondsToTicks(
+            static_cast<float>(tuning_.match_duration_sec));
+        if (now - match_started_tick_ + 1 >= duration_ticks) {
+            match_ended_ = true;
+            // Aggregate mass by owner. Linear scan; cells_ is bounded by
+            // max_cells_per_player * (1 + bots) so this is cheap.
+            PlayerId winner   = INVALID_PLAYER;
+            float    best_mass = -1.0f;
+            // Small array-of-pairs to keep the dependency tree clean (no
+            // unordered_map include just for one place).
+            constexpr size_t kMaxOwners = 256;
+            struct Tally { PlayerId pid; float mass; };
+            Tally tally[kMaxOwners];
+            size_t n_tally = 0;
+            for (const auto& c : world_.cells()) {
+                if (c.mass <= 0.0f) continue;
+                // Find or insert.
+                bool found = false;
+                for (size_t i = 0; i < n_tally; ++i) {
+                    if (tally[i].pid == c.owner) {
+                        tally[i].mass += c.mass;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found && n_tally < kMaxOwners) {
+                    tally[n_tally++] = Tally{c.owner, c.mass};
+                }
+            }
+            for (size_t i = 0; i < n_tally; ++i) {
+                if (tally[i].mass > best_mass) {
+                    best_mass = tally[i].mass;
+                    winner    = tally[i].pid;
+                }
+            }
+            MatchEndEvent me;
+            me.winner_player = winner;
+            me.winner_mass   = (best_mass < 0.0f) ? 0.0f : best_mass;
+            me.reason        = MatchEndEvent::Reason::TimeLimit;
+            events_.push_back(me);
+        }
+    }
 
     world_.advanceTick();
 }
@@ -333,6 +390,20 @@ Snapshot Simulation::buildSnapshot() const {
         }
         s.comets.push_back(cs);
     }
+
+    // Match timer: seconds remaining at the moment this snapshot was built.
+    // 0 = unlimited or match already ended. Clamped >= 0 so the HUD doesn't
+    // need its own clamp.
+    if (tuning_.match_duration_sec > 0 && match_started_ && !match_ended_) {
+        const Tick duration_ticks = secondsToTicks(
+            static_cast<float>(tuning_.match_duration_sec));
+        const Tick elapsed = (now > match_started_tick_)
+                                ? (now - match_started_tick_) : 0u;
+        const Tick remaining = (elapsed >= duration_ticks)
+                                   ? 0u : (duration_ticks - elapsed);
+        s.match_time_left_sec = static_cast<float>(remaining) / kSimHz;
+    }
+
     return s;
 }
 

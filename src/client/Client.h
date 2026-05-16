@@ -216,6 +216,17 @@ private:
     // the HUD overlay can fade out. Doesn't affect the sim.
     float                comet_banner_remaining_ = 0.0f;
     static constexpr float kCometBannerSec      = 3.5f;
+
+    // Match-end overlay state. Populated when a MatchEndEvent arrives; HUD reads
+    // these to render the winner panel. remaining_sec counts down each frame; when
+    // it hits 0 the client sets return_to_menu_pending_ so the outer loop bounces
+    // us back to the lobby (MP) or main menu (SP).
+    bool                   match_end_active_     = false;
+    PlayerId               match_end_winner_     = INVALID_PLAYER;
+    float                  match_end_winner_mass_ = 0.0f;
+    std::string            match_end_winner_name_;
+    float                  match_end_remaining_sec_ = 0.0f;
+    static constexpr float kMatchEndOverlaySec   = 6.0f;
 };
 
 } // namespace cr

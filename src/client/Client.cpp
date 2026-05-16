@@ -74,6 +74,17 @@ void Client::pollFrame(int screen_w, int screen_h, Tick current_tick) {
     if (phase_ == GamePhase::Respawning) {
         return; // waiting for main to spawn the cell
     }
+    if (phase_ == GamePhase::MatchEnd) {
+        // Match is over. Winner overlay has focus; the auto-return countdown
+        // is the only path forward. Mouse-click skips the rest of the
+        // countdown so impatient players don't have to wait.
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
+            || IsKeyPressed(KEY_SPACE)
+            || IsKeyPressed(KEY_ENTER)) {
+            match_end_remaining_sec_ = 0.0f;
+        }
+        return;
+    }
 
     // ---- Playing phase ----
     // Esc opens the pause overlay in every mode. In single-player the sim also
@@ -563,6 +574,37 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                     case CometEvent::Despawn:
                         break;
                 }
+            } else if constexpr (std::is_same_v<T, MatchEndEvent>) {
+                // Match clock hit zero. Capture the winner info so the
+                // overlay can render it, transition to MatchEnd phase, and
+                // start the auto-return countdown. Only fires once -- the
+                // sim emits MatchEndEvent exactly once per match.
+                if (!match_end_active_) {
+                    // Look up the winner's personality_tag from the latest
+                    // snapshot so the fallback label (when they don't have
+                    // a registered name) shows the right letter for a bot
+                    // winner ("H7", "A3", etc.) instead of the human "P".
+                    uint8_t winner_tag = 0;
+                    if (interp_.hasCurr()) {
+                        for (const auto& cs : interp_.curr().cells) {
+                            if (cs.owner == e.winner_player) {
+                                winner_tag = cs.personality_tag;
+                                break;
+                            }
+                        }
+                    }
+                    match_end_active_        = true;
+                    match_end_winner_        = e.winner_player;
+                    match_end_winner_mass_   = e.winner_mass;
+                    match_end_winner_name_   = playerLabel(e.winner_player,
+                                                            winner_tag,
+                                                            /*max_len=*/16);
+                    match_end_remaining_sec_ = kMatchEndOverlaySec;
+                    phase_                   = GamePhase::MatchEnd;
+                    // Stop any active pause overlay -- the match-end takes
+                    // focus, and the world is winding down for everyone.
+                    paused_ = false;
+                }
             }
         }, ev);
     }
@@ -580,6 +622,19 @@ void Client::updateFrame(float frame_dt, double now_sec, const Tuning& tuning) {
     // Crashing-comet banner countdown. Pure visual; doesn't affect the sim.
     if (comet_banner_remaining_ > 0.0f) {
         comet_banner_remaining_ = std::max(0.0f, comet_banner_remaining_ - frame_dt);
+    }
+
+    // Match-end overlay countdown. After the configured display window the
+    // client requests a return to the menu (the outer loop's existing flow
+    // routes that to MainMenu for SP or LocalLobby for MP). Idempotent --
+    // setting the flag multiple times is a no-op until the outer loop
+    // consumes it.
+    if (match_end_active_ && match_end_remaining_sec_ > 0.0f) {
+        match_end_remaining_sec_ =
+            std::max(0.0f, match_end_remaining_sec_ - frame_dt);
+        if (match_end_remaining_sec_ <= 0.0f) {
+            return_to_menu_pending_ = true;
+        }
     }
 
     // Continuous black-hole bubble particle spray. Each frame, each hole emits one
@@ -1041,6 +1096,100 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         // Drop shadow + main text.
         DrawText(msg, x + 2, y + 2, fs, Color{0, 0, 0, a_text});
         DrawText(msg, x,     y,     fs, tint);
+    }
+
+    // ---- Match timer (top-center, when a match duration is set) ----
+    // Reads match_time_left_sec from the latest snapshot so it works uniformly
+    // in SP / LocalHost / LocalClient. We render in mm:ss; when the timer is
+    // in its last 10 seconds it switches to a red pulse to telegraph the end.
+    if (interp_.hasCurr() && interp_.curr().match_time_left_sec > 0.0f
+        && (phase_ == GamePhase::Playing
+            || phase_ == GamePhase::DeathCam
+            || phase_ == GamePhase::Summary
+            || phase_ == GamePhase::Respawning)) {
+        const float left = interp_.curr().match_time_left_sec;
+        const int   secs = static_cast<int>(left + 0.5f);
+        const int   mm   = secs / 60;
+        const int   ss   = secs % 60;
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%d:%02d", mm, ss);
+        const bool warn   = (left <= 10.5f);
+        const float pulse = warn
+            ? 0.5f + 0.5f * std::sin(static_cast<float>(GetTime()) * 6.0f)
+            : 0.0f;
+        const int fs = 32;
+        const int tw = MeasureText(buf, fs);
+        const int x  = (screen_w - tw) / 2;
+        const int y  = 14;
+        DrawRectangle(x - 14, y - 6, tw + 28, fs + 12, Color{0, 0, 0, 170});
+        const Color tint = warn
+            ? Color{255, static_cast<unsigned char>(80  + pulse * 80),
+                         static_cast<unsigned char>(80  + pulse * 40), 255}
+            : Color{235, 235, 220, 235};
+        DrawText(buf, x + 2, y + 2, fs, Color{0, 0, 0, 200});
+        DrawText(buf, x,     y,     fs, tint);
+    }
+
+    // ---- Match-end overlay (winner panel + auto-return countdown) ----
+    if (phase_ == GamePhase::MatchEnd && match_end_active_) {
+        // Dimmed background so the world recedes.
+        DrawRectangle(0, 0, screen_w, screen_h, Color{0, 0, 0, 180});
+
+        // Centred card. Larger than the pause overlay because this is the
+        // big "match is over" moment.
+        const int box_w = 480;
+        const int box_h = 240;
+        const int box_x = (screen_w - box_w) / 2;
+        const int box_y = (screen_h - box_h) / 2;
+        DrawRectangleRounded(
+            Rectangle{(float)box_x, (float)box_y, (float)box_w, (float)box_h},
+            0.10f, 8, Color{22, 28, 48, 245});
+        DrawRectangleRoundedLines(
+            Rectangle{(float)box_x, (float)box_y, (float)box_w, (float)box_h},
+            0.10f, 8, Color{255, 220, 130, 220});
+
+        // Header.
+        const char* title = "MATCH OVER";
+        const int   t_fs  = 32;
+        const int   t_w   = MeasureText(title, t_fs);
+        DrawText(title, box_x + (box_w - t_w) / 2 + 2, box_y + 22 + 2, t_fs,
+                 Color{0, 0, 0, 200});
+        DrawText(title, box_x + (box_w - t_w) / 2,     box_y + 22,     t_fs,
+                 Color{255, 220, 130, 255});
+
+        // Winner line.
+        const bool   self_won = (match_end_winner_ == watched_player_);
+        char         buf[64];
+        std::snprintf(buf, sizeof(buf), "WINNER: %s",
+                      match_end_winner_name_.c_str());
+        const int    w_fs = 28;
+        const int    w_w  = MeasureText(buf, w_fs);
+        const Color  w_col = self_won
+                                ? Color{120, 250, 160, 255}
+                                : Color{255, 255, 255, 250};
+        DrawText(buf, box_x + (box_w - w_w) / 2 + 2, box_y + 80 + 2, w_fs,
+                 Color{0, 0, 0, 200});
+        DrawText(buf, box_x + (box_w - w_w) / 2,     box_y + 80,     w_fs,
+                 w_col);
+
+        // Mass line.
+        char mass_buf[48];
+        std::snprintf(mass_buf, sizeof(mass_buf), "with %.0f mass",
+                      match_end_winner_mass_);
+        const int m_fs = 18;
+        const int m_w  = MeasureText(mass_buf, m_fs);
+        DrawText(mass_buf, box_x + (box_w - m_w) / 2, box_y + 122, m_fs,
+                 Color{200, 210, 230, 230});
+
+        // "Returning in X..." countdown.
+        int back_in = static_cast<int>(match_end_remaining_sec_ + 0.999f);
+        if (back_in < 0) back_in = 0;
+        char back_buf[48];
+        std::snprintf(back_buf, sizeof(back_buf), "returning in %d...", back_in);
+        const int b_fs = 16;
+        const int b_w  = MeasureText(back_buf, b_fs);
+        DrawText(back_buf, box_x + (box_w - b_w) / 2, box_y + box_h - 40, b_fs,
+                 Color{170, 180, 210, 220});
     }
 
     // LocalClient runs without a populated sim world; the latest snapshot is the

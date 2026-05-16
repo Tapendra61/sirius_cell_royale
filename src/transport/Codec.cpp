@@ -201,6 +201,7 @@ enum class EventTagWire : uint8_t {
     PickupCollected  = 5,
     Blast            = 6,
     Comet            = 7,
+    MatchEnd         = 8,
 };
 
 void writeAbsorb(Writer& w, const AbsorbEvent& e) {
@@ -315,6 +316,20 @@ bool readCometEvent(Reader& r, CometEvent& e) {
     return !r.failed;
 }
 
+void writeMatchEnd(Writer& w, const MatchEndEvent& e) {
+    w.writePOD(e.winner_player);
+    w.writePOD(e.winner_mass);
+    w.writePOD(static_cast<uint8_t>(e.reason));
+}
+bool readMatchEnd(Reader& r, MatchEndEvent& e) {
+    r.readPOD(e.winner_player);
+    r.readPOD(e.winner_mass);
+    uint8_t reason = 0;
+    r.readPOD(reason);
+    e.reason = static_cast<MatchEndEvent::Reason>(reason);
+    return !r.failed;
+}
+
 } // namespace
 
 // ---- Snapshot ----
@@ -348,6 +363,9 @@ bool encodeSnapshot(const Snapshot& s, std::vector<uint8_t>& out) {
 
     w.writePOD(static_cast<uint32_t>(s.comets.size()));
     for (const auto& c : s.comets) writeComet(w, c);
+
+    // v3: match timer (seconds remaining; 0 = unlimited or already ended).
+    w.writePOD(s.match_time_left_sec);
 
     return true;
 }
@@ -383,6 +401,9 @@ bool decodeSnapshot(const uint8_t* data, size_t len, Snapshot& s) {
     if (!readVec(s.pickups,    readPickup)) return false;
     if (!readVec(s.blackholes, readBH))     return false;
     if (!readVec(s.comets,     readComet))  return false;
+
+    // v3: match timer.
+    r.readPOD(s.match_time_left_sec);
 
     return !r.failed;
 }
@@ -471,6 +492,8 @@ bool encodeEvent(const GameEvent& e, std::vector<uint8_t>& out) {
             writeBlast(w, std::get<BlastEvent>(e));              return true;
         case EventTagWire::Comet:
             writeCometEvent(w, std::get<CometEvent>(e));         return true;
+        case EventTagWire::MatchEnd:
+            writeMatchEnd(w, std::get<MatchEndEvent>(e));        return true;
     }
     out.clear();
     return false;
@@ -607,6 +630,9 @@ bool decodeEvent(const uint8_t* data, size_t len, GameEvent& e) {
         }
         case EventTagWire::Comet: {
             CometEvent ev; if (!readCometEvent(r, ev)) return false; e = ev; return true;
+        }
+        case EventTagWire::MatchEnd: {
+            MatchEndEvent ev; if (!readMatchEnd(r, ev)) return false; e = ev; return true;
         }
     }
     return false;

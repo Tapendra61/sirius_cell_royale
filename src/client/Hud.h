@@ -14,8 +14,10 @@ namespace cr {
 enum class GamePhase : uint8_t {
     Playing,
     DeathCam,    // 1.5s slow-mo camera zoom on the killer
-    Summary,     // 3s match-end panel with stats + respawn countdown
+    Summary,     // 3s match-end panel with stats + respawn countdown (per-player death)
     Respawning,  // 1-tick state: main consumes the request and spawns a new cell
+    MatchEnd,    // whole-match end: timer hit zero, host emitted MatchEndEvent. Shows
+                 // winner overlay for kMatchEndOverlaySec, then auto-returns to lobby.
 };
 
 // Snapshot of stats shown at the end of a run. Built by Client at death-cam exit.

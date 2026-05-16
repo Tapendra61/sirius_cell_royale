@@ -28,17 +28,20 @@ HUD, multiplayer, dev console, tuning) before declaring a change "done."
 Sim A and Sim B must produce bit-identical snapshots at tick 1000 and tick
 1500. The codec round-trip and replay round-trip must also pass.
 
-### Bot defaults vary by mode
+### Mode-specific tuning overrides
 
-`tuning.ini` ships `bot_target_count = 50` for VS AI matches.
-**Royale modes** (LocalHost / LocalClient) override this to 0 at
-match start in `runMatch` — multiplayer lobbies start empty so the
-host opts in via the `bots N` console command. The outer tuning is
-restored at the bottom of `runMatch` so the next VS AI session sees
-the file value again.
+Two tuning values that `runMatch` adjusts based on `MatchMode`, saved
+on entry and restored at the single return point:
 
-Don't change the default without an explicit reason. Don't break the
-VS-AI-on / Royale-off asymmetry.
+- `bot_target_count`: SP respects tuning.ini (50 by default). Royale
+  (LocalHost / LocalClient) forces 0 — hosts opt in via `bots N`.
+- `match_duration_sec`: SP keeps tuning.ini's value (0 = unlimited
+  sandbox). Royale forces 300 (5 min) if tuning.ini says 0, so MP
+  matches always end with a winner overlay.
+
+Don't change these defaults without an explicit reason. Don't break
+the VS-AI-on / Royale-off bot asymmetry or the SP-unlimited /
+MP-timed match asymmetry.
 
 ### Multiplayer pause semantics
 

@@ -16,7 +16,8 @@ namespace cr::codec {
 // independently because Snapshot is the largest (and most likely to evolve) and
 // Command/Event/Welcome/ClientHello/PeerInfo are small enough that a bump rarely
 // costs anything.
-constexpr uint8_t kSnapshotVersion    = 2; // v2 adds CellSnap::blast_cooldown_norm
+constexpr uint8_t kSnapshotVersion    = 3; // v2 adds CellSnap::blast_cooldown_norm
+                                            // v3 adds Snapshot::match_time_left_sec
 constexpr uint8_t kCommandVersion     = 1;
 constexpr uint8_t kEventVersion       = 1;
 constexpr uint8_t kWelcomeVersion     = 2; // v2 adds host_name

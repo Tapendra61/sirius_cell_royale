@@ -74,8 +74,24 @@ struct CometEvent {
     Vec2     dir;             // unit direction (zero during Despawn)
 };
 
+// Match-end event: emitted once by the authoritative sim when the configured
+// match duration elapses (Tuning::match_duration_sec). The "winner" is the
+// player with the highest total cell mass at the time of the call. Clients use
+// this to transition into the MatchEnd phase and show the winner overlay.
+//
+// reason is a small enum so future end-conditions (first-to-N-mass, last-cell-
+// standing, etc.) slot in without breaking the wire format.
+struct MatchEndEvent {
+    enum Reason : uint8_t {
+        TimeLimit = 0,
+    };
+    PlayerId winner_player = INVALID_PLAYER;
+    float    winner_mass   = 0.0f;
+    Reason   reason        = Reason::TimeLimit;
+};
+
 using GameEvent = std::variant<AbsorbEvent, DeathEvent, SplitEvent, CritEvent,
                                NearMissEvent, PickupCollectedEvent, BlastEvent,
-                               CometEvent>;
+                               CometEvent, MatchEndEvent>;
 
 } // namespace cr

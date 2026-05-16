@@ -92,6 +92,13 @@ struct Tuning {
     // -- hosts opt in via the `bots N` console command. Headless tests use the
     // Tuning struct's default (the value below) since they don't load tuning.ini.
     int   bot_target_count = 50;
+
+    // [match]
+    // Total length of a match in seconds. 0 = unlimited (open-ended sandbox, the
+    // pre-multiplayer default). Royale modes override this to a non-zero value at
+    // match start so peers see a clear "GG" moment instead of an endless match.
+    // Headless tests use 0 so determinism runs don't accidentally hit an end.
+    int   match_duration_sec = 0;
     float bot_spawn_interval_sec = 1.5f;
     float difficulty_scaling = 0.85f;
 

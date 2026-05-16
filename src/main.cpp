@@ -475,14 +475,18 @@ struct MatchNetworkConfig {
 MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                       MatchMode mode = MatchMode::SinglePlayer,
                       MatchNetworkConfig net_cfg = {}) {
-    // Royale modes (LocalHost / LocalClient) start with NO AI by default; hosts
-    // opt in via the `bots N` console command. VS AI / SinglePlayer respects
-    // whatever tuning.ini specified (50 by default). We override the outer
-    // tuning so the Simulation constructor below picks up the right value, then
-    // restore at the single return point at the bottom of this function.
-    const int saved_bot_target_count = tuning.bot_target_count;
+    // Mode-specific tuning overrides. Royale modes (LocalHost / LocalClient)
+    // start with NO AI by default; SinglePlayer respects tuning.ini (50). MP
+    // also forces a 5-min match timer so peers get a "winner is..." moment;
+    // SP keeps tuning.ini's value (0 = unlimited sandbox by default). Both
+    // overrides are restored at the single return point below.
+    const int saved_bot_target_count   = tuning.bot_target_count;
+    const int saved_match_duration_sec = tuning.match_duration_sec;
     if (mode != MatchMode::SinglePlayer) {
         tuning.bot_target_count = 0;
+        if (tuning.match_duration_sec <= 0) {
+            tuning.match_duration_sec = 300; // 5 min default for Royale
+        }
     }
 
     cr::Simulation sim(seed, tuning);
@@ -1164,7 +1168,8 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
     // Restore the outer tuning's bot_target_count so a subsequent VS AI match
     // doesn't inherit the multiplayer override of 0. Idempotent for SP (we
     // wrote the saved value over itself).
-    tuning.bot_target_count = saved_bot_target_count;
+    tuning.bot_target_count   = saved_bot_target_count;
+    tuning.match_duration_sec = saved_match_duration_sec;
     return outcome;
 }
 

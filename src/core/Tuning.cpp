@@ -104,6 +104,8 @@ bool LoadTuningFromFile(Tuning& out, const std::string& path) {
     readFloat(ini, "bots", "spawn_interval_sec",      out.bot_spawn_interval_sec);
     readFloat(ini, "bots", "difficulty_scaling",      out.difficulty_scaling);
 
+    readInt  (ini, "match", "duration_sec",           out.match_duration_sec);
+
     readFloat(ini, "feel", "screen_shake_max",        out.screen_shake_max);
     readFloat(ini, "feel", "hitstop_threshold_mass",  out.hitstop_threshold_mass);
     readFloat(ini, "feel", "hitstop_duration_sec",    out.hitstop_duration_sec);
