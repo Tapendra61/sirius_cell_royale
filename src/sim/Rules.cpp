@@ -896,15 +896,41 @@ void processComets(World& world, const Tuning& t, float dt,
     }
 
     // ---- 3. Kill cells inside any *active* comet's radius ----
-    auto&             cells     = world.cellsMut();
-    std::vector<char> cell_dead(cells.size(), 0);
-    bool              any_dead  = false;
+    //
+    // Two perf wins over the original O(N_comets * N_cells) scan:
+    //   a) `cell_dead` is a thread_local scratch buffer reused across ticks so
+    //      we don't heap-allocate every tick during comet windows. assign()
+    //      reuses capacity when cells.size() hasn't grown.
+    //   b) Cells are queried through world.cellsGrid() (the spatial index that
+    //      processEating already uses) so each comet only checks cells whose
+    //      bucket overlaps the kill area. With a 233-radius shower satellite
+    //      over an 8000x8000 world that's ~50 candidates per comet instead of
+    //      every cell on the map -- a ~10-20x reduction during showers.
+    //
+    // The grid was last rebuilt at the END of the previous tick and cells
+    // haven't moved this tick yet (stepCells runs after processComets), so
+    // the indices are valid. The grid can return duplicate indices for cells
+    // straddling bucket boundaries; cell_dead[] doubles as a "seen this tick"
+    // marker so we don't process the same cell twice.
+    auto&  cells = world.cellsMut();
+    const size_t cell_count = cells.size();
+    static thread_local std::vector<char>     cell_dead;
+    static thread_local std::vector<uint32_t> nearby;
+    cell_dead.assign(cell_count, 0);
+    bool any_dead = false;
     for (const auto& cm : comets) {
         if (cm.start_at > now) continue;
         const float r_sq = cm.radius * cm.radius;
-        for (size_t i = 0; i < cells.size(); ++i) {
-            auto& c = cells[i];
+        nearby.clear();
+        world.cellsGrid().query(
+            Vec2{cm.pos.x - cm.radius, cm.pos.y - cm.radius},
+            Vec2{cm.pos.x + cm.radius, cm.pos.y + cm.radius},
+            nearby);
+        for (uint32_t i_u : nearby) {
+            const size_t i = i_u;
+            if (i >= cell_count) continue;            // defensive: grid index sanity
             if (cell_dead[i])                    continue;
+            auto& c = cells[i];
             if (c.mass <= 0.0f)                  continue;
             if (c.god)                           continue;
             if (c.hiding_in != INVALID_ENTITY)   continue; // BH-hidden cells survive
@@ -927,7 +953,7 @@ void processComets(World& world, const Tuning& t, float dt,
         // Same compact-in-place pattern as processEating, kept local to avoid coupling
         // this function to that file's templated helper.
         size_t w = 0;
-        for (size_t r = 0; r < cells.size(); ++r) {
+        for (size_t r = 0; r < cell_count; ++r) {
             if (!cell_dead[r]) {
                 if (w != r) cells[w] = std::move(cells[r]);
                 ++w;
@@ -937,16 +963,20 @@ void processComets(World& world, const Tuning& t, float dt,
     }
 
     // ---- 4. Despawn comets that have left the world ----
-    const float margin = t.comet_radius + 200.0f;
-    const float wx0    = -margin;
-    const float wy0    = -margin;
-    const float wx1    = static_cast<float>(world.width())  + margin;
-    const float wy1    = static_cast<float>(world.height()) + margin;
+    // Per-comet margin: shower satellites with radius 117 don't need the
+    // single-comet's 1260-radius cull window. Using each comet's own radius
+    // means small satellites despawn quickly after exiting (one tick saved
+    // here, no kill-impact difference -- they've already left the world).
+    const int W = world.width();
+    const int H = world.height();
     comets.erase(std::remove_if(comets.begin(), comets.end(),
         [&](const Comet& c) {
             if (c.start_at > now) return false;
-            const bool out = (c.pos.x < wx0 || c.pos.x > wx1
-                           || c.pos.y < wy0 || c.pos.y > wy1);
+            const float margin = c.radius + 200.0f;
+            const bool  out    = (c.pos.x < -margin
+                                || c.pos.x > static_cast<float>(W) + margin
+                                || c.pos.y < -margin
+                                || c.pos.y > static_cast<float>(H) + margin);
             if (out) {
                 events.push_back(CometEvent{c.id, CometEvent::Despawn, c.pos, Vec2{0, 0}});
             }

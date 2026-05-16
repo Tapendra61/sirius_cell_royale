@@ -719,46 +719,132 @@ constexpr float kCometTrailLengthMul = 8.0f;
 // tapers from this down to a thin point at the tail.
 constexpr float kCometTrailWidthMul  = 1.05f;
 
-// Render a single comet -- telegraph line + fire trail + fire head. Called from
-// drawWorld inside BeginMode2D so coordinates are in world space. Order matters:
-// trail draws FIRST so the head occludes its hot end cleanly; the trail's shader is
-// already alpha-shaped to fade in toward the head so seams are invisible.
-void drawComet(const CometSnap& cm, double now_sec) {
+// Variant -> palette table. Replaces the four switch-on-variant statements that
+// used to live inline in drawComet / minimap (telegraph line, shader fallback,
+// shock ring, minimap dot). Each row stacks every colour a single comet needs;
+// rgb is fixed and the alpha is overwritten at draw time. Indexed by
+// `static_cast<int>(CometVariant)` -- order MUST match the enum.
+struct CometPalette {
+    Color tel_glow;    // wide additive telegraph glow
+    Color tel_line;    // bright telegraph line core
+    Color tel_ring;    // pulsing entry ring during telegraph
+    Color shock_ring;  // additive shock ring while active
+    Color fb_mid;      // fallback: mid disc (no shader)
+    Color fb_core;     // fallback: hot core
+    Color fb_edge;     // fallback: cool outline
+    Color mm_line;     // minimap telegraph line
+    Color mm_dot;      // minimap active dot
+    Color mm_ring;     // minimap dot outline
+};
+constexpr CometPalette kCometPalettes[3] = {
+    // ORANGE -- default fire palette.
+    {
+        /*tel_glow  */ {255, 120,  40, 0},
+        /*tel_line  */ {255, 220, 130, 0},
+        /*tel_ring  */ {255, 180,  80, 0},
+        /*shock_ring*/ {255, 200,  80, 0},
+        /*fb_mid    */ {255, 230, 120, 230},
+        /*fb_core   */ {255, 250, 200, 255},
+        /*fb_edge   */ {255, 140,  40, 220},
+        /*mm_line   */ {255, 150,  60, 0},
+        /*mm_dot    */ {255, 220, 110, 255},
+        /*mm_ring   */ {255, 120,  30, 200},
+    },
+    // RED -- crimson palette for shower satellites.
+    {
+        /*tel_glow  */ {255,  60,  40, 0},
+        /*tel_line  */ {255, 140, 140, 0},
+        /*tel_ring  */ {255, 100,  80, 0},
+        /*shock_ring*/ {255, 100, 100, 0},
+        /*fb_mid    */ {255, 110, 110, 230},
+        /*fb_core   */ {255, 220, 220, 255},
+        /*fb_edge   */ {220,  20,  20, 220},
+        /*mm_line   */ {255,  80,  80, 0},
+        /*mm_dot    */ {255, 160, 160, 255},
+        /*mm_ring   */ {220,  20,  20, 200},
+    },
+    // BLUE -- cobalt palette for shower satellites.
+    {
+        /*tel_glow  */ { 80, 120, 255, 0},
+        /*tel_line  */ {180, 220, 255, 0},
+        /*tel_ring  */ {120, 180, 255, 0},
+        /*shock_ring*/ {120, 180, 255, 0},
+        /*fb_mid    */ {120, 180, 255, 230},
+        /*fb_core   */ {220, 240, 255, 255},
+        /*fb_edge   */ { 40,  80, 220, 220},
+        /*mm_line   */ {100, 160, 255, 0},
+        /*mm_dot    */ {180, 220, 255, 255},
+        /*mm_ring   */ { 40,  80, 220, 200},
+    },
+};
+inline const CometPalette& cometPalette(CometVariant v) {
+    // Clamp instead of branching on every read; unknown indices stick with
+    // Orange (matches the wire-format decoder's forward-compat behaviour).
+    int idx = static_cast<int>(v);
+    if (idx < 0 || idx > 2) idx = 0;
+    return kCometPalettes[idx];
+}
+
+// Compute the unit velocity direction used for trail orientation. Falls back to
+// the telegraph axis (entry -> exit) when the comet is still in the warning
+// window and has zero velocity.
+inline Vec2 cometUnitDir(const CometSnap& cm) {
+    float vel_len_sq = cm.vel.x * cm.vel.x + cm.vel.y * cm.vel.y;
+    if (vel_len_sq > 1e-6f) {
+        float inv = 1.0f / std::sqrt(vel_len_sq);
+        return Vec2{cm.vel.x * inv, cm.vel.y * inv};
+    }
+    Vec2 tdir{cm.telegraph_end.x - cm.telegraph_start.x,
+              cm.telegraph_end.y - cm.telegraph_start.y};
+    float td_sq = tdir.x * tdir.x + tdir.y * tdir.y;
+    if (td_sq > 1e-6f) {
+        float inv = 1.0f / std::sqrt(td_sq);
+        return Vec2{tdir.x * inv, tdir.y * inv};
+    }
+    return Vec2{1.0f, 0.0f};
+}
+
+// Render N comets (telegraph line + fire trail + fire head + shock ring) in
+// four batched passes. Replaces the per-comet drawComet() that opened and
+// closed the trail + head shaders separately for each comet -- with a 7-comet
+// shower the old path did 14 BeginShaderMode/EndShaderMode pairs per frame
+// (each is a full GL program switch). Batched, the same frame does 2 binds
+// total no matter how many comets are on screen.
+//
+// Visual order (back-to-front): all telegraph lines, all trails, all heads,
+// all shock rings. This also fixes a small ordering bug from the per-comet
+// path where a later comet's trail could draw OVER an earlier comet's head;
+// heads now always sit on top of trails regardless of formation order.
+//
+// Called from drawWorld inside BeginMode2D so coordinates are in world space.
+void drawComets(const std::vector<CometSnap>& comets, double now_sec,
+                const std::vector<std::pair<EntityId, Vec2>>* interp_overrides = nullptr) {
+    if (comets.empty()) return;
     ensureCometGfx();
     const float t = static_cast<float>(now_sec);
 
-    // Variant -> screen-space telegraph colour. Matches the shader palette so
-    // the warning line previews the comet's body colour, not just "incoming
-    // danger". Reads better visually when 5-10 comets telegraph at once
-    // during a shower.
-    auto variantColors = [&](Color& glow, Color& line, Color& ring) {
-        switch (cm.variant) {
-            case CometVariant::Red:
-                glow = Color{255,  60,  40, 0};
-                line = Color{255, 140, 140, 0};
-                ring = Color{255, 100,  80, 0};
-                break;
-            case CometVariant::Blue:
-                glow = Color{ 80, 120, 255, 0};
-                line = Color{180, 220, 255, 0};
-                ring = Color{120, 180, 255, 0};
-                break;
-            case CometVariant::Orange:
-            default:
-                glow = Color{255, 120,  40, 0};
-                line = Color{255, 220, 130, 0};
-                ring = Color{255, 180,  80, 0};
-                break;
+    // Resolve interpolated pos per comet once. Caller (drawWorld) passes an
+    // optional override list so we don't re-do the prev-snapshot lookup for
+    // every pass. Null override = use cm.pos as-is.
+    auto resolvePos = [&](const CometSnap& cm) -> Vec2 {
+        if (!interp_overrides) return cm.pos;
+        for (const auto& [id, p] : *interp_overrides) {
+            if (id == cm.id) return p;
         }
+        return cm.pos;
     };
 
-    // ---- Telegraph line (warning window only) ----
-    // Drawn under everything so the comet head clearly lands on top once it crosses.
-    if (cm.telegraph_norm < 1.0f) {
-        float pulse = 0.5f + 0.5f * std::sin(t * 9.0f);
-        float vis   = std::clamp(cm.telegraph_norm * 1.3f, 0.0f, 1.0f);
-        Color glow, line, ring;
-        variantColors(glow, line, ring);
+    // ---- Pass 1: Telegraph lines (no shader, alpha-blended) ----
+    // Every comet's warning ray, drawn first so the heads land on top once
+    // the comet activates.
+    for (const auto& cm : comets) {
+        if (cm.telegraph_norm >= 1.0f) continue;
+        const CometPalette& pal = cometPalette(cm.variant);
+        const float pulse = 0.5f + 0.5f * std::sin(t * 9.0f);
+        const float vis   = std::clamp(cm.telegraph_norm * 1.3f, 0.0f, 1.0f);
+        Color glow = pal.tel_glow;
+        Color line = pal.tel_line;
+        Color ring = pal.tel_ring;
         glow.a = static_cast<unsigned char>(60  + pulse * 90 * vis);
         line.a = static_cast<unsigned char>(140 + pulse * 90 * vis);
         ring.a = static_cast<unsigned char>(180 * vis);
@@ -766,136 +852,105 @@ void drawComet(const CometSnap& cm, double now_sec) {
         Vector2 b{cm.telegraph_end.x,   cm.telegraph_end.y};
         DrawLineEx(a, b, 18.0f, glow);
         DrawLineEx(a, b,  4.0f, line);
-        float ring_r = cm.radius * (0.6f + 0.25f * pulse);
-        DrawCircleLinesV(a, ring_r, ring);
+        DrawCircleLinesV(a, cm.radius * (0.6f + 0.25f * pulse), ring);
     }
 
-    // Pick a direction for the trail. While active, use the comet's actual velocity
-    // (so the trail trails behind motion). During telegraph, fall back to the
-    // telegraph direction so a faint pre-trail hints at the strike line.
-    Vec2  vel       = cm.vel;
-    float vel_len   = std::sqrt(vel.x * vel.x + vel.y * vel.y);
-    Vec2  unit_vel{1.0f, 0.0f};
-    if (vel_len > 1e-3f) {
-        unit_vel = Vec2{vel.x / vel_len, vel.y / vel_len};
-    } else {
-        Vec2 tdir{cm.telegraph_end.x - cm.telegraph_start.x,
-                  cm.telegraph_end.y - cm.telegraph_start.y};
-        float td = std::sqrt(tdir.x * tdir.x + tdir.y * tdir.y);
-        if (td > 1e-3f) unit_vel = Vec2{tdir.x / td, tdir.y / td};
-    }
-
-    // ---- Trail ----
-    // Build a rotated rectangle whose RIGHT-CENTER (the head-end of the cone) sits at
-    // the comet's position and whose body extends in the -vel direction. raylib's
-    // DrawTexturePro rotation is in degrees, clockwise (its Y axis points down).
-    // atan2(-vel.y, -vel.x) gives the angle whose direction is -vel; converting to
-    // degrees aligns the rect's local +X axis with -vel direction... but our chosen
-    // origin makes the rect extend LEFT of the pivot (i.e. in the rect's local -X
-    // direction). So we want -X to align with -vel, i.e. +X to align with +vel. The
-    // angle of +vel is atan2(vel.y, vel.x). Convert to degrees for raylib.
-    if (cm.telegraph_norm > 0.05f && g_comet_gfx.initialized) {
-        const float trail_len   = cm.radius * kCometTrailLengthMul;
-        const float trail_w     = cm.radius * kCometTrailWidthMul * 2.0f; // full width
-        const float angle_rad   = std::atan2(unit_vel.y, unit_vel.x);
-        const float angle_deg   = angle_rad * (180.0f / kPi);
-
-        // Telegraph: trail is faint and short. We pre-multiply the shader's u_telegraph
-        // by an extra ramp so the trail blooms into existence as the strike approaches.
-        float tg = std::min(1.0f, cm.telegraph_norm * cm.telegraph_norm * 1.4f);
-        if (cm.telegraph_norm >= 1.0f) tg = 1.0f;
-
-        // The rect is drawn with its top-LEFT in world space (pre-rotation), so we set
-        // origin to (trail_len, trail_w/2) -- the right-center of the rect -- and place
-        // the rect at the comet's position. Rotation around that origin pivots the rect
-        // such that the head stays anchored at the comet and the body sweeps to align
-        // with -vel direction.
-        const Rectangle dst{cm.pos.x, cm.pos.y, trail_len, trail_w};
-        const Vector2   origin{trail_len, trail_w * 0.5f};
-
-        BeginShaderMode(g_comet_gfx.trail_shader);
-        SetShaderValue(g_comet_gfx.trail_shader, g_comet_gfx.loc_trail_time,
-                       &t, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(g_comet_gfx.trail_shader, g_comet_gfx.loc_trail_telegraph,
-                       &tg, SHADER_UNIFORM_FLOAT);
-        int variant_i = static_cast<int>(cm.variant);
-        SetShaderValue(g_comet_gfx.trail_shader, g_comet_gfx.loc_trail_variant,
-                       &variant_i, SHADER_UNIFORM_INT);
-        // BLEND_ADDITIVE gives the trail a glowy bloom that reads as fire rather than
-        // a flat painted streak. Restore the default blend mode after.
-        BeginBlendMode(BLEND_ADDITIVE);
-        DrawTexturePro(g_comet_gfx.white,
-                       Rectangle{0, 0, 1, 1},
-                       dst,
-                       origin,
-                       angle_deg,
-                       WHITE);
-        EndBlendMode();
-        EndShaderMode();
-    }
-
-    // ---- Head ----
-    const Vector2 c{cm.pos.x, cm.pos.y};
-    const float   draw_r = cm.radius * 1.35f;
+    // ---- Pass 2: Trails (one shader bind, ADDITIVE blend) ----
+    // Each comet gets a rotated rectangle. We change uniforms (telegraph,
+    // variant) per comet without re-binding the shader -- raylib's
+    // SetShaderValue does a glUniform on the currently-bound program.
     if (g_comet_gfx.initialized) {
-        const Rectangle dst{c.x - draw_r, c.y - draw_r, draw_r * 2.0f, draw_r * 2.0f};
-        float intensity = (cm.telegraph_norm < 1.0f)
-                            ? (cm.telegraph_norm * 0.40f)
-                            : 1.0f;
-        BeginShaderMode(g_comet_gfx.head_shader);
-        SetShaderValue(g_comet_gfx.head_shader, g_comet_gfx.loc_head_time,
-                       &t, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(g_comet_gfx.head_shader, g_comet_gfx.loc_head_telegraph,
-                       &intensity, SHADER_UNIFORM_FLOAT);
-        int variant_i = static_cast<int>(cm.variant);
-        SetShaderValue(g_comet_gfx.head_shader, g_comet_gfx.loc_head_variant,
-                       &variant_i, SHADER_UNIFORM_INT);
-        DrawTexturePro(g_comet_gfx.white,
-                       Rectangle{0, 0, 1, 1},
-                       dst,
-                       Vector2{0, 0},
-                       0.0f,
-                       WHITE);
-        EndShaderMode();
-    } else {
-        // Fallback: bright core + tinted halo (no boiling fire).
-        if (cm.telegraph_norm >= 1.0f) {
-            Color mid, core, edge;
-            switch (cm.variant) {
-                case CometVariant::Red:
-                    mid  = Color{255, 110, 110, 230};
-                    core = Color{255, 220, 220, 255};
-                    edge = Color{220,  20,  20, 220};
-                    break;
-                case CometVariant::Blue:
-                    mid  = Color{120, 180, 255, 230};
-                    core = Color{220, 240, 255, 255};
-                    edge = Color{ 40,  80, 220, 220};
-                    break;
-                case CometVariant::Orange:
-                default:
-                    mid  = Color{255, 230, 120, 230};
-                    core = Color{255, 250, 200, 255};
-                    edge = Color{255, 140,  40, 220};
-                    break;
+        bool shader_bound = false;
+        for (const auto& cm : comets) {
+            if (cm.telegraph_norm <= 0.05f) continue;
+            const Vec2  pos       = resolvePos(cm);
+            const Vec2  unit_vel  = cometUnitDir(cm);
+            const float trail_len = cm.radius * kCometTrailLengthMul;
+            const float trail_w   = cm.radius * kCometTrailWidthMul * 2.0f;
+            const float angle_deg = std::atan2(unit_vel.y, unit_vel.x) * (180.0f / kPi);
+            float tg = (cm.telegraph_norm < 1.0f)
+                           ? std::min(1.0f, cm.telegraph_norm * cm.telegraph_norm * 1.4f)
+                           : 1.0f;
+            const Rectangle dst{pos.x, pos.y, trail_len, trail_w};
+            const Vector2   origin{trail_len, trail_w * 0.5f};
+
+            if (!shader_bound) {
+                BeginShaderMode(g_comet_gfx.trail_shader);
+                BeginBlendMode(BLEND_ADDITIVE);
+                SetShaderValue(g_comet_gfx.trail_shader, g_comet_gfx.loc_trail_time,
+                               &t, SHADER_UNIFORM_FLOAT);
+                shader_bound = true;
             }
-            DrawCircleV(c, cm.radius * 0.85f, mid);
-            DrawCircleV(c, cm.radius * 0.55f, core);
-            DrawCircleLinesV(c, cm.radius,    edge);
+            SetShaderValue(g_comet_gfx.trail_shader, g_comet_gfx.loc_trail_telegraph,
+                           &tg, SHADER_UNIFORM_FLOAT);
+            int variant_i = static_cast<int>(cm.variant);
+            SetShaderValue(g_comet_gfx.trail_shader, g_comet_gfx.loc_trail_variant,
+                           &variant_i, SHADER_UNIFORM_INT);
+            DrawTexturePro(g_comet_gfx.white,
+                           Rectangle{0, 0, 1, 1},
+                           dst, origin, angle_deg, WHITE);
+        }
+        if (shader_bound) {
+            EndBlendMode();
+            EndShaderMode();
         }
     }
 
-    // ---- Additive shock ring (active only) ----
-    if (cm.telegraph_norm >= 1.0f) {
-        float pulse = 0.5f + 0.5f * std::sin(t * 3.5f);
-        Color ring_color;
-        switch (cm.variant) {
-            case CometVariant::Red:    ring_color = Color{255, 100, 100, 0}; break;
-            case CometVariant::Blue:   ring_color = Color{120, 180, 255, 0}; break;
-            default:                   ring_color = Color{255, 200,  80, 0}; break;
+    // ---- Pass 3: Heads (one shader bind, normal blend) ----
+    if (g_comet_gfx.initialized) {
+        bool shader_bound = false;
+        for (const auto& cm : comets) {
+            const Vec2  pos    = resolvePos(cm);
+            const float draw_r = cm.radius * 1.35f;
+            const Rectangle dst{pos.x - draw_r, pos.y - draw_r,
+                                draw_r * 2.0f, draw_r * 2.0f};
+            float intensity = (cm.telegraph_norm < 1.0f)
+                                  ? (cm.telegraph_norm * 0.40f)
+                                  : 1.0f;
+            if (!shader_bound) {
+                BeginShaderMode(g_comet_gfx.head_shader);
+                SetShaderValue(g_comet_gfx.head_shader, g_comet_gfx.loc_head_time,
+                               &t, SHADER_UNIFORM_FLOAT);
+                shader_bound = true;
+            }
+            SetShaderValue(g_comet_gfx.head_shader, g_comet_gfx.loc_head_telegraph,
+                           &intensity, SHADER_UNIFORM_FLOAT);
+            int variant_i = static_cast<int>(cm.variant);
+            SetShaderValue(g_comet_gfx.head_shader, g_comet_gfx.loc_head_variant,
+                           &variant_i, SHADER_UNIFORM_INT);
+            DrawTexturePro(g_comet_gfx.white,
+                           Rectangle{0, 0, 1, 1},
+                           dst, Vector2{0, 0}, 0.0f, WHITE);
         }
-        ring_color.a = static_cast<unsigned char>(110 + 60.0f * pulse);
-        DrawCircleLinesV(c, cm.radius * (1.05f + 0.04f * pulse), ring_color);
+        if (shader_bound) EndShaderMode();
+    } else {
+        // Shader-less fallback for the (rare) compile-failure path. No
+        // batching cost matters here -- we're already on a non-glamorous
+        // code path. Just iterate and draw circles.
+        for (const auto& cm : comets) {
+            if (cm.telegraph_norm < 1.0f) continue;
+            const Vec2 pos = resolvePos(cm);
+            const Vector2 c{pos.x, pos.y};
+            const CometPalette& pal = cometPalette(cm.variant);
+            DrawCircleV(c, cm.radius * 0.85f, pal.fb_mid);
+            DrawCircleV(c, cm.radius * 0.55f, pal.fb_core);
+            DrawCircleLinesV(c, cm.radius,    pal.fb_edge);
+        }
+    }
+
+    // ---- Pass 4: Shock rings (no shader, alpha-blended) ----
+    // Drawn after heads so they sit on top. One sin() call per comet but the
+    // ring radius depends on the comet's own kill radius so we have to per-comet.
+    for (const auto& cm : comets) {
+        if (cm.telegraph_norm < 1.0f) continue;
+        const Vec2 pos = resolvePos(cm);
+        const CometPalette& pal = cometPalette(cm.variant);
+        const float pulse = 0.5f + 0.5f * std::sin(t * 3.5f);
+        Color ring = pal.shock_ring;
+        ring.a = static_cast<unsigned char>(110 + 60.0f * pulse);
+        DrawCircleLinesV(Vector2{pos.x, pos.y},
+                         cm.radius * (1.05f + 0.04f * pulse),
+                         ring);
     }
 }
 
@@ -1877,19 +1932,27 @@ void Renderer::drawWorld(const Interpolator& interp,
     // Comets last so the fire ball draws OVER cells / food / viruses. Telegraph rays
     // span the full map so they're always in view; skip the per-comet head cull only
     // for the head pass (the line draws unconditionally during telegraph).
-    for (const auto& cm : curr.comets) {
-        Vec2 pos = cm.pos;
-        if (have_prev && cm.telegraph_norm >= 1.0f) {
-            for (const auto& prev_cm : prev.comets) {
-                if (prev_cm.id == cm.id) {
-                    pos = lerp(prev_cm.pos, cm.pos, alpha);
-                    break;
+    //
+    // Build an interpolated-position lookup once, then hand the whole comet
+    // list to the batched drawComets() so trail + head shaders are each
+    // bound a single time regardless of formation size.
+    if (!curr.comets.empty()) {
+        static thread_local std::vector<std::pair<EntityId, Vec2>> interp_buf;
+        interp_buf.clear();
+        if (have_prev) {
+            interp_buf.reserve(curr.comets.size());
+            for (const auto& cm : curr.comets) {
+                if (cm.telegraph_norm < 1.0f) continue;
+                for (const auto& prev_cm : prev.comets) {
+                    if (prev_cm.id == cm.id) {
+                        interp_buf.emplace_back(cm.id, lerp(prev_cm.pos, cm.pos, alpha));
+                        break;
+                    }
                 }
             }
         }
-        CometSnap cm_local = cm;
-        cm_local.pos = pos;
-        drawComet(cm_local, now_sec);
+        drawComets(curr.comets, now_sec,
+                   interp_buf.empty() ? nullptr : &interp_buf);
     }
 }
 
@@ -2038,40 +2101,25 @@ void Renderer::drawMinimap(const Interpolator& interp,
     // Comets: telegraph as a thin coloured line (matches the comet's variant
     // palette) across the minimap so the player can read the predicted path
     // even when looking elsewhere, plus a bright dot at the current comet
-    // position once it's active. During a shower this paints 5-10 lines in
+    // position once it's active. During a shower this paints 4-7 lines in
     // a rainbow fan -- intentional, makes the formation legible at a glance.
+    // Palette comes from the shared kCometPalettes table (same colours used
+    // for the world-space telegraph + shock ring).
     for (const auto& cm : snap.comets) {
         const float ax = toMx(cm.telegraph_start.x);
         const float ay = toMy(cm.telegraph_start.y);
         const float bx = toMx(cm.telegraph_end.x);
         const float by = toMy(cm.telegraph_end.y);
-        const unsigned char a = static_cast<unsigned char>(
+        const CometPalette& pal = cometPalette(cm.variant);
+        Color line_color = pal.mm_line;
+        line_color.a = static_cast<unsigned char>(
             120 + 100.0f * std::min(cm.telegraph_norm, 1.0f));
-        Color line_color, dot_color, ring_color;
-        switch (cm.variant) {
-            case CometVariant::Red:
-                line_color = Color{255,  80,  80, a};
-                dot_color  = Color{255, 160, 160, 255};
-                ring_color = Color{220,  20,  20, 200};
-                break;
-            case CometVariant::Blue:
-                line_color = Color{100, 160, 255, a};
-                dot_color  = Color{180, 220, 255, 255};
-                ring_color = Color{ 40,  80, 220, 200};
-                break;
-            case CometVariant::Orange:
-            default:
-                line_color = Color{255, 150,  60, a};
-                dot_color  = Color{255, 220, 110, 255};
-                ring_color = Color{255, 120,  30, 200};
-                break;
-        }
         DrawLineEx(Vector2{ax, ay}, Vector2{bx, by}, 1.5f, line_color);
         if (cm.telegraph_norm >= 1.0f) {
             const float hx = toMx(cm.pos.x);
             const float hy = toMy(cm.pos.y);
-            DrawCircleV(Vector2{hx, hy}, 3.0f, dot_color);
-            DrawCircleLinesV(Vector2{hx, hy}, 5.0f, ring_color);
+            DrawCircleV(Vector2{hx, hy}, 3.0f, pal.mm_dot);
+            DrawCircleLinesV(Vector2{hx, hy}, 5.0f, pal.mm_ring);
         }
     }
 
