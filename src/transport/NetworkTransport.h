@@ -118,6 +118,19 @@ public:
     // for loopback) if !CR_NETWORK.
     void sendWelcomeTo(PeerHandle peer, const codec::WelcomeMsg& msg);
 
+    // Host-side: send a PeerInfoMsg (PlayerId + display name) to a specific
+    // peer. Used right after sending Welcome so the new peer learns the names
+    // of every existing peer.
+    void sendPeerInfoTo(PeerHandle peer, const codec::PeerInfoMsg& msg);
+
+    // Host-side: broadcast a PeerInfoMsg to ALL connected peers (used when a
+    // new peer's name arrives via ClientHello).
+    void broadcastPeerInfo(const codec::PeerInfoMsg& msg);
+
+    // Client-side: send the local player's display name to the host. Called
+    // once right after the client consumes the Welcome.
+    void sendClientHelloToHost(const codec::ClientHelloMsg& msg);
+
     // Host-side: gracefully disconnect a specific peer (used by `kick`). The
     // peer's DISCONNECT event will land in pollDepartedPeer's queue just like
     // a peer that closed their own window. No-op when !CR_NETWORK or the
@@ -128,6 +141,17 @@ public:
     // host, filling `out`. Subsequent calls return false until another welcome
     // is received (which shouldn't happen in the normal single-handshake flow).
     bool consumeWelcome(codec::WelcomeMsg& out);
+
+    // Host-side: drain the queue of ClientHelloMsg received from peers. Each
+    // call returns the next pending one. The host uses these to register the
+    // peer's display name and then broadcast a PeerInfo to everyone. The
+    // hello arrives anonymously (we know which peer via the surrounding
+    // network event flow -- callers correlate by recency).
+    bool pollClientHello(codec::ClientHelloMsg& out);
+
+    // Client-side: drain peer-info messages from the host. Each carries a
+    // PlayerId + display name; the client maintains its own map.
+    bool pollPeerInfo(codec::PeerInfoMsg& out);
 
 private:
     Role        role_              = Role::Idle;
@@ -155,9 +179,12 @@ private:
     // Handshake queues. new_peers_ collects host-side CONNECT events for the
     // host loop to drain; departed_peers_ collects DISCONNECT events; welcomes_
     // collects client-side decoded codec::WelcomeMsgs.
-    std::deque<PeerHandle>        new_peers_;
-    std::deque<PeerHandle>        departed_peers_;
-    std::deque<codec::WelcomeMsg> welcomes_;
+    // client_hellos_ are received on the host; peer_infos_ on the client.
+    std::deque<PeerHandle>             new_peers_;
+    std::deque<PeerHandle>             departed_peers_;
+    std::deque<codec::WelcomeMsg>      welcomes_;
+    std::deque<codec::ClientHelloMsg>  client_hellos_;
+    std::deque<codec::PeerInfoMsg>     peer_infos_;
 };
 
 } // namespace cr

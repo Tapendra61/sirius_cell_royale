@@ -22,6 +22,11 @@ enum class SettingsAction {
 class SettingsScreen {
 public:
     SettingsAction render(int screen_w, int screen_h, SaveData& save);
+
+private:
+    // Whether the player-name text field is currently capturing keystrokes.
+    // Click in the box to focus; click anywhere else (or hit Enter) to unfocus.
+    bool name_field_focused_ = false;
 };
 
 } // namespace cr

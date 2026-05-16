@@ -476,26 +476,103 @@ bool encodeEvent(const GameEvent& e, std::vector<uint8_t>& out) {
     return false;
 }
 
-// ---- Welcome ----
+// ---- Control-channel name string helpers ----
+// Length-prefixed ASCII (u8 length + N bytes). All three control messages use
+// the same format, so we factor the read/write into local helpers.
+namespace {
+void writeName(Writer& w, const std::string& name) {
+    uint8_t len = static_cast<uint8_t>(
+        std::min<size_t>(name.size(), kMaxWirePlayerNameLen));
+    w.writePOD(len);
+    w.writeBytes(name.data(), len);
+}
+bool readName(Reader& r, std::string& out) {
+    uint8_t len = 0;
+    if (!r.readPOD(len)) return false;
+    if (len > kMaxWirePlayerNameLen) return false; // sanity cap
+    out.resize(len);
+    if (len == 0) return true;
+    return r.readBytes(out.data(), len);
+}
+} // namespace
+
+// ---- Welcome (host -> peer) ----
+// On-wire: [type=Welcome][version=2][player_id][cell_id][host_name_len][host_name_bytes]
 
 bool encodeWelcome(const WelcomeMsg& m, std::vector<uint8_t>& out) {
     out.clear();
-    out.reserve(16);
+    out.reserve(32);
     Writer w{out};
+    w.writePOD(static_cast<uint8_t>(ControlMsgType::Welcome));
     w.writePOD(kWelcomeVersion);
     w.writePOD(m.player_id);
     w.writePOD(m.cell_id);
+    writeName(w, m.host_name);
     return true;
 }
 
 bool decodeWelcome(const uint8_t* data, size_t len, WelcomeMsg& m) {
     Reader r{data, len};
+    uint8_t type = 0;
+    if (!r.readPOD(type)) return false;
+    if (type != static_cast<uint8_t>(ControlMsgType::Welcome)) return false;
     uint8_t version = 0;
     if (!r.readPOD(version) || version != kWelcomeVersion) return false;
     m = WelcomeMsg{};
     r.readPOD(m.player_id);
     r.readPOD(m.cell_id);
+    if (!readName(r, m.host_name)) return false;
     return !r.failed;
+}
+
+// ---- ClientHello (peer -> host) ----
+// On-wire: [type=ClientHello][version=1][name_len][name_bytes]
+
+bool encodeClientHello(const ClientHelloMsg& m, std::vector<uint8_t>& out) {
+    out.clear();
+    out.reserve(24);
+    Writer w{out};
+    w.writePOD(static_cast<uint8_t>(ControlMsgType::ClientHello));
+    w.writePOD(kClientHelloVersion);
+    writeName(w, m.name);
+    return true;
+}
+
+bool decodeClientHello(const uint8_t* data, size_t len, ClientHelloMsg& m) {
+    Reader r{data, len};
+    uint8_t type = 0;
+    if (!r.readPOD(type)) return false;
+    if (type != static_cast<uint8_t>(ControlMsgType::ClientHello)) return false;
+    uint8_t version = 0;
+    if (!r.readPOD(version) || version != kClientHelloVersion) return false;
+    m = ClientHelloMsg{};
+    return readName(r, m.name);
+}
+
+// ---- PeerInfo (host -> all peers) ----
+// On-wire: [type=PeerInfo][version=1][player_id][name_len][name_bytes]
+
+bool encodePeerInfo(const PeerInfoMsg& m, std::vector<uint8_t>& out) {
+    out.clear();
+    out.reserve(28);
+    Writer w{out};
+    w.writePOD(static_cast<uint8_t>(ControlMsgType::PeerInfo));
+    w.writePOD(kPeerInfoVersion);
+    w.writePOD(m.player_id);
+    writeName(w, m.name);
+    return true;
+}
+
+bool decodePeerInfo(const uint8_t* data, size_t len, PeerInfoMsg& m) {
+    Reader r{data, len};
+    uint8_t type = 0;
+    if (!r.readPOD(type)) return false;
+    if (type != static_cast<uint8_t>(ControlMsgType::PeerInfo)) return false;
+    uint8_t version = 0;
+    if (!r.readPOD(version) || version != kPeerInfoVersion) return false;
+    m = PeerInfoMsg{};
+    r.readPOD(m.player_id);
+    return readName(r, m.name);
 }
 
 bool decodeEvent(const uint8_t* data, size_t len, GameEvent& e) {

@@ -548,6 +548,10 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
     // peer's cells on DISCONNECT and so the `kick` console command can find the
     // ENetPeer to call disconnectPeer on.
     std::unordered_map<void*, cr::PlayerId> peer_to_player;
+    // Host-side: PlayerId -> display name table for connected peers. Populated
+    // when each peer's ClientHello arrives. The host pushes these out to new
+    // joiners via PeerInfo so everyone's HUD has matching labels.
+    std::unordered_map<cr::PlayerId, std::string> known_peer_names;
     // LAN discovery: only the host runs an announcer; clients learn about
     // hosts via the JoinBrowsing screen (which owns its own discovery client
     // listener, separate from this runMatch state).
@@ -708,11 +712,56 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                 cr::Vec2     spawn_at = pickClearSpawn();
                 cr::EntityId new_cell = sim.world().spawnCell(
                     new_pid, spawn_at, tuning.start_mass);
-                net_transport.sendWelcomeTo(ph, cr::codec::WelcomeMsg{new_pid, new_cell});
+                // Welcome includes the host's display name so the joining
+                // peer's HUD shows it immediately. Their own name arrives
+                // later via ClientHello.
+                cr::codec::WelcomeMsg welcome;
+                welcome.player_id = new_pid;
+                welcome.cell_id   = new_cell;
+                welcome.host_name = save.player_name;
+                net_transport.sendWelcomeTo(ph, welcome);
+                // Catch the joining peer up on every OTHER peer's name we
+                // already know -- ship one PeerInfo per known peer so the
+                // new peer's player_names_ table is complete from frame 1.
+                for (const auto& [pid, name] : known_peer_names) {
+                    if (pid == new_pid) continue;
+                    cr::codec::PeerInfoMsg pi;
+                    pi.player_id = pid;
+                    pi.name      = name;
+                    net_transport.sendPeerInfoTo(ph, pi);
+                }
                 peer_to_player[ph.enet_peer] = new_pid;
                 std::printf("[net] spawned cell for new peer (player=%u, cell=%u)\n",
                             static_cast<unsigned>(new_pid),
                             static_cast<unsigned>(new_cell));
+            }
+
+            // Drain ClientHello messages -- one arrives per peer shortly
+            // after their welcome. We can't know the sender's PlayerId
+            // from the message alone, so we attribute it to the most
+            // recently spawned peer that hasn't yet announced a name.
+            cr::codec::ClientHelloMsg hello;
+            while (net_transport.pollClientHello(hello)) {
+                cr::PlayerId attribute_to = cr::INVALID_PLAYER;
+                for (const auto& [peer, pid] : peer_to_player) {
+                    if (known_peer_names.find(pid) == known_peer_names.end()) {
+                        attribute_to = pid;
+                        break;
+                    }
+                }
+                if (attribute_to == cr::INVALID_PLAYER) continue;
+                known_peer_names[attribute_to] = hello.name;
+                client.setPlayerName(attribute_to, hello.name);
+                // Broadcast the new peer's name to EVERYONE (including the
+                // joining peer itself -- harmless, they just re-set their
+                // own map entry to the same value).
+                cr::codec::PeerInfoMsg pi;
+                pi.player_id = attribute_to;
+                pi.name      = hello.name;
+                net_transport.broadcastPeerInfo(pi);
+                std::printf("[net] registered peer name: player=%u \"%s\"\n",
+                            static_cast<unsigned>(attribute_to),
+                            hello.name.c_str());
             }
 
             // ---- Host: clean up departed peers ----
@@ -725,6 +774,7 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                 if (it == peer_to_player.end()) continue;
                 const cr::PlayerId departing = it->second;
                 peer_to_player.erase(it);
+                known_peer_names.erase(departing);
                 auto& cells = sim.world().cellsMut();
                 int   removed = 0;
                 for (auto cit = cells.begin(); cit != cells.end();) {
@@ -752,9 +802,27 @@ MatchOutcome runMatch(uint64_t seed, cr::Tuning& tuning, cr::SaveData& save,
                 client.setWatchedPlayer(w.player_id);
                 player        = w.player_id;
                 player_cell   = w.cell_id;
-                std::printf("[net] client received welcome: player_id=%u cell_id=%u\n",
+                // Register the host's name (player slot 1) so our killfeed /
+                // leaderboard / nameplate show it. Also send our own name up
+                // so the host (and via PeerInfo, the other peers) learn it.
+                if (!w.host_name.empty()) {
+                    client.setPlayerName(/*host slot*/ 1, w.host_name);
+                }
+                client.setPlayerName(w.player_id, save.player_name);
+                cr::codec::ClientHelloMsg hello;
+                hello.name = save.player_name;
+                net_transport.sendClientHelloToHost(hello);
+                std::printf("[net] client received welcome: player_id=%u cell_id=%u host=\"%s\"\n",
                             static_cast<unsigned>(w.player_id),
-                            static_cast<unsigned>(w.cell_id));
+                            static_cast<unsigned>(w.cell_id),
+                            w.host_name.c_str());
+            }
+            // Drain PeerInfo updates -- the host sends these for every other
+            // peer when we join, plus a broadcast when any peer announces a
+            // new name. Apply them to the local name map.
+            cr::codec::PeerInfoMsg pi;
+            while (net_transport.pollPeerInfo(pi)) {
+                client.setPlayerName(pi.player_id, pi.name);
             }
         }
 

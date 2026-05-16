@@ -28,6 +28,10 @@ Client::Client(EntityId watched_cell, PlayerId watched_player)
       watched_player_(watched_player),
       particles_(4096) {
     run_start_sec_ = GetTime();
+    // Renderer holds a process-wide player-name table that survives across
+    // matches; wipe it at construction so the previous match's names don't
+    // leak in on the next one.
+    cr::clearPlayerNames();
     // Procedural ambient music is intentionally NOT auto-started -- the synthesised
     // pad sounds buzzy; wire in a real music asset and call audio_.playMusic() to
     // turn it back on. The dev console `music_on` command will also start it for
@@ -161,6 +165,12 @@ void Client::applyLoadedSave(const SaveData& s) {
     // v4 -- HUD text size accessibility multiplier + first-run flag passthrough.
     setHudTextScale(s.hud_text_scale);
     first_run_complete_ = s.first_run_complete;
+    // v5 -- register the watched player's name so killfeed / leaderboard /
+    // nameplates show it immediately in SinglePlayer. Multiplayer hosts also
+    // ship their own name to peers via the network welcome flow.
+    if (!s.player_name.empty()) {
+        setPlayerName(watched_player_, s.player_name);
+    }
 }
 
 SaveData Client::snapshotForSave() const {
@@ -195,7 +205,46 @@ SaveData Client::snapshotForSave() const {
     // (we round-trip it through Client by storing/returning the same value).
     s.hud_text_scale     = currentHudTextScale();
     s.first_run_complete = first_run_complete_;
+    // v5 -- player name. Pulled from the registry so a name set in Settings (or
+    // typed at the lobby) persists across matches. The watched player's slot
+    // is the source of truth here.
+    auto it = player_names_.find(watched_player_);
+    if (it != player_names_.end()) s.player_name = it->second;
     return s;
+}
+
+void Client::setPlayerName(PlayerId pid, const std::string& name) {
+    if (name.empty()) {
+        player_names_.erase(pid);
+    } else {
+        player_names_[pid] = name;
+    }
+    // Mirror into the Renderer's process-wide table so cell nameplates pick
+    // up the name without any extra plumbing through drawWorld.
+    cr::setPlayerName(pid, name.c_str());
+}
+
+void Client::clearPlayerNames() {
+    player_names_.clear();
+    cr::clearPlayerNames();
+}
+
+std::string Client::playerLabel(PlayerId pid, uint8_t personality_tag,
+                                size_t max_len) const {
+    auto it = player_names_.find(pid);
+    if (it != player_names_.end() && !it->second.empty()) {
+        // Truncate if longer than max_len so tight HUD elements (killfeed,
+        // nameplate) don't overflow.
+        if (it->second.size() <= max_len) return it->second;
+        return it->second.substr(0, max_len);
+    }
+    // Fallback: <letter><id> matches the existing display in every HUD
+    // element that doesn't know a name (pre-name behaviour).
+    char buf[24];
+    std::snprintf(buf, sizeof(buf), "%c%u",
+                  ai::letterForTag(personality_tag),
+                  static_cast<unsigned>(pid));
+    return std::string(buf);
 }
 
 void Client::onEvents(const std::vector<GameEvent>& events, World& world,
@@ -319,9 +368,13 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                 // feels populated; player-involved kills get a gold bracket accent
                 // (set via involves_player) so they stand out among bot-vs-bot rows.
                 {
-                    auto fmtName = [](char* buf, size_t n, PlayerId pid, uint8_t tag) {
-                        std::snprintf(buf, n, "%c%u", ai::letterForTag(tag),
-                                      static_cast<unsigned>(pid));
+                    // playerLabel() prefers the registered display name; falls
+                    // back to "<letter><id>" when none is known. Truncate to
+                    // 16 chars so longer names don't overflow the killfeed
+                    // backdrop strip.
+                    auto fmtName = [this](char* buf, size_t n, PlayerId pid, uint8_t tag) {
+                        std::string label = playerLabel(pid, tag, /*max_len=*/16);
+                        std::snprintf(buf, n, "%s", label.c_str());
                     };
                     const bool involves_player =
                         (e.predator_player == watched_player_)
@@ -929,15 +982,14 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
             int rank_w = MeasureText(rank_buf, 13);
             DrawText(rank_buf, x0 + 26 - rank_w, row_y + 1, 13,
                      Color{200, 200, 220, 230});
-            // Player label: letter + id (matches killfeed format).
-            char name_buf[24];
-            std::snprintf(name_buf, sizeof(name_buf), "%c%u",
-                          ai::letterForTag(r.tag),
-                          static_cast<unsigned>(r.player));
+            // Player label: display name when known, falling back to
+            // <letter><id>. Truncate at 14 chars so a long custom name still
+            // leaves room for the mass column on the right.
+            std::string label = playerLabel(r.player, r.tag, /*max_len=*/14);
             // Cell-coloured dot before the name so the leaderboard maps
             // visually to the cells on screen.
             DrawCircle(x0 + 36, row_y + row_h / 2, 4.0f, pcol);
-            DrawText(name_buf, x0 + 46, row_y + 1, 13,
+            DrawText(label.c_str(), x0 + 46, row_y + 1, 13,
                      highlight ? Color{255, 240, 180, 255}
                                 : Color{220, 225, 245, 230});
             // Mass, right-aligned to the panel.

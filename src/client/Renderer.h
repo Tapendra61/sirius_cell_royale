@@ -32,6 +32,14 @@ bool currentHighContrast();
 // The actual table is selected by the current PaletteMode.
 Color colorForPlayer(PlayerId p);
 
+// Per-match player-name registry. Cell nameplates prefer the registered name
+// over the default "<letter><id>" fallback. Client owns the lifetime; it sets
+// the watched player's name at match start and any peer names as they arrive
+// over the wire. clearPlayerNames() is called at match start so the previous
+// match's table doesn't leak in (renderer state is process-wide).
+void setPlayerName(PlayerId p, const char* name);
+void clearPlayerNames();
+
 // Free GPU resources owned by the renderer (the black-hole shader + 1x1 texture).
 // Must be called before raylib's CloseWindow() -- otherwise the shader / texture leak
 // at shutdown and (under some drivers) raylib logs a "trying to delete after context

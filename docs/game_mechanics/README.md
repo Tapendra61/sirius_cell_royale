@@ -266,7 +266,7 @@ during the dodge so the swerve registers immediately.
 
 | Element | Position | What it shows |
 |---|---|---|
-| Leaderboard | Top-left corner | Top 15 players by total mass (summed across all of their cells). Each row: rank, cell-coloured dot, letter+id (e.g. `P1`, `H7`), mass. Your row is highlighted in gold. If you're outside the top 15, a separate "your rank" row is appended below with the same gold highlight. Builds from the latest snapshot so it works identically in SinglePlayer / LocalHost / LocalClient. |
+| Leaderboard | Top-left corner | Top 15 players by total mass (summed across all of their cells). Each row: rank, cell-coloured dot, **display name** when known (player's chosen handle from Settings, or peers' names received via the welcome handshake), otherwise letter+id (e.g. `P1`, `H7`), mass. Your row is highlighted in gold. If you're outside the top 15, a separate "your rank" row is appended below with the same gold highlight. Builds from the latest snapshot so it works identically in SinglePlayer / LocalHost / LocalClient. |
 | Combo counter | Top-right (under Q-bar) | Pulsing `xN` when ≥ 2. Bigger / dimmer with chain length. |
 | Killfeed | Top-right, below combo | Last 5 inter-player kills. Player-involved kills get a gold accent. Comet kills label predator as **COMET** in hot orange. |
 | Q (Mass Blast) cooldown bar | Top-right corner | 220×18 px. Red → orange → bright yellow as it refills. "BLAST" overlay when ready; "NEED MASS" overlay when biggest cell is below 300. Subtle pulsing glow when castable. |
@@ -310,7 +310,7 @@ during the dodge so the swerve registers immediately.
 | 0 | Client → Host | Commands (Move / Split / Eject / Dash / Blast / Respawn) |
 | 1 | Host → Clients | Snapshots (world state) |
 | 2 | Host → Clients | Game events (absorbs, deaths, blasts, comet phases, ...) |
-| 3 | Host → New Peer | Welcome (player_id + initial cell_id) |
+| 3 | both | Control: `Welcome` (host→peer, with host name), `ClientHello` (peer→host, with peer name), `PeerInfo` (host→all peers, PlayerId + name). Discriminated by leading type byte. |
 
 All channels are reliable. Default port: **UDP 7456**.
 
@@ -391,6 +391,28 @@ All channels are reliable. Default port: **UDP 7456**.
   `kick <PlayerId>`. Behaviour is identical to a peer that left on their own.
 - Refuses to kick PlayerId 1 (the host's own slot) and any PID not currently
   bound to a peer.
+
+### Player names
+
+- **Source**: set in Settings → IDENTITY → "Player name" (max 16 ASCII chars).
+  Persisted across runs in `save.bin` (v5+ field).
+- **Display fallback**: when a player has no name set (or peers haven't shared
+  theirs yet), the HUD shows the legacy `<letter><id>` label — e.g. `P1` for
+  the human player, `H7` for a Hunter bot. Killfeed / leaderboard / cell
+  nameplate all use the same fallback uniformly.
+- **Multiplayer name sync**: handshake on CHAN_CONTROL with three message
+  types (discriminated by a leading type byte):
+  - `Welcome` (host → joining peer): carries the host's display name so
+    the new peer immediately sees who's hosting.
+  - `ClientHello` (peer → host): sent right after the peer consumes the
+    Welcome. Carries the peer's display name.
+  - `PeerInfo` (host → all peers): host broadcasts this when it learns a
+    new peer's name. Also sent for every existing peer to a fresh joiner
+    so they don't have to wait for other peers to re-announce.
+- **Bots**: never have names; always render via the `<letter><id>` fallback.
+- **Renderer global**: cell nameplates above each cell read from a
+  process-wide `s_player_names` table that Client mirrors into when its own
+  `setPlayerName` is called.
 
 ### LAN discovery
 

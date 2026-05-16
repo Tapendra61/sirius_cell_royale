@@ -241,6 +241,8 @@ void NetworkTransport::disconnect() {
     new_peers_.clear();
     departed_peers_.clear();
     welcomes_.clear();
+    client_hellos_.clear();
+    peer_infos_.clear();
 }
 
 void NetworkTransport::poll() {
@@ -322,14 +324,49 @@ void NetworkTransport::poll() {
                         break;
                     }
                     case CHAN_CONTROL: {
-                        codec::WelcomeMsg w;
-                        if (codec::decodeWelcome(data, len, w)) {
-                            welcomes_.push_back(w);
-                            std::printf("[net] welcome: player_id=%u cell_id=%u\n",
-                                        static_cast<unsigned>(w.player_id),
-                                        static_cast<unsigned>(w.cell_id));
-                        } else {
-                            std::fprintf(stderr, "[net] decodeWelcome failed (%zu bytes)\n", len);
+                        // Control-channel packets begin with a ControlMsgType
+                        // discriminator byte. Dispatch on it; reject anything
+                        // we don't recognise (older protocol or garbled).
+                        if (len < 1) break;
+                        const auto type = static_cast<codec::ControlMsgType>(data[0]);
+                        switch (type) {
+                            case codec::ControlMsgType::Welcome: {
+                                codec::WelcomeMsg w;
+                                if (codec::decodeWelcome(data, len, w)) {
+                                    std::printf("[net] welcome: player_id=%u cell_id=%u host=\"%s\"\n",
+                                                static_cast<unsigned>(w.player_id),
+                                                static_cast<unsigned>(w.cell_id),
+                                                w.host_name.c_str());
+                                    welcomes_.push_back(std::move(w));
+                                } else {
+                                    std::fprintf(stderr, "[net] decodeWelcome failed (%zu bytes)\n", len);
+                                }
+                                break;
+                            }
+                            case codec::ControlMsgType::ClientHello: {
+                                codec::ClientHelloMsg ch;
+                                if (codec::decodeClientHello(data, len, ch)) {
+                                    std::printf("[net] client hello: name=\"%s\"\n",
+                                                ch.name.c_str());
+                                    client_hellos_.push_back(std::move(ch));
+                                } else {
+                                    std::fprintf(stderr, "[net] decodeClientHello failed (%zu bytes)\n", len);
+                                }
+                                break;
+                            }
+                            case codec::ControlMsgType::PeerInfo: {
+                                codec::PeerInfoMsg pi;
+                                if (codec::decodePeerInfo(data, len, pi)) {
+                                    peer_infos_.push_back(std::move(pi));
+                                } else {
+                                    std::fprintf(stderr, "[net] decodePeerInfo failed (%zu bytes)\n", len);
+                                }
+                                break;
+                            }
+                            default:
+                                std::fprintf(stderr, "[net] unknown control type %u\n",
+                                             static_cast<unsigned>(data[0]));
+                                break;
                         }
                         break;
                     }
@@ -474,6 +511,59 @@ bool NetworkTransport::consumeWelcome(codec::WelcomeMsg& out) {
     if (welcomes_.empty()) return false;
     out = welcomes_.front();
     welcomes_.pop_front();
+    return true;
+}
+
+void NetworkTransport::sendPeerInfoTo(PeerHandle peer, const codec::PeerInfoMsg& msg) {
+#ifdef CR_NETWORK
+    if (!peer.isValid()) return;
+    if (role_ != Role::Host) return;
+    std::vector<uint8_t> buf;
+    if (!codec::encodePeerInfo(msg, buf)) return;
+    auto* ep = static_cast<ENetPeer*>(peer.enet_peer);
+    enet_peer_send(ep, CHAN_CONTROL, makePacket(buf));
+#else
+    (void)peer;
+    peer_infos_.push_back(msg);
+#endif
+}
+
+void NetworkTransport::broadcastPeerInfo(const codec::PeerInfoMsg& msg) {
+#ifdef CR_NETWORK
+    if (role_ != Role::Host || enet_host_ == nullptr) return;
+    std::vector<uint8_t> buf;
+    if (!codec::encodePeerInfo(msg, buf)) return;
+    auto* host   = static_cast<ENetHost*>(enet_host_);
+    auto* packet = makePacket(buf);
+    enet_host_broadcast(host, CHAN_CONTROL, packet);
+#else
+    peer_infos_.push_back(msg);
+#endif
+}
+
+void NetworkTransport::sendClientHelloToHost(const codec::ClientHelloMsg& msg) {
+#ifdef CR_NETWORK
+    if (role_ != Role::Client || enet_peer_ == nullptr) return;
+    std::vector<uint8_t> buf;
+    if (!codec::encodeClientHello(msg, buf)) return;
+    auto* peer = static_cast<ENetPeer*>(enet_peer_);
+    enet_peer_send(peer, CHAN_CONTROL, makePacket(buf));
+#else
+    client_hellos_.push_back(msg);
+#endif
+}
+
+bool NetworkTransport::pollClientHello(codec::ClientHelloMsg& out) {
+    if (client_hellos_.empty()) return false;
+    out = std::move(client_hellos_.front());
+    client_hellos_.pop_front();
+    return true;
+}
+
+bool NetworkTransport::pollPeerInfo(codec::PeerInfoMsg& out) {
+    if (peer_infos_.empty()) return false;
+    out = std::move(peer_infos_.front());
+    peer_infos_.pop_front();
     return true;
 }
 

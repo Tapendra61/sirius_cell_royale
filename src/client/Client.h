@@ -18,6 +18,8 @@
 #include "platform/Input.h"
 #include "sim/World.h"
 
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace cr {
@@ -68,6 +70,20 @@ public:
     // Forwards the role to the Hud so the pause overlay can pick the right
     // button labels (SP: MAIN MENU, MP host: END MATCH, MP client: DISCONNECT).
     void  setPauseRole(Hud::PauseRole r) { hud_.setPauseRole(r); }
+
+    // Per-match name table. The watched player's name is set at match start
+    // (from SaveData::player_name); peers' names arrive via the network
+    // handshake (LocalHost / LocalClient) and are populated here too. Used by
+    // playerLabel() to format killfeed / leaderboard / nameplate labels.
+    void setPlayerName(PlayerId pid, const std::string& name);
+    void clearPlayerNames();
+
+    // Returns the display label for a player. If a name is registered for
+    // `pid`, that's returned (truncated to `max_len` chars). Otherwise falls
+    // back to "<letter><id>" using the personality tag (matches the
+    // pre-name behaviour everywhere else in the HUD).
+    std::string playerLabel(PlayerId pid, uint8_t personality_tag,
+                            size_t max_len = 12) const;
     // Includes pause + death-cam slow-mo.
     float effectiveDtMultiplier() const;
 
@@ -190,6 +206,10 @@ private:
     bool                 paused_      = false;
     bool                 auto_paused_ = false; // window unfocused
     bool                 multiplayer_active_ = false;
+
+    // Per-match PlayerId -> display-name table. Cleared at match start; the
+    // watched player and any joining peers populate it.
+    std::unordered_map<PlayerId, std::string> player_names_;
 
     // Crashing-comet world event: pure presentation state. Set to kCometBannerSec when
     // a Telegraph event fires; counts down each frame (regardless of pause state) so

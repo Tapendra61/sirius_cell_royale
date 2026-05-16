@@ -104,7 +104,7 @@ void writeV3Fields(std::vector<uint8_t>& buf, const SaveData& d) {
 
 std::vector<uint8_t> serializePayload(const SaveData& d) {
     std::vector<uint8_t> buf;
-    buf.reserve(192);
+    buf.reserve(224);
     writeV1Fields(buf, d);
     writeV2Fields(buf, d);
     writeV3Fields(buf, d);
@@ -113,6 +113,15 @@ std::vector<uint8_t> serializePayload(const SaveData& d) {
     appendPod(buf, d.hud_text_scale);
     uint8_t flags4 = (d.first_run_complete ? 1u : 0u);
     appendPod(buf, flags4);
+
+    // ---- v5 additions: player name (length-prefixed ASCII) ----
+    // Format: uint8_t length, then `length` bytes of name data (no NUL). Length
+    // clamped to kMaxPlayerNameLen on write; the reader applies the same cap.
+    const size_t name_len = std::min(d.player_name.size(), kMaxPlayerNameLen);
+    appendPod(buf, static_cast<uint8_t>(name_len));
+    buf.insert(buf.end(),
+               d.player_name.data(),
+               d.player_name.data() + name_len);
     return buf;
 }
 
@@ -168,15 +177,37 @@ bool deserializePayloadV3(const uint8_t* buf, size_t len, SaveData& out) {
     return true;
 }
 
+bool readV4Chunk(const uint8_t* buf, size_t len, size_t& off, SaveData& out) {
+    if (!readPod(buf, len, off, out.hud_text_scale)) return false;
+    uint8_t flags4 = 0;
+    if (!readPod(buf, len, off, flags4)) return false;
+    out.first_run_complete = (flags4 & 1u) != 0;
+    return true;
+}
+
 bool deserializePayloadV4(const uint8_t* buf, size_t len, SaveData& out) {
     size_t off = 0;
     if (!readV1Fields(buf, len, off, out)) return false;
     if (!readV2Chunk(buf, len, off, out))  return false;
     if (!readV3Chunk(buf, len, off, out))  return false;
-    if (!readPod(buf, len, off, out.hud_text_scale)) return false;
-    uint8_t flags4 = 0;
-    if (!readPod(buf, len, off, flags4)) return false;
-    out.first_run_complete = (flags4 & 1u) != 0;
+    if (!readV4Chunk(buf, len, off, out))  return false;
+    return true;
+}
+
+bool deserializePayloadV5(const uint8_t* buf, size_t len, SaveData& out) {
+    size_t off = 0;
+    if (!readV1Fields(buf, len, off, out)) return false;
+    if (!readV2Chunk(buf, len, off, out))  return false;
+    if (!readV3Chunk(buf, len, off, out))  return false;
+    if (!readV4Chunk(buf, len, off, out))  return false;
+    uint8_t name_len = 0;
+    if (!readPod(buf, len, off, name_len)) return false;
+    // Cap name_len defensively so a corrupted file can't make us read past the
+    // payload (the file's CRC already gates this, but belt + suspenders).
+    if (name_len > kMaxPlayerNameLen) name_len = kMaxPlayerNameLen;
+    if (off + name_len > len) return false;
+    out.player_name.assign(reinterpret_cast<const char*>(buf + off), name_len);
+    off += name_len;
     return true;
 }
 
@@ -222,6 +253,9 @@ bool tryLoadOne(const std::string& path, SaveData& out) {
     }
     if (version == 4) {
         return deserializePayloadV4(payload.data(), payload.size(), out);
+    }
+    if (version == 5) {
+        return deserializePayloadV5(payload.data(), payload.size(), out);
     }
     return false; // unsupported version (future-proof spot for migrations)
 }

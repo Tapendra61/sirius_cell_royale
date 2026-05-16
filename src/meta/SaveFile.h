@@ -43,6 +43,11 @@ struct SaveData {
     // ---- v4 additions: HUD text scale + first-run intro flag ----
     float    hud_text_scale     = 1.0f; // 0.85..1.30 multiplier on in-match HUD fonts
     bool     first_run_complete = false; // set true after the first-run intro plays
+
+    // ---- v5 additions: player name (LAN multiplayer identity) ----
+    // Plain ASCII string trimmed to 16 chars; empty string falls back to the
+    // generic `P<id>` label used by killfeed / leaderboard / nameplates.
+    std::string player_name;
 };
 
 // On-disk format (little-endian, packed):
@@ -61,6 +66,10 @@ struct SaveData {
 bool saveToFile(const SaveData& data, const std::string& path);
 bool loadFromFile(SaveData& data, const std::string& path);
 
-constexpr uint32_t kSaveCurrentVersion = 4;
+constexpr uint32_t kSaveCurrentVersion = 5;
+
+// Maximum on-disk player-name length. Names longer than this are truncated when
+// written. Kept short so it fits in tight HUD elements (killfeed, nameplate).
+constexpr size_t   kMaxPlayerNameLen   = 16;
 
 } // namespace cr

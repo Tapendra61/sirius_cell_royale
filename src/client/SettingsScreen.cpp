@@ -126,6 +126,66 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
     Cursor R{columns_x + col_w + gutter,       columns_y, col_w};
 
     // ===== Left column =====
+    // Identity comes first -- the player should see their own name in the
+    // multiplayer killfeed / leaderboard / nameplate, and an empty default
+    // here is what triggers the generic `P<id>` fallback.
+    sectionHeader(L, "IDENTITY");
+    {
+        const int  label_fs = 14;
+        const int  field_h  = 32;
+        const int  pad      = 4;
+        const int  field_w  = L.col_w;
+        const int  field_y  = L.y + label_fs + pad;
+        DrawText("Player name (16 chars max)", L.x, L.y, label_fs,
+                 Color{200, 215, 240, 220});
+        Rectangle box{(float)L.x, (float)field_y, (float)field_w, (float)field_h};
+        DrawRectangleRec(box, Color{30, 38, 58, 230});
+        // Focus toggle: clicking inside the box focuses it, clicking outside
+        // unfocuses. raylib's mouse-just-pressed event fires once per click so
+        // we don't have to debounce.
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            Vector2 mp = GetMousePosition();
+            name_field_focused_ = CheckCollisionPointRec(mp, box);
+        }
+        // Enter also unfocuses (matches the convention of "commit" inputs).
+        if (name_field_focused_ && IsKeyPressed(KEY_ENTER)) {
+            name_field_focused_ = false;
+        }
+        // Border is highlighted while focused so it's obvious typing will
+        // land here.
+        DrawRectangleLinesEx(box, 2.0f,
+            name_field_focused_ ? Color{180, 200, 240, 230}
+                                : Color{100, 120, 160, 180});
+        // Display: either the typed name, or "click to set" placeholder when
+        // empty + unfocused (so brand-new players see what to do).
+        const bool show_placeholder = save.player_name.empty()
+                                    && !name_field_focused_;
+        const char* text = show_placeholder ? "click to set"
+                                            : save.player_name.c_str();
+        Color text_col = show_placeholder ? Color{140, 150, 170, 220}
+                                          : Color{230, 240, 250, 240};
+        DrawText(text, (int)box.x + 10, (int)box.y + 8, 18, text_col);
+
+        // Text edit -- ASCII printable range only (32..126), capped at
+        // kMaxPlayerNameLen. Strips whitespace-only inputs because a name
+        // of just spaces would render invisibly.
+        if (name_field_focused_) {
+            int ch = GetCharPressed();
+            while (ch > 0) {
+                if (save.player_name.size() < kMaxPlayerNameLen
+                    && ch >= 32 && ch <= 126) {
+                    save.player_name.push_back(static_cast<char>(ch));
+                }
+                ch = GetCharPressed();
+            }
+            if (IsKeyPressed(KEY_BACKSPACE) && !save.player_name.empty()) {
+                save.player_name.pop_back();
+            }
+        }
+        L.y = field_y + field_h + 14;
+    }
+
+    sectionGap(L);
     sectionHeader(L, "AUDIO");
     if (sliderRow(L, "Master volume",
                   TextFormat("%d%%", (int)(save.master_volume * 100.0f + 0.5f)),

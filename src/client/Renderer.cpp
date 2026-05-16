@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
+#include <unordered_map>
 
 namespace cr {
 
@@ -18,6 +20,13 @@ constexpr float kPi = 3.14159265358979323846f;
 // drawing helpers read. Process-lifetime; not thread-safe (drawing is single-threaded).
 PaletteMode s_palette_mode  = PaletteMode::Default;
 bool        s_high_contrast = false;
+
+// Per-match player-name registry. Renders to nameplates above cells. Client
+// owns the lifecycle: clearPlayerNames at match start; setPlayerName as names
+// arrive (own + peer's). The map is tiny (one entry per connected player) so a
+// linear scan would also work -- the hashmap just keeps the per-frame cost flat
+// when there are many bots + peers.
+std::unordered_map<PlayerId, std::string> s_player_names;
 
 // Default vibrant palette (used everywhere outside cell-color identification).
 const Color kPaletteDefault[] = {
@@ -76,6 +85,15 @@ void setPaletteMode(PaletteMode m)  { s_palette_mode  = m; }
 PaletteMode currentPaletteMode()    { return s_palette_mode; }
 void setHighContrast(bool on)       { s_high_contrast = on; }
 bool currentHighContrast()          { return s_high_contrast; }
+
+void setPlayerName(PlayerId p, const char* name) {
+    if (name == nullptr || *name == '\0') {
+        s_player_names.erase(p);
+    } else {
+        s_player_names[p] = name;
+    }
+}
+void clearPlayerNames() { s_player_names.clear(); }
 
 Color colorForPlayer(PlayerId p) {
     if (p == INVALID_PLAYER) return Color{180, 180, 180, 255};
@@ -884,14 +902,23 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec, bool fl
         }
     }
 
-    char letter = ai::letterForTag(c.personality_tag);
+    // Prefer the registered display name (set by Client at match start /
+    // welcome flow). Fall back to "<letter><id>" for bots + anyone we don't
+    // have a name for yet. Names are truncated at 14 chars so a really long
+    // one doesn't drown out the cell beneath it.
     char buf[32];
-    // Phase 8 cosmetic unlock: a star prefix on the watched player's name at L20+.
-    // (Other cosmetic tiers -- trail colors, skins -- deferred to a focused pass.)
-    if (flair_star) {
-        std::snprintf(buf, sizeof(buf), "*%c%u", letter, static_cast<unsigned>(c.owner));
+    auto name_it = s_player_names.find(c.owner);
+    if (name_it != s_player_names.end() && !name_it->second.empty()) {
+        const char* prefix = flair_star ? "*" : "";
+        std::snprintf(buf, sizeof(buf), "%s%.14s",
+                      prefix, name_it->second.c_str());
     } else {
-        std::snprintf(buf, sizeof(buf), "%c%u", letter, static_cast<unsigned>(c.owner));
+        char letter = ai::letterForTag(c.personality_tag);
+        if (flair_star) {
+            std::snprintf(buf, sizeof(buf), "*%c%u", letter, static_cast<unsigned>(c.owner));
+        } else {
+            std::snprintf(buf, sizeof(buf), "%c%u", letter, static_cast<unsigned>(c.owner));
+        }
     }
     int font_size = std::max(12, static_cast<int>(r * 0.5f));
     int text_w    = MeasureText(buf, font_size);
