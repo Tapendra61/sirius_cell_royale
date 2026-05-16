@@ -82,15 +82,18 @@ struct Tuning {
     float comet_event_interval_sec = 75.0f;  // mean time between comet spawns
     float comet_interval_jitter    = 0.30f;  // +/- this fraction of the interval (RNG)
     float comet_telegraph_sec      = 3.0f;   // warning window before the strike
-    float comet_radius             = 1575.0f; // kill radius / visual half-size.
-                                               // ~39% of world width as diameter --
+    float comet_radius             = 1260.0f; // kill radius / visual half-size.
+                                               // ~31% of world width as diameter --
                                                // big enough you can't sidestep the
                                                // telegraph and ignore it, small
                                                // enough the comet still feels like
                                                // a directional threat rather than
                                                // a screen-clearing wipe. Iterated
-                                               // from 440 -> 700 -> 2100 -> 1575
-                                               // through playtesting.
+                                               // 440 -> 700 -> 2100 -> 1575 -> 1260
+                                               // through playtesting (-20% off the
+                                               // 1575 pass; 1575 felt slightly
+                                               // overtuned vs. the rest of the
+                                               // hazard suite).
     float comet_speed              = 900.0f; // world units per second
     float comet_first_after_sec    = 45.0f;  // delay before the first comet of a match
 
@@ -100,12 +103,12 @@ struct Tuning {
     // own cadence; can overlap with regular single comets.
     float comet_shower_event_interval_sec = 180.0f; // mean time between showers
     float comet_shower_first_after_sec    = 90.0f;  // delay before the first shower
-    float comet_shower_main_radius        = 550.0f;  // main comet's kill radius.
-                                                     // Smaller than single-comet 1575
+    float comet_shower_main_radius        = 367.0f;  // main comet's kill radius.
+                                                     // Smaller than single-comet 1260
                                                      // so the formation reads as a
                                                      // swarm, not one giant + dust.
-                                                     // Iterated 1100 -> 825 -> 550
-                                                     // through playtesting -- the
+                                                     // Iterated 1100 -> 825 -> 550 ->
+                                                     // 367 through playtesting -- the
                                                      // shower overwhelms via numbers,
                                                      // not individual size, so the
                                                      // main keeps shrinking until it
@@ -118,14 +121,14 @@ struct Tuning {
                                                      // the main one; was 5..10 before
                                                      // playtesting found 10 was too
                                                      // much screen clutter)
-    float comet_shower_satellite_min_radius = 175.0f; // smallest satellite radius
-                                                     // (350 -> 263 -> 175 across the
-                                                     // same playtest passes as the
-                                                     // main; satellites should feel
-                                                     // like dangerous sparks, not
+    float comet_shower_satellite_min_radius = 117.0f; // smallest satellite radius
+                                                     // (350 -> 263 -> 175 -> 117
+                                                     // across playtest passes;
+                                                     // satellites should feel like
+                                                     // dangerous sparks, not
                                                      // mini-comets)
-    float comet_shower_satellite_max_radius = 350.0f; // biggest satellite radius
-                                                     // (700 -> 525 -> 350)
+    float comet_shower_satellite_max_radius = 233.0f; // biggest satellite radius
+                                                     // (700 -> 525 -> 350 -> 233)
     float comet_shower_spread_perp        = 1800.0f; // perpendicular scatter of
                                                      // satellites around the main
                                                      // path (each side)

@@ -207,7 +207,7 @@ Each effect has an aura ring around the cell while active.
 - **Telegraph** (3s warning): glowing path line on the world + minimap, alarm
   audio + "COMET INCOMING" HUD banner.
 - **Active**: fire-blazing sphere sweeps across the map at 900 u/s. Touches a
-  cell within ~1575 units → instant kill. Visualised with a fire shader (head)
+  cell within ~1260 units → instant kill. Visualised with a fire shader (head)
   plus a smooth shader-driven trail and fiery embers radiating from the body.
 - **Immunity**: cells hiding inside a black hole, and cells with an active
   Shield pickup, survive a comet pass.
@@ -220,10 +220,10 @@ A formation of comets — one big main + 4–9 smaller satellites — sweeps acr
 the map together. Rarer than single comets (default first at 90s, then every
 ~180s), but when it lands the whole map is a kill grid for a few seconds.
 
-- **Composition**: 1 **main** comet at radius 550 (smaller than the
-  single-comet's 1575 — the formation should read as a swarm, not one giant
+- **Composition**: 1 **main** comet at radius 367 (smaller than the
+  single-comet's 1260 — the formation should read as a swarm, not one giant
   with sprinkles) + N **satellites** where N ∈ [3, 6] (so 4–7 comets total).
-  Satellite radius rolls uniformly in [175, 350].
+  Satellite radius rolls uniformly in [117, 233].
 - **Color variants**: main is the original **Orange** fire palette.
   Satellites are split 50/50 between **Red** (crimson body, near-white core)
   and **Blue** (cobalt body, white-blue core). Telegraph lines + minimap dots
@@ -784,13 +784,13 @@ The full set is documented inline in `tuning.ini` itself. High-impact knobs:
 | `[blackholes]` | `count` | 5 | Black holes per match. |
 | `[blackholes]` | `stamina_drain_sec` | 9 | Time from full → empty hide stamina. |
 | `[comet]` | `event_interval_sec` | 75 | Mean time between comet events. |
-| `[comet]` | `radius` | 1575 | Comet kill radius + visual size. |
+| `[comet]` | `radius` | 1260 | Comet kill radius + visual size. |
 | `[comet]` | `first_after_sec` | 45 | Delay before the first comet of a match. |
 | `[comet_shower]` | `event_interval_sec` | 180 | Mean time between comet-shower events (separate cadence from single comets). |
 | `[comet_shower]` | `first_after_sec` | 90 | Delay before the first shower of a match. |
-| `[comet_shower]` | `main_radius` | 550 | Main (Orange) comet's kill radius during a shower. |
+| `[comet_shower]` | `main_radius` | 367 | Main (Orange) comet's kill radius during a shower. |
 | `[comet_shower]` | `satellite_min` / `satellite_max` | 3 / 6 | Inclusive range for the satellite count (4..7 comets total counting the main). |
-| `[comet_shower]` | `satellite_min_radius` / `satellite_max_radius` | 175 / 350 | Bounds on satellite kill radius. |
+| `[comet_shower]` | `satellite_min_radius` / `satellite_max_radius` | 117 / 233 | Bounds on satellite kill radius. |
 | `[comet_shower]` | `spread_perp` | 1800 | Perpendicular scatter of satellites around the main's path (each side). |
 | `[comet_shower]` | `spread_along` | 1500 | Longitudinal scatter along the velocity axis (earlier / later landing than the main). |
 | `[comet_shower]` | `min_separation` | 600 | Minimum centre-to-centre distance between any two comets in the shower. Rejection-sampled at spawn; if a slot can't be found after 20 tries the cluster count is preserved by accepting the last roll (visible overlap > silently dropping a comet). |
