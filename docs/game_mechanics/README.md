@@ -207,7 +207,7 @@ Each effect has an aura ring around the cell while active.
 - **Telegraph** (3s warning): glowing path line on the world + minimap, alarm
   audio + "COMET INCOMING" HUD banner.
 - **Active**: fire-blazing sphere sweeps across the map at 900 u/s. Touches a
-  cell within ~2100 units → instant kill. Visualised with a fire shader (head)
+  cell within ~1575 units → instant kill. Visualised with a fire shader (head)
   plus a smooth shader-driven trail and fiery embers radiating from the body.
 - **Immunity**: cells hiding inside a black hole, and cells with an active
   Shield pickup, survive a comet pass.
@@ -739,7 +739,7 @@ The full set is documented inline in `tuning.ini` itself. High-impact knobs:
 | `[blackholes]` | `count` | 5 | Black holes per match. |
 | `[blackholes]` | `stamina_drain_sec` | 9 | Time from full → empty hide stamina. |
 | `[comet]` | `event_interval_sec` | 75 | Mean time between comet events. |
-| `[comet]` | `radius` | 2100 | Comet kill radius + visual size. |
+| `[comet]` | `radius` | 1575 | Comet kill radius + visual size. |
 | `[comet]` | `first_after_sec` | 45 | Delay before the first comet of a match. |
 | `[currents]` | `band_count` | 2 | Horizontal tidal-current bands stretching across the world. 0 disables the feature. |
 | `[currents]` | `band_height` | 650 | Vertical half-reach of each band (total band height = 2× this). |
