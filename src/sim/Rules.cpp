@@ -1540,15 +1540,21 @@ void doSplit(World& world, PlayerId player, const Tuning& t,
         cells[i].mass         = new_mass;
         cells[i].recombine_at = recombine_at;
 
-        // Offset the child along `dir` so its edge just touches the parent's
-        // edge -- both halves have equal mass now, so the centre-to-centre
-        // distance is exactly 2 * new_radius (+ a tiny gap to keep the
-        // spatial-grid collision pass from flickering). Previously the child
-        // spawned at c_pos and visually overlapped the parent for the first
-        // ~0.5s until launch_vel pushed them apart, which read as "one weird
-        // small cell" until recombine.
-        const float    new_radius = cellRadius(new_mass);
-        const Vec2     child_pos  = c_pos + dir * (2.0f * new_radius + 1.0f);
+        // Spawn the child AT the parent's position. The launch_vel set below
+        // pushes it outward over the first few ticks, so the visual reads as
+        // "the new piece emerges from inside the parent and glides into
+        // place" rather than "a second cell teleports next to the first".
+        // With the default launch_velocity (700) and launch_decay (4), the
+        // child's centre travels ~23 px on tick 1, ~43 px by tick 2, and
+        // clears the parent's edge (~60 px at new_mass=100) by tick 3 --
+        // about 100 ms, three frames at 60 fps. Brief enough to read as one
+        // continuous motion, smooth enough not to pop.
+        //
+        // An earlier revision spawned the child OFFSET by 2 * new_radius to
+        // avoid an overlap-with-parent visual; that worked but eliminated
+        // the smooth move-out beat the player asked for. The brief overlap
+        // during ticks 1..2 is the natural "budding" frame and not a bug.
+        const Vec2 child_pos = c_pos;
 
         const uint8_t parent_tag = cells[i].personality_tag;
         EntityId child_id = world.spawnCell(player, child_pos, new_mass);
@@ -1558,17 +1564,6 @@ void doSplit(World& world, PlayerId player, const Tuning& t,
             nc->recombine_at     = recombine_at;
             nc->personality_tag  = parent_tag; // child inherits the bot type
         }
-        // Parent recoil: kick the parent the OPPOSITE way at a fraction of the
-        // child's launch speed so the split reads as a real action-reaction
-        // (cell ejects mass forward, recoils backward). Subtle on purpose --
-        // the parent shouldn't fly off uncontrollably. 0.22 lands the recoil
-        // at ~150 px/s for the default 700 launch velocity, decaying alongside
-        // the child's launch_vel so both motions settle together.
-        // Additive (not overwriting) in case the parent already has launch_vel
-        // from a dash or a previous split that happened the same frame.
-        constexpr float kSplitRecoilFraction = 0.22f;
-        cells[i].launch_vel.x -= dir.x * t.launch_velocity * kSplitRecoilFraction;
-        cells[i].launch_vel.y -= dir.y * t.launch_velocity * kSplitRecoilFraction;
         events.push_back(SplitEvent{player, p_id, child_id});
         ++existing;
     }

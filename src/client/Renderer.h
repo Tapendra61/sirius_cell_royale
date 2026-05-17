@@ -40,13 +40,6 @@ Color colorForPlayer(PlayerId p);
 void setPlayerName(PlayerId p, const char* name);
 void clearPlayerNames();
 
-// Wipe the per-cell birth-animation state. Called at match start so the new
-// match's cells don't inherit "I was first seen 3 minutes ago" timestamps
-// from a previous match (which would suppress the scale-up animation).
-// Renderer state is process-wide; without this the first batch of cells in
-// a fresh match would pop in at full size.
-void clearCellBirthAnimations();
-
 // Free GPU resources owned by the renderer (the black-hole shader + 1x1 texture).
 // Must be called before raylib's CloseWindow() -- otherwise the shader / texture leak
 // at shutdown and (under some drivers) raylib logs a "trying to delete after context

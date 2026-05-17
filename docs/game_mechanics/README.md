@@ -65,15 +65,6 @@ forced into the touch layout via `force_touch 1`.
 - Maximum simultaneous cells per player: **16**.
 - Recombine delay: **12 seconds** before two same-owner cells can merge back
   together by overlap.
-- **Feel polish** — the split reads as an action-reaction rather than a pop:
-  - The new child cell **buds** out from the parent: starts at ~50% radius
-    and eases out to full size over ~0.22 s (renderer-only birth animation;
-    no wire format change). Looks like the child grows out of the parent
-    instead of just appearing next to it.
-  - The parent **recoils** opposite to the launch direction at ~22% of the
-    child's launch velocity, decaying alongside it. Adds a brief kick-back
-    so the split feels like the parent ejected something rather than
-    standing perfectly still.
 - Tactical uses: leap onto smaller prey from outside their seek radius; escape a
   bigger cell by halving yourself and sprinting in two directions; eat a virus
   with controlled fragmentation.
