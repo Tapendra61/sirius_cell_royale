@@ -1558,6 +1558,17 @@ void doSplit(World& world, PlayerId player, const Tuning& t,
             nc->recombine_at     = recombine_at;
             nc->personality_tag  = parent_tag; // child inherits the bot type
         }
+        // Parent recoil: kick the parent the OPPOSITE way at a fraction of the
+        // child's launch speed so the split reads as a real action-reaction
+        // (cell ejects mass forward, recoils backward). Subtle on purpose --
+        // the parent shouldn't fly off uncontrollably. 0.22 lands the recoil
+        // at ~150 px/s for the default 700 launch velocity, decaying alongside
+        // the child's launch_vel so both motions settle together.
+        // Additive (not overwriting) in case the parent already has launch_vel
+        // from a dash or a previous split that happened the same frame.
+        constexpr float kSplitRecoilFraction = 0.22f;
+        cells[i].launch_vel.x -= dir.x * t.launch_velocity * kSplitRecoilFraction;
+        cells[i].launch_vel.y -= dir.y * t.launch_velocity * kSplitRecoilFraction;
         events.push_back(SplitEvent{player, p_id, child_id});
         ++existing;
     }

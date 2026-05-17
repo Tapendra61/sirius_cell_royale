@@ -32,6 +32,10 @@ Client::Client(EntityId watched_cell, PlayerId watched_player)
     // matches; wipe it at construction so the previous match's names don't
     // leak in on the next one.
     cr::clearPlayerNames();
+    // Same story for the per-cell birth-animation map: without this, the
+    // first batch of cells in a new match would pop in at full size because
+    // their ids were stamped with last-match-end timestamps.
+    cr::clearCellBirthAnimations();
     // Procedural ambient music is intentionally NOT auto-started -- the synthesised
     // pad sounds buzzy; wire in a real music asset and call audio_.playMusic() to
     // turn it back on. The dev console `music_on` command will also start it for
