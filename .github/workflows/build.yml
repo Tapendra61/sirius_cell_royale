@@ -8,17 +8,27 @@ on:
 
 jobs:
   build:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14, windows-2022]
-    runs-on: ${{ matrix.os }}
+        # Each entry is one tested toolchain. The Windows row appears twice
+        # because we test both the default Visual Studio generator (cl.exe)
+        # AND a second Windows path that uses LLVM's regular clang.exe
+        # (GNU-style driver, NOT clang-cl) with the Ninja generator -- the
+        # combo most contributors actually want on Windows when they don't
+        # already have a VS install configured.
+        include:
+          - { os: ubuntu-22.04, name: linux-gcc }
+          - { os: macos-14,     name: macos-clang }
+          - { os: windows-2022, name: windows-msvc }
+          - { os: windows-2022, name: windows-clang-ninja }
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-22.04'
+        if: matrix.name == 'linux-gcc'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -31,9 +41,37 @@ jobs:
             libwayland-dev \
             libxkbcommon-dev
 
-      - name: Configure
+      # Ninja generator for the regular-clang Windows path. windows-2022 has
+      # Ninja shipped with VS Build Tools, but it's only on PATH inside a VS
+      # developer shell. This action puts ninja.exe on PATH unconditionally
+      # so the configure step doesn't need vcvars sourced first.
+      - name: Setup Ninja (clang+ninja path)
+        if: matrix.name == 'windows-clang-ninja'
+        uses: seanmiddleditch/gha-setup-ninja@master
+
+      # The windows-2022 image already has LLVM 17 in C:\Program Files\LLVM
+      # with clang.exe + clang++.exe on PATH, AND a Visual Studio 2022 install
+      # whose headers + libs clang auto-detects via the Windows registry. So
+      # we don't need to source vcvars -- clang finds the MSVC STL + Windows
+      # SDK on its own. CMake's MSVC variable still evaluates to TRUE for
+      # this toolchain (clang simulates the MSVC ABI), but
+      # CMAKE_CXX_COMPILER_FRONTEND_VARIANT is "GNU", which is what
+      # cmake/platforms.cmake keys off to route us to the gcc-style flags.
+      - name: Configure (clang+ninja, Windows)
+        if: matrix.name == 'windows-clang-ninja'
+        run: >
+          cmake -B build -G Ninja
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Configure (default generator)
+        if: matrix.name != 'windows-clang-ninja'
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
+      # `--config Release` is required by the multi-config Visual Studio
+      # generator and harmless for single-config generators (Ninja, Unix
+      # Makefiles), so one Build step covers every matrix entry.
       - name: Build
         run: cmake --build build --config Release --parallel
 
