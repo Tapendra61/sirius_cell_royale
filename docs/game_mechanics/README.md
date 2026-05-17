@@ -65,6 +65,15 @@ forced into the touch layout via `force_touch 1`.
 - Maximum simultaneous cells per player: **16**.
 - Recombine delay: **12 seconds** before two same-owner cells can merge back
   together by overlap.
+- **Smooth emerge feel**: the new child cell spawns at the **parent's centre**
+  and the launch velocity glides it outward over ~165 ms (5 frames at 60 fps).
+  Renderer also plays a 200 ms cubic-ease-out grow-in: the child draws at
+  **45 % radius on its first frame** and scales up to its full size as it
+  glides into place. Net read is "the child grew out of the parent" rather
+  than "a second cell teleported next to the first". The grow-in animation
+  is renderer-only (no sim or wire-format impact) and applies to every
+  freshly-spawned cell — split children, virus-pop fragments, and bot
+  respawns all benefit.
 - Tactical uses: leap onto smaller prey from outside their seek radius; escape a
   bigger cell by halving yourself and sprinting in two directions; eat a virus
   with controlled fragmentation.

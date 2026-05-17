@@ -31,6 +31,62 @@ bool        s_high_contrast = false;
 // when there are many bots + peers.
 std::unordered_map<PlayerId, std::string> s_player_names;
 
+// Per-cell first-seen wall-clock so the renderer can play a brief grow-in
+// animation when a new cell appears: the cell renders at kBirthStartScale *
+// radius and eases out to full size over kBirthAnimSec seconds. This is what
+// makes spacebar splits read as "the child grows from inside the parent into
+// its final shape" instead of "a half-mass cell teleports next to the parent
+// and shoots away".
+//
+// Critical: the prune step (pruneCellFirstSeen, called once per drawWorld)
+// removes entries ONLY when the cell id is no longer in the current snapshot
+// -- never by age. A previous version evicted entries at "age > anim window"
+// to bound memory; the next render of those same cells then re-inserted them
+// with a fresh now_sec and the cell visibly restarted its grow-in animation
+// every ~0.7 s for the rest of its life. Don't age-out; rely on snapshot
+// presence as the only liveness signal.
+constexpr double kBirthAnimSec   = 0.20;
+constexpr float  kBirthStartScale = 0.45f;
+std::unordered_map<EntityId, double> s_cell_first_seen_sec;
+
+// Cubic ease-out from kBirthStartScale to 1.0 across [0, kBirthAnimSec].
+// Ages past the window return 1.0 so the multiplication is a no-op for
+// every cell that's been around longer than the animation -- caller can
+// invoke this unconditionally per cell per frame without branching.
+float birthAnimScale(double age_sec) {
+    if (age_sec <= 0.0)           return kBirthStartScale;
+    if (age_sec >= kBirthAnimSec) return 1.0f;
+    float t      = static_cast<float>(age_sec / kBirthAnimSec);
+    float oneMt  = 1.0f - t;
+    float eased  = 1.0f - oneMt * oneMt * oneMt;       // cubic ease-out
+    return kBirthStartScale + (1.0f - kBirthStartScale) * eased;
+}
+
+// Look up or insert the first-seen time for `id` and return the current
+// scale. New ids get stamped with now_sec and start at kBirthStartScale on
+// the very first frame they're drawn.
+float cellBirthScale(EntityId id, double now_sec) {
+    auto [it, inserted] = s_cell_first_seen_sec.emplace(id, now_sec);
+    if (inserted) return birthAnimScale(0.0);
+    return birthAnimScale(now_sec - it->second);
+}
+
+// Drop entries for cells that are no longer in the snapshot (dead, eaten,
+// recombined). Never drops live cells -- see the "Critical" note above for
+// why aging-out is forbidden.
+template <typename CellsRange>
+void pruneCellFirstSeen(const CellsRange& visible_cells) {
+    for (auto it = s_cell_first_seen_sec.begin();
+         it != s_cell_first_seen_sec.end(); ) {
+        bool alive = false;
+        for (const auto& c : visible_cells) {
+            if (c.id == it->first) { alive = true; break; }
+        }
+        if (alive) ++it;
+        else       it = s_cell_first_seen_sec.erase(it);
+    }
+}
+
 // Default vibrant palette (used everywhere outside cell-color identification).
 const Color kPaletteDefault[] = {
     Color{ 64, 156, 255, 255}, // blue
@@ -97,6 +153,8 @@ void setPlayerName(PlayerId p, const char* name) {
     }
 }
 void clearPlayerNames() { s_player_names.clear(); }
+
+void clearCellBirthAnimations() { s_cell_first_seen_sec.clear(); }
 
 Color colorForPlayer(PlayerId p) {
     if (p == INVALID_PLAYER) return Color{180, 180, 180, 255};
@@ -1508,9 +1566,19 @@ void drawCell(Vec2 pos, const CellSnap& c, bool watched, double now_sec, bool fl
     if (c.hiding || c.blackhole_visual_scale < 0.02f) return;
 
     const float scale = std::clamp(c.blackhole_visual_scale, 0.02f, 1.0f);
-    float r           = cellRadius(c.mass) * scale;
-    Color fill        = colorForPlayer(c.owner);
-    Color outline     = outlineFor(fill);
+    // Birth grow-in: newly-spawned cells (typically the child half of a
+    // spacebar split, but also virus-pop fragments and food-eat respawns)
+    // render at kBirthStartScale * radius and ease out to full size over
+    // kBirthAnimSec. cellBirthScale is a no-op (returns 1.0) once a cell
+    // has been on screen longer than the animation window, so this is safe
+    // to multiply in unconditionally for every cell every frame. The
+    // animation rides on top of (multiplies) the black-hole scale so a
+    // cell that's mid-BH-entry on its first frame still shrinks
+    // proportionally.
+    const float birth_scale = cellBirthScale(c.id, now_sec);
+    float r                  = cellRadius(c.mass) * scale * birth_scale;
+    Color fill               = colorForPlayer(c.owner);
+    Color outline            = outlineFor(fill);
 
     // Mid-animation cells also fade slightly so the shrink reads as "being
     // absorbed by the void" rather than just resizing.
@@ -1732,6 +1800,14 @@ void Renderer::drawWorld(const Interpolator& interp,
 
     // Single GetTime() call for the whole frame; used by halo pulses, invuln flashes, etc.
     const double now_sec = GetTime();
+
+    // Reclaim birth-anim entries whose cell ids dropped out of the snapshot
+    // (cells that died this tick). Critical: this prune ONLY checks snapshot
+    // presence -- never ages entries out by time -- otherwise the next time
+    // we draw a still-alive cell, cellBirthScale would re-insert it with a
+    // fresh now_sec and the cell would visibly restart its grow-in animation
+    // forever. See the s_cell_first_seen_sec comment for the full story.
+    pruneCellFirstSeen(curr.cells);
 
     // Tidal current bands: lowest layer of "ambient terrain". Each band
     // stretches the full world width but the visible-slice clip inside
