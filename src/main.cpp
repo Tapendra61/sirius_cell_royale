@@ -22,6 +22,10 @@
 #include "transport/LocalDiscovery.h"
 #include "transport/NetworkTransport.h"
 
+#include <algorithm>   // std::clamp / std::min / std::max -- needed explicitly
+                        // on MSVC's STL; libstdc++/libc++ happen to pull these
+                        // in transitively from <vector>, but Windows CI failed
+                        // with "'clamp' is not a member of 'std'" without this.
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>

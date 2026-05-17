@@ -1,5 +1,6 @@
 #include "Codec.h"
 
+#include <algorithm>   // std::min -- MSVC's STL doesn't pull it in transitively
 #include <cstring>
 #include <type_traits>
 
