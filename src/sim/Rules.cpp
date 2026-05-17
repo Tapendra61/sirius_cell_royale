@@ -1544,11 +1544,11 @@ void doSplit(World& world, PlayerId player, const Tuning& t,
         // pushes it outward over the first few ticks, so the visual reads as
         // "the new piece emerges from inside the parent and glides into
         // place" rather than "a second cell teleports next to the first".
-        // With the default launch_velocity (700) and launch_decay (4), the
-        // child's centre travels ~23 px on tick 1, ~43 px by tick 2, and
-        // clears the parent's edge (~60 px at new_mass=100) by tick 3 --
-        // about 100 ms, three frames at 60 fps. Brief enough to read as one
-        // continuous motion, smooth enough not to pop.
+        // With the default launch_velocity (500) and launch_decay (4), the
+        // child's centre travels ~17 px on tick 1, ~31 px by tick 2, and
+        // clears the parent's edge (~60 px at new_mass=100) by tick 5 --
+        // about 165 ms, five frames at 60 fps. Slow enough to read as a
+        // visible glide, fast enough that the split still feels responsive.
         //
         // An earlier revision spawned the child OFFSET by 2 * new_radius to
         // avoid an overlap-with-parent visual; that worked but eliminated

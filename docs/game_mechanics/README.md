@@ -774,7 +774,7 @@ The full set is documented inline in `tuning.ini` itself. High-impact knobs:
 | `[cell]` | `start_mass` | 100 | Spawn mass. |
 | `[absorb]` | `mass_ratio_required` | 1.25 | Predator/prey ratio for an eat. Lower = more aggressive eats. |
 | `[split]` | `min_mass_to_split` | 200 | Smallest cell that can split. |
-| `[split]` | `launch_velocity` | 700 | Split-launch speed. |
+| `[split]` | `launch_velocity` | 500 | Split-launch speed. Lower = the child takes longer to glide out of the parent; higher = snappier separation. Iterated 700 -> 500. |
 | `[blast]` | `radius` | 600 | Blast reach at min cast mass. Scales with caster size. |
 | `[blast]` | `cooldown_sec` | 6 | Q recharge time (longer than dash so bots can't spam, and player blasts feel meaningful). |
 | `[dash]` | `cooldown_sec` | 4 | Dash recharge time. |

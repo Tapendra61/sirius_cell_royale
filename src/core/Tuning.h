@@ -17,7 +17,11 @@ struct Tuning {
 
     // [split]
     float min_mass_to_split = 200.0f;
-    float launch_velocity = 700.0f;
+    float launch_velocity = 500.0f; // dropped from 700 -- the 700 split read as
+                                    // "child teleports" (separation in ~3 frames
+                                    // at 60 fps). 500 stretches the emerge beat
+                                    // to ~5 frames so the player sees the child
+                                    // visibly glide out of the parent.
     float launch_decay = 4.0f;
     float recombine_delay_sec = 12.0f;
 
