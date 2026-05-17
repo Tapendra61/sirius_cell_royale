@@ -1425,11 +1425,37 @@ int runWindow(uint64_t initial_seed) {
     // still return logical coords (1280-point space), but raylib's ortho projection
     // is set up so drawing in those logical coords rasterises into the native pixel
     // framebuffer (2560x1440 on 2x Retina). Result: crisp text/UI with zero extra
-    // code. Non-Apple HiDPI may need explicit scaling -- revisit when we ship there.
+    // code.
     SetConfigFlags(FLAG_WINDOW_HIGHDPI);
     InitWindow(1280, 720, "Cell Royale v0.2.0");
     SetTargetFPS(60);
     SetExitKey(KEY_NULL); // don't quit on ESC (menu / console handle it)
+
+    // HiDPI mouse fix (Windows + Linux). raylib's macOS path keeps the
+    // ortho projection in logical-coordinate space so GetMousePosition
+    // (also logical) lines up with the camera math out of the box. On
+    // Windows and Linux raylib's projection uses the PHYSICAL framebuffer
+    // size while GetMousePosition still returns LOGICAL window coords --
+    // result: the visual cursor and the cursor-derived move target drift
+    // apart by exactly the DPI factor (cursor at 1.5x scaling shows
+    // ~1/3 of the screen width to the right of where the cell actually
+    // tries to go). SetMouseScale multiplies GetMousePosition by the
+    // per-axis DPI factor so the reported coords land in the same physical
+    // space the projection uses. No-op on monitors at 100% scaling
+    // (dpi.x/y both 1.0) and skipped on macOS where it would double-scale
+    // a mouse that already works.
+#if !defined(__APPLE__)
+    {
+        Vector2 dpi = GetWindowScaleDPI();
+        if (dpi.x > 0.0f && dpi.y > 0.0f
+            && (dpi.x != 1.0f || dpi.y != 1.0f)) {
+            SetMouseScale(dpi.x, dpi.y);
+            std::printf("[hidpi] mouse scaled by (%.2f, %.2f) to match the "
+                        "physical framebuffer (Windows/Linux HiDPI fix)\n",
+                        dpi.x, dpi.y);
+        }
+    }
+#endif
 
     // Save lives in the platform-correct user data dir so we don't pollute the install
     // directory and so it persists across reinstalls. macOS: ~/Library/Application Support/
