@@ -1069,9 +1069,15 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         // Add one row if the watched player exists but is outside the top N.
         const bool    show_self = (watched_rank > kTopN);
 
-        // Panel layout, top-left corner.
+        // Panel layout, top-left corner. y0 leaves room above for the
+        // mutation banner's persistent corner badge ("[Heavy]" etc.), which
+        // Hud.cpp draws at (12, 12) with font size sc(14). Without this gap
+        // the badge text drew on top of the LEADERBOARD header in the same
+        // pixels and the active mutation became unreadable for the rest of
+        // the match. Scaled offset so a higher HUD text size doesn't put
+        // the leaderboard back on top of a bigger badge.
         constexpr int x0      = 12;
-        constexpr int y0      = 12;
+        const     int y0      = 12 + static_cast<int>(22.0f * currentHudTextScale() + 0.5f);
         constexpr int width   = 218;
         constexpr int row_h   = 16;
         constexpr int header  = 22;
