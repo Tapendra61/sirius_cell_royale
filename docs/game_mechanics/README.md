@@ -82,6 +82,12 @@ forced into the touch layout via `force_touch 1`.
 
 - Drops an 18-mass food pellet in the cursor direction, fired at high velocity.
 - Minimum mass to eject: **150**. Caps so you can't reduce yourself below ~50.
+- **Self-ejected food is non-critable** — if YOU eat back a pellet that you
+  threw, you get exactly its 18 mass back (no crit roll, no 1.5× bonus). This
+  closes a W-spam loophole: without the gate, the rare crit roll on
+  re-eating your own pellet returned more mass than the eject cost, so a
+  patient player could grow infinitely by tapping W in place. Other players
+  passing through and grabbing your pellet still hit normal crit odds.
 - Tactical uses:
   - Feed a virus until it pops (it explodes any cell it touches at 200+ mass).
   - Trade mass with another player (gift food).

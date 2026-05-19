@@ -235,8 +235,20 @@ void processEating(World& world, const Tuning& t, std::vector<GameEvent>& events
             float reach = pr + fr;
             if (dsq > reach * reach) continue;
             // Crit roll: rare bonus (5% by default). Crit mass adds on top of base.
+            // EXCEPT when the food was ejected by the SAME owner that's eating it
+            // now -- otherwise W-spam becomes free mass: eject costs N, normal
+            // re-eat returns N (break-even), but a crit returns N * 1.5 = net +N/2,
+            // and at 5% crit chance the expected value per eject is positive. Loop
+            // the W key and the player grows infinitely off their own pellets.
+            // Self-fed food still returns its base mass (so deliberate "barter"
+            // moves like splitting + re-eating still work) but the crit boost is
+            // suppressed so the net mass change is exactly zero. The check is on
+            // owner -- not cell id -- so a player's OTHER cells (e.g. after a
+            // split) can't sneak the exploit either, but other players passing by
+            // and grabbing your dropped pellet still get normal crit odds.
             float gained  = f.mass;
-            bool  is_crit = world.rng().nextFloat() < t.chance_per_absorb;
+            bool  is_crit = (f.from_player != cells[i].owner)
+                         && (world.rng().nextFloat() < t.chance_per_absorb);
             if (is_crit) gained *= t.bonus_multiplier;
             cells[i].mass += gained;
             events.push_back(AbsorbEvent{cells[i].id, f.id, f.pos, gained});
