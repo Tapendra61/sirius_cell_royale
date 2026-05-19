@@ -272,9 +272,10 @@ A short, generous "every food is treasure" window. Loud, golden, brief.
 Triggers maybe twice in a 5-minute Royale on average; default first one
 lands 90 s into the match.
 
-- **Duration**: **10 seconds** (default; tunable). For the whole window every
+- **Duration**: **30 seconds** (default; tunable). For the whole window every
   food pellet eaten grants `food_rush_mass_multiplier` (default **3×**) of
-  its base mass.
+  its base mass. Long enough to plan a proper feeding run; short enough
+  that it still ends before the next natural event window.
 - **Crit stacking**: crit chance is unaffected by the rush, but a crit
   during a rush DOES stack with the rush multiplier — so a 5% lucky crit
   on a 1-mass common pellet during a rush returns `1 × 3 × 1.5 = 4.5` mass.
@@ -282,9 +283,17 @@ lands 90 s into the match.
   the previous fix is preserved) but DOES still get the 3× rush bonus —
   the exploit was about crit chance, not base mass.
 - **Announcement**: golden "★ ★ FOOD RUSH ×3 ★ ★" banner across the top of
-  the screen, pulses between two gold tones, fades in 0.3 s / holds 2.1 s
-  / fades out 0.6 s. Plays a bell-chime stinger (procedural — major
-  arpeggio C5→E5→G5→C6 with a high airy shimmer underneath).
+  the screen with five layered effects — a 5-band vertical gradient
+  backdrop (dark → warm → bright gold), a 4-pass additive text glow that
+  haloes every letter, a cubic-ease-out scale-in (0.55× → 1.0× over the
+  fade-in window) plus a subtle ±3 % breathing pulse during the hold, a
+  tone pulse between two warm golds, and a "sparkle rain" of 16 twinkling
+  gold dots across the strip with de-synced phase offsets. Fades in 0.3 s
+  / holds 2.1 s / fades out 0.6 s. The bell-chime stinger is a 2-second
+  procedural synth: major-arpeggio (C5→E5→G5→C6) with church-bell
+  inharmonic partials, 14 high-frequency sparkle bursts scattered across
+  the duration, a vibrato shimmer pad around 2 kHz, and a warm 1 kHz halo
+  underneath — luxurious + glittery rather than just bright.
 - **Visual**: every food pellet renders an extra "Layer 0" pulsing gold
   ring + the pellet's body colour mixes 55% toward gold for the duration.
   The pulse is synchronised across every pellet (single shared `sin()`)
@@ -786,7 +795,7 @@ with a `host-only` log line.
 | `god` | Toggle invuln on your watched cell (the cell can't be absorbed). |
 | `comet` | Force-spawn a crashing-comet event on the next sim tick. The spawn position + direction remain RNG-driven. |
 | `shower` | Force-spawn a comet-shower event (1 main + 3..7 satellites in red/blue) on the next sim tick. |
-| `rush` | Force-start a 10s food-rush event on the next sim tick (3x mass on every food eaten + golden banner + chime). |
+| `rush` | Force-start a 30s food-rush event on the next sim tick (3x mass on every food eaten + golden banner + glittery chime). |
 | `spawn_food N` | Drop N random-tier food at random positions. |
 | `seed_food N [mass]` | Drop N food. Optional second arg pins the mass tier to one of `1`, `3`, `6`, `12`, `36`. |
 | `kick PID` | **LocalHost only.** Gracefully disconnect the peer that owns `PID`, then despawn all of their cells. Refuses to kick `PID = 1` (the host) or any PID with no matching peer. |
@@ -847,7 +856,7 @@ The full set is documented inline in `tuning.ini` itself. High-impact knobs:
 | `[comet_shower]` | `min_separation` | 600 | Minimum centre-to-centre distance between any two comets in the shower. Rejection-sampled at spawn; if a slot can't be found after 20 tries the cluster count is preserved by accepting the last roll (visible overlap > silently dropping a comet). |
 | `[food_rush]` | `event_interval_sec` | 240 | Mean time between rare 3x-food events. |
 | `[food_rush]` | `first_after_sec` | 90 | Delay before the first food rush of a match. |
-| `[food_rush]` | `duration_sec` | 10 | How long each rush lasts. |
+| `[food_rush]` | `duration_sec` | 30 | How long each rush lasts. |
 | `[food_rush]` | `mass_multiplier` | 3.0 | Mass multiplier on every food pellet eaten during the rush. Stacks with crits. |
 | `[currents]` | `band_count` | 2 | Horizontal tidal-current bands stretching across the world. 0 disables the feature. |
 | `[currents]` | `band_height` | 650 | Vertical half-reach of each band (total band height = 2× this). |

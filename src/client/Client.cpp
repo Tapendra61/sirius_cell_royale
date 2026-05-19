@@ -1190,33 +1190,111 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
     }
 
     // ---- Food Rush HUD banner ----
-    // Golden announcement when the rare 3x-food world event begins. Same
-    // fade-in / hold / fade-out shape as the comet banner so they feel like
-    // peers; the pulse shifts between two warm gold tones for a "magical"
-    // shimmer rather than the comet's alarm orange. Sits a touch lower than
-    // the comet banner (y=160 vs 110) so if both events are somehow active
-    // simultaneously they don't draw on top of each other.
+    // Golden announcement when the rare 3x-food world event begins. Stacks
+    // five effects on top of the comet-banner shape:
+    //   (a) vertical gradient backdrop strip (dark gold -> bright gold ->
+    //       dark gold across the y-axis of the strip)
+    //   (b) multi-pass text glow: the text is drawn 5 times in additive
+    //       blend mode with increasing offset radii, building a soft halo
+    //       around the lettering
+    //   (c) scale-in: text scales 0.55x -> 1.0x during fade-in (cubic
+    //       ease-out) then breathes ±3% during hold
+    //   (d) gold tone pulse between two warm shades
+    //   (e) "sparkle rain": 16 tiny pulsing gold dots scattered along the
+    //       strip with deterministic phase offsets so they twinkle in a
+    //       pattern instead of randomly
+    // Sits below the comet banner row (y=160 vs 110) so simultaneous
+    // events don't draw on top of each other.
     if (food_rush_banner_remaining_ > 0.0f) {
         const float age   = kFoodRushBannerSec - food_rush_banner_remaining_;
         const float fadeI = std::min(1.0f, age / 0.30f);
         const float fadeO = std::min(1.0f, food_rush_banner_remaining_ / 0.60f);
         const float a01   = std::min(fadeI, fadeO);
-        const unsigned char a_text = static_cast<unsigned char>(a01 * 250.0f);
-        const unsigned char a_bg   = static_cast<unsigned char>(a01 * 130.0f);
-        const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(GetTime()) * 5.0f);
-        // Pulse between a brighter gold (255,225,120) and a softer one
-        // (235,180, 70) so the banner shimmers rather than flickers.
+        const float t_sec = static_cast<float>(GetTime());
+
+        // Scale-in: cubic ease-out from 0.55 to 1.0 across the fade-in
+        // window, then a subtle 3% breathing pulse during hold.
+        const float fade_in_eased =
+            1.0f - (1.0f - fadeI) * (1.0f - fadeI) * (1.0f - fadeI);
+        const float breathe       = 0.03f * std::sin(t_sec * 4.0f);
+        const float scale         = 0.55f + 0.45f * fade_in_eased + breathe;
+
+        const char* msg     = "* * FOOD RUSH x3 * *";
+        const int   base_fs = 44;
+        const int   fs      = static_cast<int>(base_fs * scale + 0.5f);
+        const int   tw      = MeasureText(msg, fs);
+        const int   x       = screen_w / 2 - tw / 2;
+        const int   y       = 160;
+        const int   strip_h = base_fs + 30;
+        const int   strip_y = y - 14;
+
+        // (a) Gradient backdrop -- four horizontal bands going dark -> warm
+        // -> bright -> warm -> dark across the strip's vertical axis. Cheap
+        // to draw and reads as a soft glow without needing alpha-blended
+        // textures.
+        const unsigned char a_bg_base = static_cast<unsigned char>(a01 * 150.0f);
+        const int band_h = strip_h / 5;
+        const Color bg_dark { 40,  25,   0, a_bg_base};
+        const Color bg_warm { 90,  55,  10, a_bg_base};
+        const Color bg_bright{160, 105,  20, a_bg_base};
+        DrawRectangle(0, strip_y + 0 * band_h, screen_w, band_h, bg_dark);
+        DrawRectangle(0, strip_y + 1 * band_h, screen_w, band_h, bg_warm);
+        DrawRectangle(0, strip_y + 2 * band_h, screen_w, band_h, bg_bright);
+        DrawRectangle(0, strip_y + 3 * band_h, screen_w, band_h, bg_warm);
+        DrawRectangle(0, strip_y + 4 * band_h, screen_w, strip_h - 4 * band_h, bg_dark);
+        // Top + bottom edge highlight: a thin bright line at the seam where
+        // the strip meets the world; gives the banner a "framed" feel.
+        DrawRectangle(0, strip_y,                 screen_w, 1,
+                      Color{255, 215, 110, static_cast<unsigned char>(a01 * 200.0f)});
+        DrawRectangle(0, strip_y + strip_h - 1,   screen_w, 1,
+                      Color{255, 215, 110, static_cast<unsigned char>(a01 * 200.0f)});
+
+        // (e) Sparkle rain: 16 dots distributed across the strip's width,
+        // each with its own phase offset so they twinkle at slightly
+        // different times. Drawn BEFORE the text so the brightest glow
+        // sits on the lettering.
+        constexpr int kSparkleCount = 16;
+        for (int i = 0; i < kSparkleCount; ++i) {
+            float frac    = (i + 0.5f) / kSparkleCount;
+            float sx      = frac * screen_w;
+            float phase   = i * 0.83f;                          // de-syncs each dot
+            float row_t   = std::sin(i * 1.27f);                // -1..1, varies per dot
+            float sy      = strip_y + strip_h * (0.5f + 0.35f * row_t);
+            float blink   = 0.5f + 0.5f * std::sin(t_sec * 6.0f + phase);
+            unsigned char sa = static_cast<unsigned char>(a01 * blink * 220.0f);
+            // Tiny outer halo + bright pinprick centre.
+            DrawCircle(sx, sy, 4.0f, Color{255, 220, 100, static_cast<unsigned char>(sa * 0.45f)});
+            DrawCircle(sx, sy, 1.6f, Color{255, 245, 200, sa});
+        }
+
+        // (d) Pulse the text colour between two warm gold tones.
+        const float pulse = 0.5f + 0.5f * std::sin(t_sec * 5.0f);
         const Color tint{255,
                          static_cast<unsigned char>(180 + pulse * 45.0f),
                          static_cast<unsigned char>( 70 + pulse * 50.0f),
-                         a_text};
-        const char* msg  = "* * FOOD RUSH x3 * *";
-        const int   fs   = 44;
-        const int   tw   = MeasureText(msg, fs);
-        const int   x    = screen_w / 2 - tw / 2;
-        const int   y    = 160;
-        DrawRectangle(0, y - 12, screen_w, fs + 24, Color{50, 35, 0, a_bg});
-        DrawText(msg, x + 2, y + 2, fs, Color{0, 0, 0, a_text});
+                         static_cast<unsigned char>(a01 * 250.0f)};
+
+        // (b) Glow passes. Draw the text 4 times in additive blend at
+        // increasing offsets, each fainter than the last -- builds a soft
+        // halo around every letter without needing a shader. Each pass
+        // tints further toward white so the halo brightens at its core
+        // when the additive accumulates. Final non-additive draw lays the
+        // crisp main text on top.
+        BeginBlendMode(BLEND_ADDITIVE);
+        for (int pass = 4; pass >= 1; --pass) {
+            float off = static_cast<float>(pass) * 1.6f;
+            unsigned char ga = static_cast<unsigned char>(a01 * (90.0f / pass));
+            Color glow{255, 220, static_cast<unsigned char>(110 + pulse * 40.0f), ga};
+            // 4 offsets per pass = simple cross-shaped soft glow.
+            DrawText(msg, x + static_cast<int>(off), y,                              fs, glow);
+            DrawText(msg, x - static_cast<int>(off), y,                              fs, glow);
+            DrawText(msg, x,                          y + static_cast<int>(off),     fs, glow);
+            DrawText(msg, x,                          y - static_cast<int>(off),     fs, glow);
+        }
+        EndBlendMode();
+        // Drop shadow + main text.
+        DrawText(msg, x + 2, y + 2, fs,
+                 Color{0, 0, 0, static_cast<unsigned char>(a01 * 230.0f)});
         DrawText(msg, x,     y,     fs, tint);
     }
 

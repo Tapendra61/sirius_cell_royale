@@ -158,36 +158,87 @@ float gCometStrike(float t) {
 }
 
 float gFoodRush(float t) {
-    // Golden world-event chime. 1.2 s "magic sparkle" announcing the rare
-    // 3x-food window. Three bell-like partials ringing in a major arpeggio
-    // (C5 -- E5 -- G5 -- C6 over the first ~0.6 s) on top of a soft, slowly
-    // rising harmonic shimmer. Each note gets its own exponential decay so
-    // the chime reads as four discrete strikes that bloom into a sustained
-    // glow rather than one long blast. Frequencies are chosen so 16 * f is
-    // an integer per note, but loop-seam doesn't matter here -- the sound
-    // is one-shot.
-    if (t > 1.20f) return 0.0f;
-    constexpr float notes[]      = {523.25f /*C5*/, 659.25f /*E5*/,
-                                    783.99f /*G5*/, 1046.50f /*C6*/};
-    constexpr float strike_at[]  = {0.00f, 0.12f, 0.24f, 0.42f};
-    constexpr float strike_gain[] = {0.55f, 0.55f, 0.55f, 0.70f}; // top C punches
-    float chimes = 0.0f;
+    // Golden world-event chime: a glittery announcement for the rare
+    // 3x-food window. Layered synthesis -- proper church-bell partials
+    // (inharmonic) for body + dozens of high-frequency sparkles raining
+    // across the duration + a shimmering high tone with vibrato underneath.
+    // Total length: 2.0 s (was 1.2 s -- the longer tail lets the sparkles
+    // dance after the bells settle, which is what reads as "glittery"
+    // rather than "just a chime").
+    if (t > 2.00f) return 0.0f;
+
+    // ---- Layer 1: Major-arpeggio bell strikes (C5-E5-G5-C6) ----
+    // Each note uses 3 inharmonic partials at ratios drawn from real
+    // church-bell physics (1.0, ~2.74, ~5.4 of fundamental) so the timbre
+    // reads as "bell" rather than "pure sine" -- the high partial is what
+    // makes the strike sparkle on attack. Per-partial exp decay rates differ
+    // so the top partial fades fastest (bell-like clack -> sustained hum).
+    constexpr float notes[]       = {523.25f /*C5*/, 659.25f /*E5*/,
+                                     783.99f /*G5*/, 1046.50f /*C6*/};
+    constexpr float strike_at[]   = {0.00f, 0.12f, 0.24f, 0.42f};
+    constexpr float strike_gain[] = {0.50f, 0.55f, 0.60f, 0.78f}; // top C punches loudest
+    float bells = 0.0f;
     for (int i = 0; i < 4; ++i) {
         float dt = t - strike_at[i];
         if (dt < 0.0f) continue;
-        // Bell envelope: fast attack, slow decay. exp(-dt * 4) gives a ~0.8 s tail.
-        float env = std::exp(-dt * 4.0f);
-        // Fundamental + 2nd partial at 2x with half the gain (gentle bell colour).
-        float v = std::sin(dt * notes[i] * kTwoPi)
-                + 0.40f * std::sin(dt * notes[i] * 2.0f * kTwoPi);
-        chimes += v * env * strike_gain[i];
+        float f         = notes[i];
+        // Fundamental: medium decay (~1.0 s tail).
+        float env_fund  = std::exp(-dt * 3.2f);
+        // Mid partial 2.74x: faster decay -- the "tine" sound of a bell.
+        float env_mid   = std::exp(-dt * 5.0f);
+        // High partial 5.4x: very fast decay -- the metallic strike at attack.
+        float env_high  = std::exp(-dt * 8.5f);
+        float v = std::sin(dt * f *  1.0f * kTwoPi) * env_fund * 0.60f
+                + std::sin(dt * f *  2.74f * kTwoPi) * env_mid  * 0.32f
+                + std::sin(dt * f *  5.40f * kTwoPi) * env_high * 0.18f;
+        bells += v * strike_gain[i];
     }
-    // Background shimmer: a high airy tone (~1568 Hz, G6) that fades in over
-    // the first 0.3 s and dies away with the last note. Adds "glow" so the
-    // chime feels luxurious instead of just bright.
-    float shimmer_env = std::min(1.0f, t * 3.5f) * std::exp(-(t - 0.20f) * 2.2f);
-    float shimmer = std::sin(t * 1568.0f * kTwoPi) * shimmer_env * 0.18f;
-    return (chimes * 0.45f + shimmer) * 0.85f;
+
+    // ---- Layer 2: Sparkle rain ----
+    // 14 short high-frequency chirps scattered across the duration. Each
+    // sparkle is a 0.06 s burst of a sine in [2.6 kHz, 5.5 kHz] with a
+    // sharp attack and exponential decay -- think tiny glass bells. The
+    // (time, frequency) pairs are picked to feel "random" but are
+    // hardcoded so the synthesis is deterministic (no PRNG state needed
+    // at sound-gen time). Each sparkle also gets a slight stereo-feeling
+    // detune via a 2nd partial 1.5x up, again with its own envelope.
+    struct Sparkle { float at; float freq; float gain; };
+    constexpr Sparkle sparkles[] = {
+        {0.06f, 4180.f, 0.22f}, {0.18f, 5240.f, 0.20f}, {0.31f, 3520.f, 0.24f},
+        {0.40f, 4680.f, 0.18f}, {0.52f, 5840.f, 0.22f}, {0.65f, 3140.f, 0.26f},
+        {0.78f, 4920.f, 0.20f}, {0.91f, 5520.f, 0.18f}, {1.06f, 3960.f, 0.22f},
+        {1.20f, 5060.f, 0.16f}, {1.35f, 4380.f, 0.18f}, {1.50f, 5680.f, 0.14f},
+        {1.66f, 3780.f, 0.16f}, {1.82f, 4540.f, 0.12f},
+    };
+    float sparkleSum = 0.0f;
+    for (const auto& sp : sparkles) {
+        float dt = t - sp.at;
+        if (dt < 0.0f || dt > 0.12f) continue;
+        // Tight envelope: very fast attack + 0.06 s decay = bell-ping shape.
+        float env = std::exp(-dt * 18.0f);
+        // Two partials per sparkle so it has a hint of pitch character
+        // instead of being a pure tone -- the 1.5x gives a perfect-fifth
+        // overtone that reads as "crystalline".
+        float v = std::sin(dt * sp.freq        * kTwoPi)
+                + 0.55f * std::sin(dt * sp.freq * 1.5f * kTwoPi);
+        sparkleSum += v * env * sp.gain;
+    }
+
+    // ---- Layer 3: Shimmer pad with vibrato ----
+    // High continuous tone (~2 kHz centre) with ±60 Hz vibrato at 6.5 Hz.
+    // Slow attack (~0.3 s) so it doesn't clobber the bell strike; slow
+    // decay so it carries into the sparkle tail. The vibrato is what makes
+    // it sound "alive" -- a flat sine here would read as a stuck high
+    // note instead of a luxurious glow.
+    float vibrato_freq = 2000.0f + 60.0f * std::sin(t * 6.5f * kTwoPi);
+    float shimmer_env  = std::min(1.0f, t * 3.0f) * std::exp(-(t - 0.30f) * 1.4f);
+    float shimmer      = std::sin(t * vibrato_freq * kTwoPi) * shimmer_env * 0.14f;
+    // Subtle "halo" octave below (1 kHz) -- adds warmth so the sound isn't
+    // all top-end thin air.
+    float halo_env     = std::min(1.0f, t * 4.0f) * std::exp(-(t - 0.50f) * 1.0f);
+    float halo         = std::sin(t * 1000.0f * kTwoPi) * halo_env * 0.10f;
+
+    return (bells * 0.45f + sparkleSum + shimmer + halo) * 0.85f;
 }
 
 float gCrit(float t) {
@@ -249,7 +300,7 @@ AudioSystem::AudioSystem() {
     crit_        = generateSound(320,   gCrit);
     comet_warn_   = generateSound(950,  gCometWarn);
     comet_strike_ = generateSound(560,  gCometStrike);
-    food_rush_    = generateSound(1200, gFoodRush);
+    food_rush_    = generateSound(2000, gFoodRush);
     music_sound_ = generateSound(16000, gMusicPad); // 16 seconds, seamless
 
     applyVolumes();

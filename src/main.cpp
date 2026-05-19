@@ -196,7 +196,7 @@ void runDevCommand(WindowState& s, const std::vector<std::string>& args) {
         con.log("  god               toggle invuln on the watched cell");
         con.log("  comet             spawn a crashing-comet event now");
         con.log("  shower            spawn a comet-shower event now (main + 3..7 satellites)");
-        con.log("  rush              start a 10s food-rush event now (3x mass on every food)");
+        con.log("  rush              start a 30s food-rush event now (3x mass on every food)");
         con.log("  spawn_food N      drop N random food (food_target+=N)");
         con.log("  seed_food N [M]   drop N food, optional mass tier M (1,3,6,12,36)");
         con.log("  kick PID          (LocalHost only) disconnect peer + despawn their cells");

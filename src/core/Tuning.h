@@ -109,7 +109,15 @@ struct Tuning {
     // genuine event rather than ambient noise.
     float food_rush_event_interval_sec = 240.0f; // mean time between rushes
     float food_rush_first_after_sec    = 90.0f;  // delay before the first rush
-    float food_rush_duration_sec       = 10.0f;  // how long the rush lasts
+    float food_rush_duration_sec       = 30.0f;  // how long the rush lasts
+                                                 // (bumped 10 -> 30: 10 s
+                                                 // ended before the player
+                                                 // could properly capitalise
+                                                 // on the multiplier; 30 s
+                                                 // is long enough to plan
+                                                 // a feeding run but still
+                                                 // ends before the natural
+                                                 // next event window)
     float food_rush_mass_multiplier    = 3.0f;   // every food eaten grants 3x mass
 
     // [comet_shower] -- separate world event: 1 main comet + 3..7 smaller satellites
