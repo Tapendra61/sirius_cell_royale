@@ -1867,6 +1867,19 @@ void Renderer::drawWorld(const Interpolator& interp,
     // small upper-left highlight dot for a hint of dimensionality. The
     // highlight position is deterministic from the food id so it doesn't
     // dance frame-to-frame.
+    //
+    // Food Rush world event (per-snapshot bool): when active, every pellet
+    // gets an extra "Layer 0" golden glow drawn first (so it sits behind the
+    // tier-specific layers) and its body is tinted toward gold. Drives the
+    // visible "every food is treasure" feel for the duration of the rush.
+    const bool  food_rush_on = curr.food_rush_time_left_sec > 0.0f;
+    // Single shared sin() for the rush pulse so every pellet blooms in sync
+    // -- that's what makes the world read as "the rush is happening" rather
+    // than "each food is doing its own thing".
+    const float rush_pulse   = food_rush_on
+        ? 0.5f + 0.5f * std::sin(static_cast<float>(now_sec) * 4.5f)
+        : 0.0f;
+
     for (const auto& f : curr.food) {
         if (!pointInView(f.pos, view_min, view_max)) continue;
         Vec2 pos = f.pos;
@@ -1896,6 +1909,32 @@ void Renderer::drawWorld(const Interpolator& interp,
             c.r = static_cast<unsigned char>(cool.r + (hot.r - cool.r) * pulse);
             c.g = static_cast<unsigned char>(cool.g + (hot.g - cool.g) * pulse);
             c.b = static_cast<unsigned char>(cool.b + (hot.b - cool.b) * pulse);
+        }
+
+        // ---- Layer 0: Food Rush golden aura (active only) ----
+        // Wide outer ring + brighter inner halo, both pulsing in sync across
+        // every pellet via the shared rush_pulse. Drawn BEFORE the tier
+        // layers so the gold ring reads as "behind" the pellet's normal
+        // colour while the body tint (applied below) reads as "the pellet
+        // itself is glowing gold".
+        if (food_rush_on) {
+            unsigned char outer_a = static_cast<unsigned char>(
+                90.0f + rush_pulse * 70.0f);
+            unsigned char inner_a = static_cast<unsigned char>(
+                130.0f + rush_pulse * 95.0f);
+            DrawCircleV(Vector2{pos.x, pos.y}, r_body * 3.0f,
+                        Color{255, 215, 90, outer_a});
+            DrawCircleV(Vector2{pos.x, pos.y}, r_body * 2.0f,
+                        Color{255, 235, 130, inner_a});
+            // Tint the pellet's body colour toward gold. The original colour
+            // still reads through (so common green pellets still look green-
+            // ish, legendary purples still purple-ish), just with a warmer
+            // bias. 0.55 mix is bright enough to read as gold without
+            // erasing the tier identity.
+            constexpr float kMix = 0.55f;
+            c.r = static_cast<unsigned char>(c.r * (1.0f - kMix) + 255.0f * kMix);
+            c.g = static_cast<unsigned char>(c.g * (1.0f - kMix) + 220.0f * kMix);
+            c.b = static_cast<unsigned char>(c.b * (1.0f - kMix) +  80.0f * kMix);
         }
 
         // ---- Layer 1: ambient soft glow (every pellet, including commons) ----

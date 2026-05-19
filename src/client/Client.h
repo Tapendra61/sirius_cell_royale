@@ -217,6 +217,16 @@ private:
     float                comet_banner_remaining_ = 0.0f;
     static constexpr float kCometBannerSec      = 3.5f;
 
+    // Food-rush world event banner. Set to kFoodRushBannerSec when a
+    // FoodRushEvent::Start arrives; counts down each frame and drives the
+    // golden "FOOD RUSH x3" announcement banner. Independent of the active
+    // window (which the renderer reads off the snapshot's
+    // food_rush_time_left_sec) -- the BANNER is a one-time announcement,
+    // the GLOW lasts the whole event. Cleared on FoodRushEvent::End so a
+    // mid-banner end fade still feels punctual.
+    float                  food_rush_banner_remaining_ = 0.0f;
+    static constexpr float kFoodRushBannerSec          = 3.0f;
+
     // Match-end overlay state. Populated when a MatchEndEvent arrives; HUD reads
     // these to render the winner panel. remaining_sec counts down each frame; when
     // it hits 0 the client sets return_to_menu_pending_ so the outer loop bounces

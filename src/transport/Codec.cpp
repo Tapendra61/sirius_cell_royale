@@ -272,6 +272,7 @@ enum class EventTagWire : uint8_t {
     Comet            = 7,
     MatchEnd         = 8,
     Recombine        = 9,
+    FoodRush         = 10,
 };
 
 void writeAbsorb(Writer& w, const AbsorbEvent& e) {
@@ -412,6 +413,19 @@ bool readRecombine(Reader& r, RecombineEvent& e) {
     return !r.failed;
 }
 
+void writeFoodRush(Writer& w, const FoodRushEvent& e) {
+    w.writePOD(static_cast<uint8_t>(e.phase));
+    w.writePOD(e.duration_sec);
+}
+bool readFoodRush(Reader& r, FoodRushEvent& e) {
+    uint8_t phase = 0;
+    if (!r.readPOD(phase)) return false;
+    if (phase > 1) e.phase = FoodRushEvent::Start; // unknown -> safe fallback
+    else           e.phase = static_cast<FoodRushEvent::Phase>(phase);
+    r.readPOD(e.duration_sec);
+    return !r.failed;
+}
+
 } // namespace
 
 // ---- Snapshot ----
@@ -458,6 +472,8 @@ bool encodeSnapshot(const Snapshot& s, std::vector<uint8_t>& out) {
 
     // v3: match timer (seconds remaining; 0 = unlimited or already ended).
     w.writePOD(s.match_time_left_sec);
+    // v6: food-rush timer (seconds remaining in a 3x-food world event; 0 = no rush).
+    w.writePOD(s.food_rush_time_left_sec);
 
     return true;
 }
@@ -500,6 +516,8 @@ bool decodeSnapshot(const uint8_t* data, size_t len, Snapshot& s) {
 
     // v3: match timer.
     r.readPOD(s.match_time_left_sec);
+    // v6: food-rush timer.
+    r.readPOD(s.food_rush_time_left_sec);
 
     return !r.failed;
 }
@@ -592,6 +610,8 @@ bool encodeEvent(const GameEvent& e, std::vector<uint8_t>& out) {
             writeMatchEnd(w, std::get<MatchEndEvent>(e));        return true;
         case EventTagWire::Recombine:
             writeRecombine(w, std::get<RecombineEvent>(e));      return true;
+        case EventTagWire::FoodRush:
+            writeFoodRush(w, std::get<FoodRushEvent>(e));        return true;
     }
     out.clear();
     return false;
@@ -747,6 +767,9 @@ bool decodeEvent(const uint8_t* data, size_t len, GameEvent& e) {
         }
         case EventTagWire::Recombine: {
             RecombineEvent ev; if (!readRecombine(r, ev)) return false; e = ev; return true;
+        }
+        case EventTagWire::FoodRush: {
+            FoodRushEvent ev; if (!readFoodRush(r, ev)) return false; e = ev; return true;
         }
     }
     return false;

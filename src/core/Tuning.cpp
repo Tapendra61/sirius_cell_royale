@@ -107,6 +107,11 @@ bool LoadTuningFromFile(Tuning& out, const std::string& path) {
     readInt  (ini, "comet_shower", "satellite_max",       out.comet_shower_satellite_max);
     readFloat(ini, "comet_shower", "satellite_min_radius", out.comet_shower_satellite_min_radius);
     readFloat(ini, "comet_shower", "satellite_max_radius", out.comet_shower_satellite_max_radius);
+    readFloat(ini, "food_rush", "event_interval_sec",  out.food_rush_event_interval_sec);
+    readFloat(ini, "food_rush", "first_after_sec",     out.food_rush_first_after_sec);
+    readFloat(ini, "food_rush", "duration_sec",        out.food_rush_duration_sec);
+    readFloat(ini, "food_rush", "mass_multiplier",     out.food_rush_mass_multiplier);
+
     readFloat(ini, "comet_shower", "spread_perp",         out.comet_shower_spread_perp);
     readFloat(ini, "comet_shower", "spread_along",        out.comet_shower_spread_along);
     readFloat(ini, "comet_shower", "min_separation",      out.comet_shower_min_separation);

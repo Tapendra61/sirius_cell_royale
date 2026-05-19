@@ -20,6 +20,11 @@ Simulation::Simulation(uint64_t seed, Tuning tuning)
     // schedule). First shower lands later than the first single comet so the
     // player doesn't see a screen-spanning swarm 45 s in with no warm-up.
     next_shower_spawn_tick_ = secondsToTicks(tuning_.comet_shower_first_after_sec);
+    // Food-rush schedule: same pattern as the other world events. First rush
+    // lands well into the match (default 90 s) so the player's first growth
+    // phase happens at baseline rates -- the rush is a CHANGE from the
+    // norm and needs a "norm" to land against.
+    next_food_rush_spawn_tick_ = secondsToTicks(tuning_.food_rush_first_after_sec);
     // Initial food: tiered roll so the world spawns with a mix of common/uncommon/rare/epic.
     for (int i = 0; i < tuning_.food_target; ++i) {
         Vec2 pos{
@@ -237,6 +242,12 @@ void Simulation::tick(float dt) {
     // despawn for ALL comets regardless of where they were spawned.
     rules::processCometShowers(world_, tuning_, next_shower_spawn_tick_, events_);
     rules::processComets(world_, tuning_, dt, next_comet_spawn_tick_, events_);
+    // Food rush runs BEFORE processEating so a rush triggered on this tick
+    // applies its multiplier to any food eaten this tick (and not, e.g.,
+    // missed by one frame). The function also emits Start/End events for
+    // the client banner + chime.
+    rules::processFoodRush(world_, tuning_, next_food_rush_spawn_tick_,
+                           food_rush_active_, events_);
     // Tidal currents must run BEFORE stepCells so the velocity bias they
     // apply gets integrated into position on this same tick. Order vs.
     // BlackHoles / Comets is intentional: BH suction wins over a drift
@@ -615,6 +626,15 @@ Snapshot Simulation::buildSnapshot() const {
         const Tick remaining = (elapsed >= duration_ticks)
                                    ? 0u : (duration_ticks - elapsed);
         s.match_time_left_sec = static_cast<float>(remaining) / kSimHz;
+    }
+
+    // Food-rush timer. World owns the deadline tick so this is just a
+    // tick-delta -> seconds conversion. 0 when no rush is active.
+    {
+        const Tick rush_until = world_.foodRushUntil();
+        if (rush_until > now) {
+            s.food_rush_time_left_sec = static_cast<float>(rush_until - now) / kSimHz;
+        }
     }
 
     return s;

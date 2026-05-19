@@ -266,6 +266,40 @@ the map together. Rarer than single comets (default first at 90s, then every
   `first_after_sec`, `main_radius`, `satellite_min/max`,
   `satellite_min/max_radius`, `spread_perp`, `spread_along`.
 
+### Food Rush (rare world event)
+
+A short, generous "every food is treasure" window. Loud, golden, brief.
+Triggers maybe twice in a 5-minute Royale on average; default first one
+lands 90 s into the match.
+
+- **Duration**: **10 seconds** (default; tunable). For the whole window every
+  food pellet eaten grants `food_rush_mass_multiplier` (default **3×**) of
+  its base mass.
+- **Crit stacking**: crit chance is unaffected by the rush, but a crit
+  during a rush DOES stack with the rush multiplier — so a 5% lucky crit
+  on a 1-mass common pellet during a rush returns `1 × 3 × 1.5 = 4.5` mass.
+  Self-ejected food still isn't critable (the W-spam loophole gate from
+  the previous fix is preserved) but DOES still get the 3× rush bonus —
+  the exploit was about crit chance, not base mass.
+- **Announcement**: golden "★ ★ FOOD RUSH ×3 ★ ★" banner across the top of
+  the screen, pulses between two gold tones, fades in 0.3 s / holds 2.1 s
+  / fades out 0.6 s. Plays a bell-chime stinger (procedural — major
+  arpeggio C5→E5→G5→C6 with a high airy shimmer underneath).
+- **Visual**: every food pellet renders an extra "Layer 0" pulsing gold
+  ring + the pellet's body colour mixes 55% toward gold for the duration.
+  The pulse is synchronised across every pellet (single shared `sin()`)
+  so the whole world reads as "the rush is on" rather than each pellet
+  doing its own thing.
+- **Multiplayer**: wire-level kSnapshotVersion bumped 5→6 to carry
+  `food_rush_time_left_sec`; kEventVersion bumped 2→3 to carry the new
+  `FoodRushEvent` (Start / End phases). Host emits Start on rush trigger
+  + End when the rush window closes. Clients with packet loss on Start
+  still see the gold pulse for the remaining window because the snapshot
+  field carries the time remaining.
+- **Tuning**: `[food_rush]` section — `event_interval_sec` (240 s mean),
+  `first_after_sec` (90 s), `duration_sec` (10 s), `mass_multiplier`
+  (3.0). Reuses `[comet]`'s `interval_jitter` for the schedule jitter.
+
 ### Tidal current bands (ambient terrain)
 
 - **What they are**: 2 horizontal river-style bands (default
@@ -479,6 +513,7 @@ call with the desired `MutationKind` value.
 | Debug stats | Bottom-left | FPS, current sim tick, watched cell mass + pos, zoom, dt multiplier. Tagged `[PAUSED]` when paused. |
 | Near-miss / crit flashes | Full-screen | Brief red / gold tint on close-encounter events. |
 | Comet warning banner | Top-center | "!! COMET INCOMING !!" with fade in/out + dark backdrop strip. |
+| Food Rush banner | Top-center (below comet banner row) | "★ ★ FOOD RUSH ×3 ★ ★" in pulsing gold with a dark gold backdrop strip. Holds for 3 s on the rush event. While the rush is active every food pellet in the world gets an extra pulsing gold aura and its body tints toward gold. |
 | Mutation banner | Top-center (match start) | "MUTATION: \<NAME\>" + flavor-text reveal. Fades in over 0.4s, holds 4.5s, fades out over 1.1s. |
 | Mutation badge | Top-left (post-reveal) | Tiny `[Name]` reminder of the active world trait. Stays for the rest of the match. |
 | Summary panel | Center (on death) | Final mass, best combo, time alive, XP, missions. PLAY AGAIN / MAIN MENU. |
@@ -751,6 +786,7 @@ with a `host-only` log line.
 | `god` | Toggle invuln on your watched cell (the cell can't be absorbed). |
 | `comet` | Force-spawn a crashing-comet event on the next sim tick. The spawn position + direction remain RNG-driven. |
 | `shower` | Force-spawn a comet-shower event (1 main + 3..7 satellites in red/blue) on the next sim tick. |
+| `rush` | Force-start a 10s food-rush event on the next sim tick (3x mass on every food eaten + golden banner + chime). |
 | `spawn_food N` | Drop N random-tier food at random positions. |
 | `seed_food N [mass]` | Drop N food. Optional second arg pins the mass tier to one of `1`, `3`, `6`, `12`, `36`. |
 | `kick PID` | **LocalHost only.** Gracefully disconnect the peer that owns `PID`, then despawn all of their cells. Refuses to kick `PID = 1` (the host) or any PID with no matching peer. |
@@ -809,6 +845,10 @@ The full set is documented inline in `tuning.ini` itself. High-impact knobs:
 | `[comet_shower]` | `spread_perp` | 1800 | Perpendicular scatter of satellites around the main's path (each side). |
 | `[comet_shower]` | `spread_along` | 1500 | Longitudinal scatter along the velocity axis (earlier / later landing than the main). |
 | `[comet_shower]` | `min_separation` | 600 | Minimum centre-to-centre distance between any two comets in the shower. Rejection-sampled at spawn; if a slot can't be found after 20 tries the cluster count is preserved by accepting the last roll (visible overlap > silently dropping a comet). |
+| `[food_rush]` | `event_interval_sec` | 240 | Mean time between rare 3x-food events. |
+| `[food_rush]` | `first_after_sec` | 90 | Delay before the first food rush of a match. |
+| `[food_rush]` | `duration_sec` | 10 | How long each rush lasts. |
+| `[food_rush]` | `mass_multiplier` | 3.0 | Mass multiplier on every food pellet eaten during the rush. Stacks with crits. |
 | `[currents]` | `band_count` | 2 | Horizontal tidal-current bands stretching across the world. 0 disables the feature. |
 | `[currents]` | `band_height` | 650 | Vertical half-reach of each band (total band height = 2× this). |
 | `[currents]` | `band_strength` | 360 | px/sec drift applied to a `start_mass` cell at the band centreline; scales as `1 / (mass/start_mass)^0.25` (4th-root attenuation) and feathers smoothly toward the rim. Cell position is translated directly each tick (the seek/velocity layer is independent). Tuned slightly above base_speed (~280) so small cells get swept but can still fight the current. The 4th-root curve keeps medium-mass cells (400-1600 mass) firmly in the current's grip rather than the sqrt attenuation that previously made the band irrelevant once you grew past starter size. |

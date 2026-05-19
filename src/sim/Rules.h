@@ -86,6 +86,22 @@ void processCometShowers(World& world, const Tuning& t,
                          Tick& next_spawn_tick_inout,
                          std::vector<GameEvent>& events);
 
+// Food-rush world event: rare "3x mass on every food pellet" window. On
+// each tick, advances the schedule held in `next_spawn_tick_inout`; when
+// the tick is reached, sets world.setFoodRushUntil(now + duration) so
+// processEating picks up the multiplier, emits a Start GameEvent (for
+// banner + chime), and reschedules. Also detects the end of an active
+// rush (this-tick-inactive vs last-tick-active) and emits an End event
+// so the client can fade its banner cleanly.
+//
+// Caller passes `was_active_inout` -- a bool owned by Simulation -- so
+// processFoodRush stays stateless. Updated to the post-tick value on
+// return.
+void processFoodRush(World& world, const Tuning& t,
+                     Tick& next_spawn_tick_inout,
+                     bool& was_active_inout,
+                     std::vector<GameEvent>& events);
+
 // Static directional flow fields. For each cell inside a current's radius,
 // bias velocity in the current's direction by `strength * dt / massFactor`
 // where massFactor grows with cell mass so small cells are swept more

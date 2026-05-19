@@ -157,6 +157,39 @@ float gCometStrike(float t) {
     return (crack + noise + tail) * 0.9f;
 }
 
+float gFoodRush(float t) {
+    // Golden world-event chime. 1.2 s "magic sparkle" announcing the rare
+    // 3x-food window. Three bell-like partials ringing in a major arpeggio
+    // (C5 -- E5 -- G5 -- C6 over the first ~0.6 s) on top of a soft, slowly
+    // rising harmonic shimmer. Each note gets its own exponential decay so
+    // the chime reads as four discrete strikes that bloom into a sustained
+    // glow rather than one long blast. Frequencies are chosen so 16 * f is
+    // an integer per note, but loop-seam doesn't matter here -- the sound
+    // is one-shot.
+    if (t > 1.20f) return 0.0f;
+    constexpr float notes[]      = {523.25f /*C5*/, 659.25f /*E5*/,
+                                    783.99f /*G5*/, 1046.50f /*C6*/};
+    constexpr float strike_at[]  = {0.00f, 0.12f, 0.24f, 0.42f};
+    constexpr float strike_gain[] = {0.55f, 0.55f, 0.55f, 0.70f}; // top C punches
+    float chimes = 0.0f;
+    for (int i = 0; i < 4; ++i) {
+        float dt = t - strike_at[i];
+        if (dt < 0.0f) continue;
+        // Bell envelope: fast attack, slow decay. exp(-dt * 4) gives a ~0.8 s tail.
+        float env = std::exp(-dt * 4.0f);
+        // Fundamental + 2nd partial at 2x with half the gain (gentle bell colour).
+        float v = std::sin(dt * notes[i] * kTwoPi)
+                + 0.40f * std::sin(dt * notes[i] * 2.0f * kTwoPi);
+        chimes += v * env * strike_gain[i];
+    }
+    // Background shimmer: a high airy tone (~1568 Hz, G6) that fades in over
+    // the first 0.3 s and dies away with the last note. Adds "glow" so the
+    // chime feels luxurious instead of just bright.
+    float shimmer_env = std::min(1.0f, t * 3.5f) * std::exp(-(t - 0.20f) * 2.2f);
+    float shimmer = std::sin(t * 1568.0f * kTwoPi) * shimmer_env * 0.18f;
+    return (chimes * 0.45f + shimmer) * 0.85f;
+}
+
 float gCrit(float t) {
     // Rising harmonics sting (original design, dropped one octave). Two sine partials
     // sweep up over the duration with a slow exp decay -- same character as the first
@@ -216,6 +249,7 @@ AudioSystem::AudioSystem() {
     crit_        = generateSound(320,   gCrit);
     comet_warn_   = generateSound(950,  gCometWarn);
     comet_strike_ = generateSound(560,  gCometStrike);
+    food_rush_    = generateSound(1200, gFoodRush);
     music_sound_ = generateSound(16000, gMusicPad); // 16 seconds, seamless
 
     applyVolumes();
@@ -239,6 +273,7 @@ AudioSystem::~AudioSystem() {
     UnloadSound(crit_);
     UnloadSound(comet_warn_);
     UnloadSound(comet_strike_);
+    UnloadSound(food_rush_);
     UnloadSound(music_sound_);
     CloseAudioDevice();
 }
@@ -377,6 +412,12 @@ void AudioSystem::playCometStrike() {
     if (!device_ready_) return;
     SetSoundVolume(comet_strike_, 1.0f * sfx_);
     PlaySound(comet_strike_);
+}
+
+void AudioSystem::playFoodRush() {
+    if (!device_ready_) return;
+    SetSoundVolume(food_rush_, 1.0f * sfx_);
+    PlaySound(food_rush_);
 }
 
 } // namespace cr

@@ -101,8 +101,25 @@ struct RecombineEvent {
     float    new_mass  = 0.0f; // total mass of the merged cell after recombine
 };
 
+// Food-rush world event: emitted by the authoritative sim when the rare
+// "3x mass on every food pellet" event begins or ends. Client uses Start to
+// fire the golden announcement banner + chime sound; End to fade the banner.
+// During the rush the per-tick Snapshot also carries food_rush_time_left_sec
+// so a client that misses the Start event (transport loss, late join) still
+// renders the golden food pulse for the remaining window.
+struct FoodRushEvent {
+    enum Phase : uint8_t {
+        Start = 0, // rush just began (duration_sec valid)
+        End   = 1, // rush just ended (duration_sec = 0)
+    };
+    Phase phase        = Phase::Start;
+    float duration_sec = 0.0f; // only meaningful for Start; banner uses this
+                                // to decide how long to hold before fading.
+};
+
 using GameEvent = std::variant<AbsorbEvent, DeathEvent, SplitEvent, CritEvent,
                                NearMissEvent, PickupCollectedEvent, BlastEvent,
-                               CometEvent, MatchEndEvent, RecombineEvent>;
+                               CometEvent, MatchEndEvent, RecombineEvent,
+                               FoodRushEvent>;
 
 } // namespace cr

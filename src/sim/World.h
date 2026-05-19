@@ -288,6 +288,15 @@ public:
     int width() const { return width_; }
     int height() const { return height_; }
 
+    // Food-rush world event: when food_rush_until_ > currentTick(), every
+    // food pellet eaten grants Tuning::food_rush_mass_multiplier of its base
+    // mass. Owned by World (not Simulation) so processEating can check it
+    // without an extra parameter. Set by Rules::processFoodRush at event
+    // start; the active window naturally ends as the tick counter passes it.
+    Tick foodRushUntil() const { return food_rush_until_; }
+    void setFoodRushUntil(Tick t) { food_rush_until_ = t; }
+    bool isFoodRushActive() const { return food_rush_until_ > tick_; }
+
     // Rebuild all three typed spatial grids from the current cell/food/virus arrays.
     // Callers should invoke this AFTER motion has settled but BEFORE collision-driven
     // interactions that need spatial queries. Grids store vector indices, so they're
@@ -298,6 +307,12 @@ public:
     const SpatialGrid& virusesGrid() const { return viruses_grid_; }
 
 private:
+    // Tick when the active food rush expires. 0 = no rush. World tick counter
+    // passing this value naturally signals "rush is over"; the renderer + sim
+    // both check foodRushUntil() > currentTick() to decide whether the
+    // multiplier + golden pulse apply this tick.
+    Tick               food_rush_until_ = 0;
+
     int                width_;
     int                height_;
     Rng                rng_;

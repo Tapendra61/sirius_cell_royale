@@ -247,6 +247,17 @@ void processEating(World& world, const Tuning& t, std::vector<GameEvent>& events
             // split) can't sneak the exploit either, but other players passing by
             // and grabbing your dropped pellet still get normal crit odds.
             float gained  = f.mass;
+            // Food Rush world event: every food pellet eaten during the rush
+            // grants `food_rush_mass_multiplier` (3x default) of its base mass.
+            // Multiplier applies to the base value BEFORE crit -- so a crit
+            // during a rush stacks (1.5 * 3 = 4.5x) which feels appropriately
+            // "lucky" without breaking the cap (max combo: 3x rush + 1.5x crit
+            // = 4.5x; that's bounded). Self-eject pellets still aren't critable
+            // but DO get the rush bonus, since the exploit was about crit
+            // chance, not base mass.
+            if (world.isFoodRushActive()) {
+                gained *= t.food_rush_mass_multiplier;
+            }
             bool  is_crit = (f.from_player != cells[i].owner)
                          && (world.rng().nextFloat() < t.chance_per_absorb);
             if (is_crit) gained *= t.bonus_multiplier;
@@ -1218,6 +1229,51 @@ void processCometShowers(World& world, const Tuning& t,
         interval *= (1.0f + j);
     }
     next_spawn_tick_inout = now + secondsToTicks(std::max(30.0f, interval));
+}
+
+// ---------------------------------------------------------------------------
+// Food Rush world event
+// ---------------------------------------------------------------------------
+
+void processFoodRush(World& world, const Tuning& t,
+                     Tick& next_spawn_tick_inout,
+                     bool& was_active_inout,
+                     std::vector<GameEvent>& events) {
+    const Tick now = world.currentTick();
+
+    // Schedule fire: open a new rush window and broadcast Start.
+    if (now >= next_spawn_tick_inout) {
+        const Tick rush_end = now + secondsToTicks(t.food_rush_duration_sec);
+        world.setFoodRushUntil(rush_end);
+        events.push_back(FoodRushEvent{FoodRushEvent::Start,
+                                       t.food_rush_duration_sec});
+
+        // Reschedule with the same jitter shape we use for single comets so
+        // the rush feels "punctually-irregular" instead of metronomic.
+        Rng& rng = world.rng();
+        float interval = t.food_rush_event_interval_sec;
+        if (t.comet_interval_jitter > 0.0f) {
+            float j = rng.rangeFloat(-t.comet_interval_jitter,
+                                      t.comet_interval_jitter);
+            interval *= (1.0f + j);
+        }
+        // 30 s minimum to keep a misconfigured tuning from chaining rushes.
+        next_spawn_tick_inout = now + secondsToTicks(std::max(30.0f, interval));
+        was_active_inout = true;
+        return;
+    }
+
+    // Transition detection: if last tick was active and this tick isn't,
+    // emit End. World's foodRushUntil() is the only ground truth for
+    // "currently active" -- we compare against it rather than re-reading
+    // the rush_end value we set above so a forced-trigger via the dev
+    // console + a snapshot reload during the rush still detects the end
+    // correctly.
+    const bool active_now = world.isFoodRushActive();
+    if (was_active_inout && !active_now) {
+        events.push_back(FoodRushEvent{FoodRushEvent::End, 0.0f});
+    }
+    was_active_inout = active_now;
 }
 
 // ---------------------------------------------------------------------------

@@ -173,6 +173,12 @@ struct Snapshot {
     // active (Tuning::match_duration_sec == 0). Negative-clamped: once the
     // match has ended the value reads 0, never goes below.
     float                      match_time_left_sec = 0.0f;
+    // Seconds remaining in the active Food Rush world event (3x mass on
+    // every food pellet eaten). 0 = no rush active. Renderer reads this to
+    // pulse all food gold for the remaining window; client also derives
+    // the banner-hold duration from it on join-late so the announcement
+    // doesn't pop up if the rush is already halfway done.
+    float                      food_rush_time_left_sec = 0.0f;
 
     bool operator==(const Snapshot&) const = default;
 };

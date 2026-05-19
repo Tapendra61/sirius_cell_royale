@@ -630,6 +630,23 @@ void Client::onEvents(const std::vector<GameEvent>& events, World& world,
                     case CometEvent::Despawn:
                         break;
                 }
+            } else if constexpr (std::is_same_v<T, FoodRushEvent>) {
+                // Rare world event: every food eaten grants 3x mass for ~10s.
+                // Start arms the golden announcement banner + plays the chime;
+                // End clears the banner timer so the overlay fades on cue
+                // (the renderer's golden food pulse is driven separately off
+                // the snapshot's food_rush_time_left_sec, so a stale banner
+                // can't outlast the actual rush window even if the End event
+                // gets dropped).
+                switch (e.phase) {
+                    case FoodRushEvent::Start:
+                        audio_.playFoodRush();
+                        food_rush_banner_remaining_ = kFoodRushBannerSec;
+                        break;
+                    case FoodRushEvent::End:
+                        food_rush_banner_remaining_ = 0.0f;
+                        break;
+                }
             } else if constexpr (std::is_same_v<T, MatchEndEvent>) {
                 // Match clock hit zero. Capture the winner info so the
                 // overlay can render it, transition to MatchEnd phase, and
@@ -678,6 +695,9 @@ void Client::updateFrame(float frame_dt, double now_sec, const Tuning& tuning) {
     // Crashing-comet banner countdown. Pure visual; doesn't affect the sim.
     if (comet_banner_remaining_ > 0.0f) {
         comet_banner_remaining_ = std::max(0.0f, comet_banner_remaining_ - frame_dt);
+    }
+    if (food_rush_banner_remaining_ > 0.0f) {
+        food_rush_banner_remaining_ = std::max(0.0f, food_rush_banner_remaining_ - frame_dt);
     }
 
     // Match-end overlay countdown. After the configured display window the
@@ -1165,6 +1185,37 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         // Dark backdrop strip behind the text for readability against bright worlds.
         DrawRectangle(0, y - 12, screen_w, fs + 24, Color{40, 10, 0, a_bg});
         // Drop shadow + main text.
+        DrawText(msg, x + 2, y + 2, fs, Color{0, 0, 0, a_text});
+        DrawText(msg, x,     y,     fs, tint);
+    }
+
+    // ---- Food Rush HUD banner ----
+    // Golden announcement when the rare 3x-food world event begins. Same
+    // fade-in / hold / fade-out shape as the comet banner so they feel like
+    // peers; the pulse shifts between two warm gold tones for a "magical"
+    // shimmer rather than the comet's alarm orange. Sits a touch lower than
+    // the comet banner (y=160 vs 110) so if both events are somehow active
+    // simultaneously they don't draw on top of each other.
+    if (food_rush_banner_remaining_ > 0.0f) {
+        const float age   = kFoodRushBannerSec - food_rush_banner_remaining_;
+        const float fadeI = std::min(1.0f, age / 0.30f);
+        const float fadeO = std::min(1.0f, food_rush_banner_remaining_ / 0.60f);
+        const float a01   = std::min(fadeI, fadeO);
+        const unsigned char a_text = static_cast<unsigned char>(a01 * 250.0f);
+        const unsigned char a_bg   = static_cast<unsigned char>(a01 * 130.0f);
+        const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(GetTime()) * 5.0f);
+        // Pulse between a brighter gold (255,225,120) and a softer one
+        // (235,180, 70) so the banner shimmers rather than flickers.
+        const Color tint{255,
+                         static_cast<unsigned char>(180 + pulse * 45.0f),
+                         static_cast<unsigned char>( 70 + pulse * 50.0f),
+                         a_text};
+        const char* msg  = "* * FOOD RUSH x3 * *";
+        const int   fs   = 44;
+        const int   tw   = MeasureText(msg, fs);
+        const int   x    = screen_w / 2 - tw / 2;
+        const int   y    = 160;
+        DrawRectangle(0, y - 12, screen_w, fs + 24, Color{50, 35, 0, a_bg});
         DrawText(msg, x + 2, y + 2, fs, Color{0, 0, 0, a_text});
         DrawText(msg, x,     y,     fs, tint);
     }

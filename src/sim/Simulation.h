@@ -56,6 +56,11 @@ public:
     // showers respect the normal cadence.
     void triggerCometShower() { next_shower_spawn_tick_ = world_.currentTick(); }
 
+    // Dev / cheat hook: force the rare 3x-food rush event to start on the
+    // next sim tick. Subsequent rushes respect the normal cadence. Useful
+    // for demoing the golden visuals without waiting ~4 minutes.
+    void triggerFoodRush() { next_food_rush_spawn_tick_ = world_.currentTick(); }
+
 private:
     void applyCommand(const Command& cmd);
 
@@ -66,8 +71,13 @@ private:
     std::vector<GameEvent> events_;
     // Tick at which the next crashing-comet world event should fire. Owned here (not
     // in Rules) so processComets stays stateless. Initialised in the constructor.
-    Tick                   next_comet_spawn_tick_  = 0;
-    Tick                   next_shower_spawn_tick_ = 0;
+    Tick                   next_comet_spawn_tick_      = 0;
+    Tick                   next_shower_spawn_tick_     = 0;
+    Tick                   next_food_rush_spawn_tick_  = 0;
+    // Mirror of (world.foodRushUntil() > currentTick()), tracked one tick
+    // late so processFoodRush can detect the active->inactive transition
+    // and emit the End event exactly once.
+    bool                   food_rush_active_           = false;
 
     // Match-end bookkeeping. match_started_tick_ is the value of currentTick at the
     // first tick() call (i.e. the start of the match). When Tuning::match_duration_sec

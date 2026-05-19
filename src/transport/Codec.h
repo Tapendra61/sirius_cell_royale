@@ -17,12 +17,14 @@ namespace cr::codec {
 // independently because Snapshot is the largest (and most likely to evolve) and
 // Command/Event/Welcome/ClientHello/PeerInfo are small enough that a bump rarely
 // costs anything.
-constexpr uint8_t kSnapshotVersion    = 5; // v2 adds CellSnap::blast_cooldown_norm
+constexpr uint8_t kSnapshotVersion    = 6; // v2 adds CellSnap::blast_cooldown_norm
                                             // v3 adds Snapshot::match_time_left_sec
                                             // v4 adds currents / wormholes / geysers
                                             // v5 adds CometSnap::variant (1 byte)
+                                            // v6 adds Snapshot::food_rush_time_left_sec
 constexpr uint8_t kCommandVersion     = 1;
-constexpr uint8_t kEventVersion       = 2; // v2 adds RecombineEvent variant
+constexpr uint8_t kEventVersion       = 3; // v2 adds RecombineEvent variant
+                                            // v3 adds FoodRushEvent variant
 constexpr uint8_t kWelcomeVersion     = 3; // v2 adds host_name
                                             // v3 adds mutation_kind (per-match world trait)
 constexpr uint8_t kClientHelloVersion = 2; // v2 adds explicit player_id

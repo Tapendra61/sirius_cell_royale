@@ -31,6 +31,7 @@ public:
     void playCrit();
     void playCometWarn();   // low rumble + alarm chirp -- world-event telegraph
     void playCometStrike(); // sharper roar when the comet becomes active
+    void playFoodRush();    // golden chime -- 3x-food world event announcement
 
     // Procedural ambient music. Generated as a 16-second seamless loop at ctor time;
     // playMusic starts the loop, stopMusic halts it, update() re-triggers when the
@@ -78,6 +79,7 @@ private:
     Sound crit_{};
     Sound comet_warn_{};
     Sound comet_strike_{};
+    Sound food_rush_{};
     Sound music_sound_{};
 };
 

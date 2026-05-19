@@ -101,6 +101,17 @@ struct Tuning {
     float comet_speed              = 900.0f; // world units per second
     float comet_first_after_sec    = 45.0f;  // delay before the first comet of a match
 
+    // [food_rush] -- rare world event: for ~10 s every food pellet eaten grants
+    // the food_rush_mass_multiplier of its normal mass. Announced like the
+    // comet banner with a golden chime + a pulsing gold glow on every food
+    // pellet for the duration. Long mean interval (240 s default = "twice per
+    // five-minute match if the dice are friendly") so the rush stays a
+    // genuine event rather than ambient noise.
+    float food_rush_event_interval_sec = 240.0f; // mean time between rushes
+    float food_rush_first_after_sec    = 90.0f;  // delay before the first rush
+    float food_rush_duration_sec       = 10.0f;  // how long the rush lasts
+    float food_rush_mass_multiplier    = 3.0f;   // every food eaten grants 3x mass
+
     // [comet_shower] -- separate world event: 1 main comet + 3..7 smaller satellites
     // in formation, in red / blue color variants. Less frequent than singles so the
     // shower stays a "holy crap" moment rather than ambient noise. Fires on its
