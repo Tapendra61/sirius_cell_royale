@@ -252,9 +252,18 @@ SummaryAction Hud::render(int screen_w, int screen_h, const Cell* watched, Tick 
 
     // ----- Debug stats overlay (bottom-left) -----
     // Y offsets are also scaled so the bottom-anchored text doesn't slide off-screen
-    // at large HUD scales.
-    char buf[160];
-    std::snprintf(buf, sizeof(buf), "FPS %d  Tick %u", fps, static_cast<unsigned>(tick));
+    // at large HUD scales. The Screen / Render / uiScale line is for diagnosing the
+    // "UI looks the same in fullscreen" reports -- it shows what raylib is reporting
+    // about the current window so we can tell if the platform is giving us a new
+    // logical size when the user goes fullscreen, or holding it constant (Retina
+    // behaviour).
+    char buf[200];
+    std::snprintf(buf, sizeof(buf),
+                  "FPS %d  Tick %u  scr=%dx%d  rnd=%dx%d  ui=%.2f",
+                  fps, static_cast<unsigned>(tick),
+                  screen_w, screen_h,
+                  GetRenderWidth(), GetRenderHeight(),
+                  static_cast<double>(uiScale(screen_w, screen_h)));
     DrawText(buf, 12, screen_h - sc(22), sc(16), Color{200, 200, 200, 220});
     if (watched) {
         const char* mode = touch ? "touch" : "desktop";
