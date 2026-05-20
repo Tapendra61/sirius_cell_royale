@@ -1,5 +1,6 @@
 #include "IntroScreen.h"
 
+#include "UiWidgets.h"   // uiScale / uiPx for screen-size-aware overlay text
 #include "core/Command.h"
 
 #include <algorithm>
@@ -254,6 +255,8 @@ void IntroScreen::render(int sw, int sh) {
         {17.2f, 19.0f, "GOOD LUCK.",         nullptr,              nullptr,             40, kAccent},
     };
 
+    const float ui = uiScale(sw, sh);
+
     for (const Overlay& o : overlays) {
         if (elapsed_sec_ < o.start || elapsed_sec_ > o.end) continue;
         const float dur     = o.end - o.start;
@@ -267,78 +270,83 @@ void IntroScreen::render(int sw, int sh) {
         unsigned char a = static_cast<unsigned char>(alpha * 240.0f);
         Color body{o.color.r, o.color.g, o.color.b, a};
         Color shadow{0, 0, 0, static_cast<unsigned char>(a * 0.7f)};
-        int tw = MeasureText(o.main, o.size);
+        // Overlay font sizes are stored in the design-space (1280x720) so
+        // scale per render() invocation.
+        const int o_size = std::max(8, static_cast<int>(o.size * ui + 0.5f));
+        int tw = MeasureText(o.main, o_size);
         int tx = sw / 2 - tw / 2;
         int ty = static_cast<int>(sh * 0.36f);
 
-        // Soft glow halo behind the main line -- breathes alpha based on
-        // the overlay's fade-in/out so it builds + decays with the text
-        // instead of being a constant blob. Cyan for the MP teaser, warm
-        // gold for the others.
         Color halo = (o.color.b > o.color.r)
             ? Color{120, 180, 240, static_cast<unsigned char>(alpha * 70)}
             : Color{255, 200, 110, static_cast<unsigned char>(alpha * 70)};
-        DrawCircle(sw / 2, ty + o.size / 2, std::max(140, tw),
+        DrawCircle(sw / 2, ty + o_size / 2,
+                   std::max(static_cast<float>(uiPx(sw, sh, 140)),
+                            static_cast<float>(tw)),
                    Color{halo.r, halo.g, halo.b,
                          static_cast<unsigned char>(halo.a * 0.45f)});
-        DrawCircle(sw / 2, ty + o.size / 2, std::max(90, tw * 2 / 3), halo);
+        DrawCircle(sw / 2, ty + o_size / 2,
+                   std::max(static_cast<float>(uiPx(sw, sh, 90)),
+                            static_cast<float>(tw * 2 / 3)),
+                   halo);
 
-        // Eyebrow (small uppercase tag above the main line) + flanking
-        // accent rules so the text feels "branded" instead of floating.
         if (o.eyebrow) {
-            int eb_sz = std::max(11, o.size / 6);
+            int eb_sz = std::max(11, o_size / 6);
             int eb_w  = MeasureText(o.eyebrow, eb_sz);
-            int eb_y  = ty - eb_sz - 18;
-            DrawRectangle(sw / 2 - eb_w / 2 - 60, eb_y + eb_sz / 2,
-                          50, 1, Color{halo.r, halo.g, halo.b, a});
-            DrawRectangle(sw / 2 + eb_w / 2 + 10, eb_y + eb_sz / 2,
-                          50, 1, Color{halo.r, halo.g, halo.b, a});
+            int eb_y  = ty - eb_sz - uiPx(sw, sh, 18);
+            const int line_w = uiPx(sw, sh, 50);
+            const int gap_l  = uiPx(sw, sh, 60);
+            const int gap_r  = uiPx(sw, sh, 10);
+            DrawRectangle(sw / 2 - eb_w / 2 - gap_l, eb_y + eb_sz / 2,
+                          line_w, 1, Color{halo.r, halo.g, halo.b, a});
+            DrawRectangle(sw / 2 + eb_w / 2 + gap_r, eb_y + eb_sz / 2,
+                          line_w, 1, Color{halo.r, halo.g, halo.b, a});
             DrawText(o.eyebrow, sw / 2 - eb_w / 2, eb_y, eb_sz,
                      Color{halo.r, halo.g, halo.b,
                            static_cast<unsigned char>(a * 0.95f)});
         }
 
-        // Main line -- two-pass shadow + body.
-        DrawText(o.main, tx + 4, ty + 5, o.size,
+        // Main line -- two-pass shadow + body. Shadow offsets scale too.
+        const int sh1 = std::max(1, uiPx(sw, sh, 4));
+        const int sh2 = std::max(1, uiPx(sw, sh, 5));
+        const int sh3 = std::max(1, uiPx(sw, sh, 2));
+        DrawText(o.main, tx + sh1, ty + sh2, o_size,
                  Color{0, 0, 0, static_cast<unsigned char>(a * 0.45f)});
-        DrawText(o.main, tx + 2, ty + 2, o.size, shadow);
-        DrawText(o.main, tx,     ty,     o.size, body);
+        DrawText(o.main, tx + sh3, ty + sh3, o_size, shadow);
+        DrawText(o.main, tx,       ty,       o_size, body);
 
-        // Subtitle BELOW the main line.
         if (o.sub) {
-            int subsz = std::max(13, o.size / 3);
+            int subsz = std::max(13, o_size / 3);
             int sub_w = MeasureText(o.sub, subsz);
+            int sub_off = uiPx(sw, sh, 14);
             DrawText(o.sub, sw / 2 - sub_w / 2 + 1,
-                     ty + o.size + 14 + 1, subsz,
+                     ty + o_size + sub_off + 1, subsz,
                      Color{0, 0, 0, static_cast<unsigned char>(a * 0.6f)});
             DrawText(o.sub, sw / 2 - sub_w / 2,
-                     ty + o.size + 14, subsz,
+                     ty + o_size + sub_off, subsz,
                      Color{210, 220, 235,
                            static_cast<unsigned char>(a * 0.92f)});
         }
     }
 
-    // Progress bar at the very bottom -- a thin line that fills over the
-    // course of the intro. Gives the player a visual cue for "how much
-    // longer" without nagging text.
     {
         const float prog = std::clamp(elapsed_sec_ / kDurationSec, 0.0f, 1.0f);
         const int bar_w = static_cast<int>(sw * 0.50f);
         const int bar_x = (sw - bar_w) / 2;
-        const int bar_y = sh - 18;
+        const int bar_y = sh - uiPx(sw, sh, 18);
         DrawRectangle(bar_x, bar_y, bar_w, 2, Color{255, 220, 140, 35});
         DrawRectangleGradientH(bar_x, bar_y - 1,
-                               static_cast<int>(bar_w * prog), 4,
+                               static_cast<int>(bar_w * prog),
+                               std::max(2, uiPx(sw, sh, 4)),
                                Color{255, 220, 140, 0},
                                Color{255, 220, 140, 180});
     }
 
-    // "Press any key to skip" hint -- only after the title fades, low key.
     if (elapsed_sec_ > 2.5f && elapsed_sec_ < kDurationSec - kFadeOutDurationSec) {
         const char* hint = "press any key to skip";
-        const int   h_size = 14;
+        const int   h_size = uiPx(sw, sh, 14);
         int hint_w = MeasureText(hint, h_size);
-        DrawText(hint, sw / 2 - hint_w / 2, sh - 38, h_size,
+        DrawText(hint, sw / 2 - hint_w / 2, sh - uiPx(sw, sh, 38), h_size,
                  Color{180, 190, 210, 150});
     }
 }

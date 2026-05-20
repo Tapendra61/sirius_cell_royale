@@ -72,59 +72,67 @@ int hudTextIndex(float v) {
 
 // ---- Layout primitives ----
 //
-// All settings widgets draw a small text label *above* their rect (at rect.y - 22).
-// We track a vertical cursor and place each row so:
-//   row top    = cursor (label position, 16pt text ~ 14px ink height)
-//   widget top = cursor + 22
-//   row bottom = cursor + kRowH
-// kRowH must be > 22 + widget_h + ~10px to keep next label legibly separate. The
-// tallest widget is the choice row (36px), so 22 + 36 + 10 = 68 is the minimum.
-constexpr int kRowH         = 68;
-constexpr int kHeaderH      = 28;
-constexpr int kSectionGap   = 18;
-constexpr int kSliderTrackH = 14;
-constexpr int kToggleH      = 32;
-constexpr int kChoiceH      = 36;
-
+// All dimensions are stored at the REFERENCE resolution (1280 x 720) and
+// scaled by uiScale(sw, sh) when the screen is constructed each frame.
+// The Cursor carries the current x/y/width AND the resolved scaled
+// dimensions so row helpers stay parameterless w.r.t. layout.
+//
+// A row's vertical layout (constant ratios, all scaled):
+//   row top    = cursor.y         (label position)
+//   widget top = cursor.y + label_off
+//   row bottom = cursor.y + row_h
 struct Cursor {
-    int x;
-    int y;
-    int col_w;
+    int x = 0, y = 0, col_w = 0;
+    int row_h         = 68;
+    int header_h      = 28;
+    int section_gap   = 18;
+    int label_off     = 22; // y-distance from row-top to widget-top
+    int slider_h      = 14;
+    int toggle_h      = 32;
+    int toggle_w      = 110;
+    int choice_h      = 36;
+    int font_header   = 18;
+    int font_label    = 14;
 };
 
 void sectionHeader(Cursor& c, const char* text) {
-    DrawText(text, c.x, c.y, 18, Color{255, 220, 120, 230});
-    c.y += kHeaderH;
+    DrawText(text, c.x, c.y, c.font_header, Color{255, 220, 120, 230});
+    c.y += c.header_h;
 }
 
 void sectionGap(Cursor& c) {
-    c.y += kSectionGap;
+    c.y += c.section_gap;
 }
 
-// Returns true if value changed.
 bool sliderRow(Cursor& c, const char* label, const char* value_text,
                float* value, float lo, float hi) {
-    Rectangle r{static_cast<float>(c.x), static_cast<float>(c.y + 22),
-                static_cast<float>(c.col_w), static_cast<float>(kSliderTrackH)};
+    Rectangle r{static_cast<float>(c.x),
+                static_cast<float>(c.y + c.label_off),
+                static_cast<float>(c.col_w),
+                static_cast<float>(c.slider_h)};
     bool changed = drawSlider(r, label, value_text, value, lo, hi);
-    c.y += kRowH;
+    c.y += c.row_h;
     return changed;
 }
 
-bool toggleRow(Cursor& c, const char* label, bool* value, int width = 110) {
-    Rectangle r{static_cast<float>(c.x), static_cast<float>(c.y + 22),
-                static_cast<float>(width), static_cast<float>(kToggleH)};
+bool toggleRow(Cursor& c, const char* label, bool* value) {
+    Rectangle r{static_cast<float>(c.x),
+                static_cast<float>(c.y + c.label_off),
+                static_cast<float>(c.toggle_w),
+                static_cast<float>(c.toggle_h)};
     bool changed = drawToggle(r, label, value);
-    c.y += kRowH;
+    c.y += c.row_h;
     return changed;
 }
 
 bool choiceRow(Cursor& c, const char* label,
                const char* const* options, int count, int* index) {
-    Rectangle r{static_cast<float>(c.x), static_cast<float>(c.y + 22),
-                static_cast<float>(c.col_w), static_cast<float>(kChoiceH)};
+    Rectangle r{static_cast<float>(c.x),
+                static_cast<float>(c.y + c.label_off),
+                static_cast<float>(c.col_w),
+                static_cast<float>(c.choice_h)};
     bool changed = drawChoice(r, label, options, count, index);
-    c.y += kRowH;
+    c.y += c.row_h;
     return changed;
 }
 
@@ -137,36 +145,40 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
 
     SettingsAction action = SettingsAction::None;
 
-    // ---- Top-left BACK button (always visible) ----
-    // Mirror of the bottom BACK button. The bottom one anchors below all
-    // settings rows and can scroll off-screen on tall content / small
-    // windows; this one is hard-anchored at the top-left corner so the
-    // player always has a way out without scrolling.
-    {
-        const Rectangle r{16, 16, 90, 36};
-        if (drawButton(r, "< BACK", 18,
-                       Color{55, 145, 95, 255}, Color{255, 255, 255, 255})) {
-            action = SettingsAction::BackToMenu;
-        }
-    }
+    // ---- Build a Cursor template with screen-scaled layout values ----
+    // Every constant here was originally a constexpr int sized for the
+    // 1280 x 720 reference window. uiPx() scales each to the current
+    // screen so the entire form grows together when the player goes
+    // fullscreen or shrinks an 800 x 600 window.
+    Cursor proto;
+    proto.row_h        = uiPx(sw, sh, 68);
+    proto.header_h     = uiPx(sw, sh, 28);
+    proto.section_gap  = uiPx(sw, sh, 18);
+    proto.label_off    = uiPx(sw, sh, 22);
+    proto.slider_h     = uiPx(sw, sh, 14);
+    proto.toggle_h     = uiPx(sw, sh, 32);
+    proto.toggle_w     = uiPx(sw, sh, 110);
+    proto.choice_h    = uiPx(sw, sh, 36);
+    proto.font_header = uiPx(sw, sh, 18);
+    proto.font_label  = uiPx(sw, sh, 14);
 
     // ---- Title ----
-    const char* title    = "SETTINGS";
-    constexpr int t_size = 44;
-    int tw = MeasureText(title, t_size);
-    int ty = 22;
+    const char* title = "SETTINGS";
+    const int t_size  = uiPx(sw, sh, 44);
+    int tw            = MeasureText(title, t_size);
+    int ty            = uiPx(sw, sh, 22);
     DrawText(title, (sw - tw) / 2 + 3, ty + 3, t_size, Color{0, 0, 0, 180});
     DrawText(title, (sw - tw) / 2,     ty,     t_size, Color{255, 215, 130, 255});
 
     // ---- Two-column grid centered horizontally ----
-    constexpr int col_w  = 380;
-    constexpr int gutter = 90;
-    const int total_w    = col_w * 2 + gutter;
-    const int columns_x  = (sw - total_w) / 2;
-    const int columns_y  = ty + t_size + 24; // 24px below the title baseline
+    const int col_w     = uiPx(sw, sh, 380);
+    const int gutter    = uiPx(sw, sh, 90);
+    const int total_w   = col_w * 2 + gutter;
+    const int columns_x = (sw - total_w) / 2;
+    const int columns_y = ty + t_size + uiPx(sw, sh, 24);
 
-    Cursor L{columns_x,                        columns_y, col_w};
-    Cursor R{columns_x + col_w + gutter,       columns_y, col_w};
+    Cursor L = proto; L.x = columns_x;                  L.y = columns_y; L.col_w = col_w;
+    Cursor R = proto; R.x = columns_x + col_w + gutter; R.y = columns_y; R.col_w = col_w;
 
     // ===== Left column =====
     // Identity comes first -- the player should see their own name in the
@@ -174,44 +186,36 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
     // here is what triggers the generic `P<id>` fallback.
     sectionHeader(L, "IDENTITY");
     {
-        const int  label_fs = 14;
-        const int  field_h  = 32;
-        const int  pad      = 4;
-        const int  field_w  = L.col_w;
-        const int  field_y  = L.y + label_fs + pad;
+        const int label_fs  = L.font_label;
+        const int field_h   = uiPx(sw, sh, 32);
+        const int pad       = uiPx(sw, sh, 4);
+        const int field_w   = L.col_w;
+        const int field_y   = L.y + label_fs + pad;
+        const int text_fs   = uiPx(sw, sh, 18);
         DrawText("Player name (16 chars max)", L.x, L.y, label_fs,
                  Color{200, 215, 240, 220});
         Rectangle box{(float)L.x, (float)field_y, (float)field_w, (float)field_h};
         DrawRectangleRec(box, Color{30, 38, 58, 230});
-        // Focus toggle: clicking inside the box focuses it, clicking outside
-        // unfocuses. raylib's mouse-just-pressed event fires once per click so
-        // we don't have to debounce.
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             Vector2 mp = GetMousePosition();
             name_field_focused_ = CheckCollisionPointRec(mp, box);
         }
-        // Enter also unfocuses (matches the convention of "commit" inputs).
         if (name_field_focused_ && IsKeyPressed(KEY_ENTER)) {
             name_field_focused_ = false;
         }
-        // Border is highlighted while focused so it's obvious typing will
-        // land here.
         DrawRectangleLinesEx(box, 2.0f,
             name_field_focused_ ? Color{180, 200, 240, 230}
                                 : Color{100, 120, 160, 180});
-        // Display: either the typed name, or "click to set" placeholder when
-        // empty + unfocused (so brand-new players see what to do).
         const bool show_placeholder = save.player_name.empty()
                                     && !name_field_focused_;
         const char* text = show_placeholder ? "click to set"
                                             : save.player_name.c_str();
         Color text_col = show_placeholder ? Color{140, 150, 170, 220}
                                           : Color{230, 240, 250, 240};
-        DrawText(text, (int)box.x + 10, (int)box.y + 8, 18, text_col);
+        DrawText(text, (int)box.x + uiPx(sw, sh, 10),
+                       (int)box.y + uiPx(sw, sh,  8),
+                       text_fs, text_col);
 
-        // Text edit -- ASCII printable range only (32..126), capped at
-        // kMaxPlayerNameLen. Strips whitespace-only inputs because a name
-        // of just spaces would render invisibly.
         if (name_field_focused_) {
             int ch = GetCharPressed();
             while (ch > 0) {
@@ -225,7 +229,7 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
                 save.player_name.pop_back();
             }
         }
-        L.y = field_y + field_h + 14;
+        L.y = field_y + field_h + uiPx(sw, sh, 14);
     }
 
     sectionGap(L);
@@ -253,24 +257,24 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
     if (choiceRow(L, "HUD text size",
                   kHudTextOptions, kHudTextCount, &hud_idx)) {
         save.hud_text_scale = kHudTextValues[hud_idx];
-        // Live preview also takes effect on the inline sample below.
         setHudTextScale(save.hud_text_scale);
     }
     // Inline preview row: an "x5 COMBO" sample drawn at the current scale so the user
-    // can actually see the change without leaving settings. Base size 24 is chosen so
-    // even at 1.20x the preview stays small enough to keep the BACK button on-screen
-    // on a 720-tall window.
+    // can actually see the change without leaving settings. Scaled by uiPx so the
+    // preview itself respects the screen size, then multiplied by hud_text_scale
+    // for the accessibility-multiplier preview component.
     {
-        const int preview_size = static_cast<int>(24 * save.hud_text_scale + 0.5f);
-        const int preview_h    = preview_size + 12;
+        const int base_size    = uiPx(sw, sh, 24);
+        const int preview_size = static_cast<int>(base_size * save.hud_text_scale + 0.5f);
+        const int preview_h    = preview_size + uiPx(sw, sh, 12);
         const char* sample = "PREVIEW   x5 COMBO";
-        int tw = MeasureText(sample, preview_size);
-        int tx = L.x + (col_w - tw) / 2;
-        int ty = L.y;
-        DrawText(sample, tx + 2, ty + 2, preview_size, Color{0, 0, 0, 160});
-        DrawText(sample, tx,     ty,     preview_size,
+        int ptw = MeasureText(sample, preview_size);
+        int tx  = L.x + (col_w - ptw) / 2;
+        int pty = L.y;
+        DrawText(sample, tx + 2, pty + 2, preview_size, Color{0, 0, 0, 160});
+        DrawText(sample, tx,     pty,     preview_size,
                  Color{255, 215, 130, 240});
-        L.y += preview_h + 4;
+        L.y += preview_h + uiPx(sw, sh, 4);
     }
 
     // ===== Right column =====
@@ -292,10 +296,6 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
 
     sectionGap(R);
     sectionHeader(R, "DISPLAY");
-    // Fullscreen toggle. raylib's ToggleFullscreen() switches between
-    // borderless-fullscreen-on-current-monitor and the original windowed
-    // size. We compare against the current state so a single check-flip
-    // works whether the user came from F11 or the settings checkbox.
     {
         bool wanted = save.fullscreen;
         if (toggleRow(R, "Fullscreen", &wanted)) {
@@ -304,10 +304,6 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
             if (wanted != currently_fs) ToggleFullscreen();
         }
     }
-    // VSync. FLAG_VSYNC_HINT is a hint to GLFW so the actual behavior
-    // depends on the driver, but where honored it pins the frame rate to
-    // the monitor refresh and removes tearing. Off by default because
-    // most players prefer the lower input latency for twitchy gameplay.
     {
         bool wanted = save.vsync;
         if (toggleRow(R, "VSync", &wanted)) {
@@ -332,42 +328,35 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
     // the left of the BACK button so the player has to pass over BACK to
     // reach it -- mild "are you sure" affordance without an actual modal.
     const int content_bottom = std::max(L.y, R.y);
-    const int back_w = 240;
-    const int back_h = 56;
-    const int back_y = content_bottom + 28;
-    const int back_x = (sw - back_w) / 2;
+    const int back_w  = uiPx(sw, sh, 240);
+    const int back_h  = uiPx(sw, sh,  56);
+    const int back_y  = content_bottom + uiPx(sw, sh, 28);
+    const int back_x  = (sw - back_w) / 2;
 
-    const int reset_w = 200;
-    const int reset_h = 56;
+    const int reset_w = uiPx(sw, sh, 200);
+    const int reset_h = back_h;
     const int reset_y = back_y;
-    const int reset_x = back_x - reset_w - 30;  // 30 px gap to the left of BACK
+    const int reset_x = back_x - reset_w - uiPx(sw, sh, 30);
+
+    const int back_fs  = uiPx(sw, sh, 26);
+    const int reset_fs = uiPx(sw, sh, 22);
 
     if (drawButton({(float)reset_x, (float)reset_y, (float)reset_w, (float)reset_h},
-                   "RESET", 22,
+                   "RESET", reset_fs,
                    Color{140, 80, 65, 255}, Color{255, 240, 230, 255})) {
-        // Pre-reset values we need to KEEP so live-apply works correctly
-        // after the reset (and so the SaveData reference passed in still
-        // reflects the apply).
         resetSettingsToDefaults(save);
-        // Live-apply each system that watches its setting -- otherwise the
-        // user would have to leave Settings + come back for the reset to
-        // take visible effect.
         if (IsAudioDeviceReady()) SetMasterVolume(save.master_volume);
         setPaletteMode(static_cast<PaletteMode>(save.colorblind_mode));
         setHighContrast(save.high_contrast);
         setHudTextScale(save.hud_text_scale);
         if (save.fps_cap == 0) SetTargetFPS(0);
         else                    SetTargetFPS(static_cast<int>(save.fps_cap));
-        // Display reset: drop back out of fullscreen if we were in it; clear
-        // the VSync hint. ToggleFullscreen is the only public API for the
-        // window-mode change on raylib 5.5; check against current state so
-        // we don't double-flip.
         if (IsWindowFullscreen()) ToggleFullscreen();
         ClearWindowState(FLAG_VSYNC_HINT);
     }
 
     if (drawButton({(float)back_x, (float)back_y, (float)back_w, (float)back_h},
-                   "BACK", 26,
+                   "BACK", back_fs,
                    Color{55, 145, 95, 255}, Color{255, 255, 255, 255})) {
         action = SettingsAction::BackToMenu;
     }

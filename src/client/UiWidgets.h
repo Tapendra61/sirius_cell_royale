@@ -60,4 +60,28 @@ float currentHudTextScale();
 // through to whatever button sits under the mouse there.
 void swallowNextClick();
 
+// ---- Screen-size scaling ----
+// All UI screens (menus, settings, lobby, HUD overlays) are LAID OUT against a
+// reference resolution of 1280 x 720. uiScale() returns the factor relative to
+// that reference for the current window size; widgets multiply font sizes and
+// dimensions by this factor so a 2560x1440 fullscreen window renders the same
+// content at 2x and a 1024x768 windowed instance at ~0.8x. min(sx, sy) is used
+// (not the max) so an ultrawide aspect ratio doesn't stretch elements vertically.
+//
+// Clamped to a sensible band: at very small windows (< ~50% of reference) we
+// stop shrinking so the text stays readable; at very large windows (> ~3x) we
+// stop growing so menus don't dominate huge displays. The caller is welcome to
+// multiply this by any local accessibility factor (e.g. currentHudTextScale()
+// for HUD text) -- the two scales compose cleanly.
+constexpr int   kUiReferenceW = 1280;
+constexpr int   kUiReferenceH = 720;
+float           uiScale(int screen_w, int screen_h);
+
+// Convenience: scale a base-resolution pixel value to the current screen and
+// round to int. Used by menus / HUD to size fonts + dimensions in one call.
+//   uiPx(sw, sh, 44) == "44 pixels in the 1280x720 design space"
+inline int      uiPx(int screen_w, int screen_h, int base_px) {
+    return static_cast<int>(base_px * uiScale(screen_w, screen_h) + 0.5f);
+}
+
 } // namespace cr

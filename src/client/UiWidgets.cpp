@@ -278,4 +278,17 @@ void  setHudTextScale(float s) { g_hud_text_scale = std::clamp(s, 0.85f, 1.30f);
 float currentHudTextScale()    { return g_hud_text_scale; }
 void  swallowNextClick()       { g_swallow_click = true; }
 
+float uiScale(int sw, int sh) {
+    // Uniform scale (smallest of the two ratios) so aspect ratio doesn't
+    // distort widgets on ultrawide / portrait monitors. Clamped to
+    // [0.55, 3.00] -- below the floor the text becomes unreadable; above
+    // the ceiling huge displays would get menus that overwhelm everything
+    // else. The reference resolution (1280 x 720) is the "designed for"
+    // size; multiplier == 1.0 there.
+    if (sw <= 0 || sh <= 0) return 1.0f;
+    float sx = static_cast<float>(sw) / static_cast<float>(kUiReferenceW);
+    float sy = static_cast<float>(sh) / static_cast<float>(kUiReferenceH);
+    return std::clamp(std::min(sx, sy), 0.55f, 3.0f);
+}
+
 } // namespace cr

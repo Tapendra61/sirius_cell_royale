@@ -91,66 +91,74 @@ float lobbyBreathe(float t, float period) {
 // sub-states each get their own mood (green for HOST, blue for JOIN, etc).
 // Returns the y-coordinate just below the title's underline so callers can
 // chain a tagline / panels below without re-computing layout.
-int drawLobbyTitle(int sw, int /*sh*/, const char* title, int t_size,
+int drawLobbyTitle(int sw, int sh, const char* title, int t_size,
                    int ty, Color accent, float anim_time) {
+    const float ui = uiScale(sw, sh);
     const int   tw = MeasureText(title, t_size);
     const float cx = sw * 0.5f;
     const float cy = static_cast<float>(ty) + t_size * 0.5f;
 
-    // Breathing halo -- alpha-only, four concentric rings approximating a
-    // radial gradient. Period 5.5s matches the main menu so screens feel
-    // synced when you tab between them in quick succession.
+    // Breathing halo, scaled by uiScale so it grows with the window.
     const float p      = lobbyBreathe(anim_time, 5.5f);
     const float halo_a = 30.0f + 22.0f * p;
     const Color halo   = Color{accent.r, accent.g, accent.b,
                                static_cast<unsigned char>(halo_a)};
-    DrawCircle((int)cx, (int)cy, 380.0f,
+    DrawCircle((int)cx, (int)cy, 380.0f * ui,
                Color{halo.r, halo.g, halo.b,
                      (unsigned char)(halo.a * 0.32f)});
-    DrawCircle((int)cx, (int)cy, 270.0f,
+    DrawCircle((int)cx, (int)cy, 270.0f * ui,
                Color{halo.r, halo.g, halo.b,
                      (unsigned char)(halo.a * 0.55f)});
-    DrawCircle((int)cx, (int)cy, 180.0f,
+    DrawCircle((int)cx, (int)cy, 180.0f * ui,
                Color{halo.r, halo.g, halo.b,
                      (unsigned char)(halo.a * 0.82f)});
-    DrawCircle((int)cx, (int)cy, 110.0f, halo);
+    DrawCircle((int)cx, (int)cy, 110.0f * ui, halo);
 
-    // Two-pass shadow + body. The body color is a slightly desaturated /
-    // lighter version of the accent so it sits inside the halo as a clear
-    // focal text rather than fighting it.
     Color body{
         static_cast<unsigned char>(std::min(255, (int)accent.r + 60)),
         static_cast<unsigned char>(std::min(255, (int)accent.g + 50)),
         static_cast<unsigned char>(std::min(255, (int)accent.b + 30)),
         255
     };
-    DrawText(title, (sw - tw) / 2 + 7, ty + 9, t_size, Color{0, 0, 0, 110});
-    DrawText(title, (sw - tw) / 2 + 3, ty + 4, t_size, Color{0, 0, 0, 200});
-    DrawText(title, (sw - tw) / 2,     ty,     t_size, body);
+    const int sh_a = std::max(1, uiPx(sw, sh, 7));
+    const int sh_b = std::max(1, uiPx(sw, sh, 9));
+    const int sh_c = std::max(1, uiPx(sw, sh, 3));
+    const int sh_d = std::max(1, uiPx(sw, sh, 4));
+    DrawText(title, (sw - tw) / 2 + sh_a, ty + sh_b, t_size, Color{0, 0, 0, 110});
+    DrawText(title, (sw - tw) / 2 + sh_c, ty + sh_d, t_size, Color{0, 0, 0, 200});
+    DrawText(title, (sw - tw) / 2,        ty,        t_size, body);
 
-    // Breathing underline (same period as halo).
+    // Breathing underline.
     {
         unsigned char a = static_cast<unsigned char>(110 + p * 80);
-        DrawRectangleGradientH((sw - tw) / 2 + 20, ty + t_size + 4,
-                               tw - 40, 2,
+        const int inset = uiPx(sw, sh, 20);
+        const int uly   = ty + t_size + uiPx(sw, sh, 4);
+        const int ulh   = std::max(2, uiPx(sw, sh, 2));
+        DrawRectangleGradientH((sw - tw) / 2 + inset, uly,
+                               tw - 2 * inset, ulh,
                                Color{accent.r, accent.g, accent.b, 0},
                                Color{accent.r, accent.g, accent.b, a});
-        DrawRectangleGradientH((sw - tw) / 2 + 20, ty + t_size + 4,
-                               tw - 40, 2,
+        DrawRectangleGradientH((sw - tw) / 2 + inset, uly,
+                               tw - 2 * inset, ulh,
                                Color{accent.r, accent.g, accent.b, a},
                                Color{accent.r, accent.g, accent.b, 0});
     }
-    return ty + t_size + 12;
+    return ty + t_size + uiPx(sw, sh, 12);
 }
 
-// Eyebrow tag with flanking 1px accent rules. Used above titles to brand
-// each screen ("LOCAL MULTIPLAYER", "HOSTING", "JOIN A GAME").
 void drawLobbyEyebrow(int sw, int ey, const char* text, Color accent) {
-    int e_size = 12;
+    // Use sh = ey * (720/72) as a proxy since the helper doesn't get sh -- ey
+    // is a sh-derived value (typically 0.10*sh, so sh = ey*10). Good enough
+    // for the uiScale lookup since the eyebrow size hardly varies.
+    int sh_guess = ey > 0 ? std::max(720, ey * 10) : 720;
+    int e_size = uiPx(sw, sh_guess, 12);
     int ew = MeasureText(text, e_size);
-    DrawRectangle((sw - ew) / 2 - 70, ey + e_size / 2, 60, 1,
+    int line_w = uiPx(sw, sh_guess, 60);
+    int gap_l  = uiPx(sw, sh_guess, 70);
+    int gap_r  = uiPx(sw, sh_guess, 10);
+    DrawRectangle((sw - ew) / 2 - gap_l, ey + e_size / 2, line_w, 1,
                   Color{accent.r, accent.g, accent.b, 180});
-    DrawRectangle((sw + ew) / 2 + 10, ey + e_size / 2, 60, 1,
+    DrawRectangle((sw + ew) / 2 + gap_r, ey + e_size / 2, line_w, 1,
                   Color{accent.r, accent.g, accent.b, 180});
     DrawText(text, (sw - ew) / 2, ey, e_size,
              Color{accent.r, accent.g, accent.b, 220});
@@ -229,13 +237,16 @@ LocalLobbyAction LocalLobby::render(int sw, int sh) {
 }
 
 void LocalLobby::renderPicker(int sw, int sh, LocalLobbyAction& action) {
+    const float ui = uiScale(sw, sh);
+
     // ---- Eyebrow tag ----
     drawLobbyEyebrow(sw, static_cast<int>(sh * 0.10f),
                      "LOCAL  MULTIPLAYER  --  PICK  YOUR  ROLE",
                      Color{160, 195, 230, 255});
 
     // ---- Title with breathing halo ----
-    drawLobbyTitle(sw, sh, "LOCAL GAME", 64,
+    const int title_fs = uiPx(sw, sh, 64);
+    drawLobbyTitle(sw, sh, "LOCAL GAME", title_fs,
                    static_cast<int>(sh * 0.15f),
                    subStateAccent(LobbySubState::Picker),
                    anim_time_);
@@ -243,9 +254,9 @@ void LocalLobby::renderPicker(int sw, int sh, LocalLobbyAction& action) {
     // ---- Tagline ----
     {
         const char* tagline = "host a match or join one on your LAN";
-        int g_size = 16;
+        int g_size = uiPx(sw, sh, 16);
         int gw = MeasureText(tagline, g_size);
-        int gy = static_cast<int>(sh * 0.15f) + 64 + 30;
+        int gy = static_cast<int>(sh * 0.15f) + title_fs + uiPx(sw, sh, 30);
         DrawText(tagline, (sw - gw) / 2 + 1, gy + 1, g_size,
                  Color{0, 0, 0, 150});
         DrawText(tagline, (sw - gw) / 2,     gy,     g_size,
@@ -253,16 +264,35 @@ void LocalLobby::renderPicker(int sw, int sh, LocalLobbyAction& action) {
     }
 
     // ---- Two-card body (HOST | JOIN) ----
-    // Side-by-side cards with role-specific accents so the player reads
-    // "two equal paths" at a glance. Matches the RoyaleMenu LOCAL/GLOBAL
-    // card pattern for visual continuity across the multiplayer flow.
-    const int card_w   = 310;
-    const int card_h   = 215;
-    const int card_gap = 28;
+    const int card_w   = uiPx(sw, sh, 310);
+    const int card_h   = uiPx(sw, sh, 215);
+    const int card_gap = uiPx(sw, sh,  28);
     const int card_y   = static_cast<int>(sh * 0.42f);
     const int total_w  = card_w * 2 + card_gap;
     const int left_x   = (sw - total_w) / 2;
     const int right_x  = left_x + card_w + card_gap;
+
+    // Shared scaled paddings.
+    const int pad_l       = uiPx(sw, sh, 16);
+    const int pip_cx      = uiPx(sw, sh, 30);
+    const int pip_cy      = uiPx(sw, sh, 28);
+    const int role_x      = uiPx(sw, sh, 50);
+    const int role_y      = uiPx(sw, sh, 14);
+    const int sub_role_y  = uiPx(sw, sh, 44);
+    const int header_rule = uiPx(sw, sh, 50);
+    const int row1_y      = uiPx(sw, sh, 78);
+    const int row2_y      = uiPx(sw, sh, 102);
+    const int row3_y      = uiPx(sw, sh, 122);
+    const int role_fs     = uiPx(sw, sh, 30);
+    const int sub_role_fs = uiPx(sw, sh, 12);
+    const int desc_fs_a   = uiPx(sw, sh, 15);
+    const int desc_fs_b   = uiPx(sw, sh, 13);
+    const int pip_r_big   = std::max(4.0f, 7.0f * ui);
+    const int pip_r_inner = std::max(2.0f, 3.5f * ui);
+    const int btn_inset   = uiPx(sw, sh, 24);
+    const int btn_h       = uiPx(sw, sh, 40);
+    const int btn_bot     = uiPx(sw, sh, 56);
+    const int btn_fs      = uiPx(sw, sh, 18);
 
     // ---- HOST card (green) ----
     {
@@ -272,30 +302,27 @@ void LocalLobby::renderPicker(int sw, int sh, LocalLobbyAction& action) {
                                Color{16, 34, 30, 240});
         DrawRectangleRoundedLines(r, 0.06f, 8, Color{120, 200, 170, 130});
 
-        // Header strip rule.
-        DrawRectangle(left_x + 16, card_y + 50, card_w - 32, 1,
+        DrawRectangle(left_x + pad_l, card_y + header_rule, card_w - 2 * pad_l, 1,
                       Color{120, 200, 170, 90});
 
-        // Stylised pip + role label.
-        DrawCircle(left_x + 30, card_y + 28, 7.0f, Color{120, 200, 150, 230});
-        DrawCircle(left_x + 30, card_y + 28, 3.5f, Color{210, 250, 220, 240});
-        DrawText("HOST", left_x + 50, card_y + 14, 30,
+        DrawCircle(left_x + pip_cx, card_y + pip_cy, pip_r_big,    Color{120, 200, 150, 230});
+        DrawCircle(left_x + pip_cx, card_y + pip_cy, pip_r_inner,  Color{210, 250, 220, 240});
+        DrawText("HOST", left_x + role_x, card_y + role_y, role_fs,
                  Color{220, 245, 230, 245});
-        DrawText("server", left_x + 50, card_y + 44, 12,
+        DrawText("server", left_x + role_x, card_y + sub_role_y, sub_role_fs,
                  Color{160, 210, 180, 220});
 
-        // Description.
         DrawText("Open a game on this machine.",
-                 left_x + 24, card_y + 78, 15, Color{215, 230, 220, 230});
+                 left_x + btn_inset, card_y + row1_y, desc_fs_a, Color{215, 230, 220, 230});
         DrawText("Pick the match length, bot count,",
-                 left_x + 24, card_y + 102, 13, Color{180, 200, 190, 210});
+                 left_x + btn_inset, card_y + row2_y, desc_fs_b, Color{180, 200, 190, 210});
         DrawText("and player cap before launching.",
-                 left_x + 24, card_y + 122, 13, Color{180, 200, 190, 210});
+                 left_x + btn_inset, card_y + row3_y, desc_fs_b, Color{180, 200, 190, 210});
 
-        // CTA button.
-        Rectangle btn_r{(float)(left_x + 24), (float)(card_y + card_h - 56),
-                        (float)(card_w - 48), 40.0f};
-        if (drawButton(btn_r, "START  LOBBY  >", 18,
+        Rectangle btn_r{(float)(left_x + btn_inset),
+                        (float)(card_y + card_h - btn_bot),
+                        (float)(card_w - 2 * btn_inset), (float)btn_h};
+        if (drawButton(btn_r, "START  LOBBY  >", btn_fs,
                        Color{55, 145, 105, 255},
                        Color{240, 250, 245, 255})) {
             sub_state_ = LobbySubState::HostWaiting;
@@ -312,32 +339,33 @@ void LocalLobby::renderPicker(int sw, int sh, LocalLobbyAction& action) {
                                Color{16, 26, 52, 240});
         DrawRectangleRoundedLines(r, 0.06f, 8, Color{130, 175, 230, 130});
 
-        DrawRectangle(right_x + 16, card_y + 50, card_w - 32, 1,
+        DrawRectangle(right_x + pad_l, card_y + header_rule, card_w - 2 * pad_l, 1,
                       Color{130, 175, 230, 90});
 
-        // Stylised pip (signal-style: small + larger ring) to differentiate
-        // from the HOST card's solid dot.
-        DrawCircleLines(right_x + 30, card_y + 28, 7.0f, Color{130, 175, 230, 230});
-        DrawCircle(right_x + 30, card_y + 28, 3.0f, Color{200, 225, 250, 240});
-        DrawText("JOIN", right_x + 50, card_y + 14, 30,
+        DrawCircleLines(right_x + pip_cx, card_y + pip_cy, pip_r_big,
+                        Color{130, 175, 230, 230});
+        DrawCircle(right_x + pip_cx, card_y + pip_cy,
+                   std::max(2.0f, 3.0f * ui),
+                   Color{200, 225, 250, 240});
+        DrawText("JOIN", right_x + role_x, card_y + role_y, role_fs,
                  Color{225, 235, 250, 245});
-        DrawText("client", right_x + 50, card_y + 44, 12,
+        DrawText("client", right_x + role_x, card_y + sub_role_y, sub_role_fs,
                  Color{170, 195, 225, 220});
 
         DrawText("Connect to a host on the LAN.",
-                 right_x + 24, card_y + 78, 15, Color{220, 230, 245, 230});
+                 right_x + btn_inset, card_y + row1_y, desc_fs_a, Color{220, 230, 245, 230});
         DrawText("Auto-discovers nearby games or",
-                 right_x + 24, card_y + 102, 13, Color{180, 195, 220, 210});
+                 right_x + btn_inset, card_y + row2_y, desc_fs_b, Color{180, 195, 220, 210});
         DrawText("enter an IP address directly.",
-                 right_x + 24, card_y + 122, 13, Color{180, 195, 220, 210});
+                 right_x + btn_inset, card_y + row3_y, desc_fs_b, Color{180, 195, 220, 210});
 
-        Rectangle btn_r{(float)(right_x + 24), (float)(card_y + card_h - 56),
-                        (float)(card_w - 48), 40.0f};
-        if (drawButton(btn_r, "FIND  GAMES  >", 18,
+        Rectangle btn_r{(float)(right_x + btn_inset),
+                        (float)(card_y + card_h - btn_bot),
+                        (float)(card_w - 2 * btn_inset), (float)btn_h};
+        if (drawButton(btn_r, "FIND  GAMES  >", btn_fs,
                        Color{60, 110, 170, 255},
                        Color{235, 245, 255, 255})) {
             sub_state_  = LobbySubState::JoinBrowsing;
-            // update() will lazily start the LAN listener.
             discovered_.clear();
             swallowNextClick();
         }
@@ -345,12 +373,13 @@ void LocalLobby::renderPicker(int sw, int sh, LocalLobbyAction& action) {
 
     // ---- BACK button (centered below cards) ----
     {
-        const int back_w = 200;
-        const int back_h = 50;
+        const int back_w  = uiPx(sw, sh, 200);
+        const int back_h  = uiPx(sw, sh, 50);
+        const int back_fs = uiPx(sw, sh, 22);
         Rectangle bb{(float)(sw / 2 - back_w / 2),
-                     (float)(card_y + card_h + 30),
+                     (float)(card_y + card_h + uiPx(sw, sh, 30)),
                      (float)back_w, (float)back_h};
-        if (drawButton(bb, "BACK", 22,
+        if (drawButton(bb, "BACK", back_fs,
                        Color{42, 50, 72, 255}, Color{220, 225, 245, 230})) {
             action = LocalLobbyAction::BackToRoyaleMenu;
         }
@@ -359,9 +388,9 @@ void LocalLobby::renderPicker(int sw, int sh, LocalLobbyAction& action) {
     // ---- Footer ----
     {
         const char* foot = "press  ESC  to  go  back";
-        int fs = 13;
+        int fs = uiPx(sw, sh, 13);
         int fw = MeasureText(foot, fs);
-        DrawText(foot, (sw - fw) / 2, sh - 28, fs,
+        DrawText(foot, (sw - fw) / 2, sh - uiPx(sw, sh, 28), fs,
                  Color{140, 155, 180, 180});
     }
 
@@ -487,86 +516,85 @@ void LocalLobby::renderHostWaiting(int sw, int sh, LocalLobbyAction& action) {
 
     // ---- Title with breathing halo ----
     const int ty = static_cast<int>(sh * 0.07f);
-    drawLobbyTitle(sw, sh, "HOSTING", 52, ty,
+    drawLobbyTitle(sw, sh, "HOSTING", uiPx(sw, sh, 52), ty,
                    subStateAccent(LobbySubState::HostWaiting),
                    anim_time_);
 
     // ---- Status line + animated dot trail ----
-    const int t_size = 52;
+    const int t_size = uiPx(sw, sh, 52);
     const char* status_text = !host_status_.empty()
         ? host_status_.c_str()
         : "binding socket...";
-    int s_fs = 16;
+    const int s_fs = uiPx(sw, sh, 16);
     int sw_w = MeasureText(status_text, s_fs);
-    DrawText(status_text, (sw - sw_w) / 2, ty + t_size + 18, s_fs,
+    DrawText(status_text, (sw - sw_w) / 2, ty + t_size + uiPx(sw, sh, 18), s_fs,
              Color{200, 215, 230, 220});
     {
         float k = std::fmod(anim_time_ * 2.0f, 3.0f);
         int dots = static_cast<int>(k) + 1;
         char trail[8] = {0};
         for (int i = 0; i < dots && i < 7; ++i) trail[i] = '.';
-        int t_fs = 18;
+        int t_fs = uiPx(sw, sh, 18);
         int t_w  = MeasureText(trail, t_fs);
         DrawText(trail, sw / 2 - t_w / 2,
-                 ty + t_size + 18 + s_fs + 6, t_fs, Color{180, 200, 230, 200});
+                 ty + t_size + uiPx(sw, sh, 18) + s_fs + uiPx(sw, sh, 6),
+                 t_fs, Color{180, 200, 230, 200});
     }
 
     // ---- Two-column body: settings (left) | player list (right) ----
     const int body_top    = static_cast<int>(sh * 0.28f);
-    const int body_height = 360;
-    const int col_gap     = 20;
-    const int col_w       = 460;
+    const int body_height = uiPx(sw, sh, 360);
+    const int col_gap     = uiPx(sw, sh,  20);
+    const int col_w       = uiPx(sw, sh, 460);
     const int total_w     = col_w * 2 + col_gap;
     const int left_x      = (sw - total_w) / 2;
     const int right_x     = left_x + col_w + col_gap;
 
     // -------- LEFT: Match settings panel --------
     {
-        // Slight gradient backdrop for visual depth.
         DrawRectangleGradientV(left_x, body_top, col_w, body_height,
                                Color{22, 30, 48, 235}, Color{14, 20, 34, 235});
         DrawRectangleRoundedLines(
             Rectangle{(float)left_x, (float)body_top, (float)col_w, (float)body_height},
             0.05f, 8, Color{120, 140, 180, 90});
-        DrawText("MATCH SETTINGS", left_x + 18, body_top + 14, 16,
+        DrawText("MATCH SETTINGS",
+                 left_x + uiPx(sw, sh, 18), body_top + uiPx(sw, sh, 14),
+                 uiPx(sw, sh, 16),
                  Color{200, 215, 240, 230});
 
-        // Row layout: stack three preset rows.
-        const int row_h     = 44;
-        const int row_label = 22; // label height above each preset row
-        const int row_step  = row_h + row_label + 18;
-        int row_y           = body_top + 60;
+        const int row_h     = uiPx(sw, sh, 44);
+        const int row_label = uiPx(sw, sh, 22);
+        const int row_step  = row_h + row_label + uiPx(sw, sh, 18);
+        const int row_inset = uiPx(sw, sh, 22);
+        int row_y           = body_top + uiPx(sw, sh, 60);
 
-        // -- Duration --
         {
             int idx = closestIndex(match_settings_.match_duration_sec,
                                     kDurationValues, kDurationOptionCount);
-            Rectangle row{(float)(left_x + 22), (float)row_y,
-                          (float)(col_w - 44), (float)row_h};
+            Rectangle row{(float)(left_x + row_inset), (float)row_y,
+                          (float)(col_w - 2 * row_inset), (float)row_h};
             if (drawPresetRow(row, "Match duration",
                               kDurationLabels, kDurationOptionCount, &idx)) {
                 match_settings_.match_duration_sec = kDurationValues[idx];
             }
             row_y += row_step;
         }
-        // -- Max players --
         {
             int idx = closestIndex(match_settings_.max_players,
                                     kPlayerCountValues, kPlayerCountOptionCount);
-            Rectangle row{(float)(left_x + 22), (float)row_y,
-                          (float)(col_w - 44), (float)row_h};
+            Rectangle row{(float)(left_x + row_inset), (float)row_y,
+                          (float)(col_w - 2 * row_inset), (float)row_h};
             if (drawPresetRow(row, "Max players",
                               kPlayerCountLabels, kPlayerCountOptionCount, &idx)) {
                 match_settings_.max_players = kPlayerCountValues[idx];
             }
             row_y += row_step;
         }
-        // -- Bot count --
         {
             int idx = closestIndex(match_settings_.bot_count,
                                     kBotCountValues, kBotCountOptionCount);
-            Rectangle row{(float)(left_x + 22), (float)row_y,
-                          (float)(col_w - 44), (float)row_h};
+            Rectangle row{(float)(left_x + row_inset), (float)row_y,
+                          (float)(col_w - 2 * row_inset), (float)row_h};
             if (drawPresetRow(row, "Bots",
                               kBotCountLabels, kBotCountOptionCount, &idx)) {
                 match_settings_.bot_count = kBotCountValues[idx];
@@ -574,7 +602,6 @@ void LocalLobby::renderHostWaiting(int sw, int sh, LocalLobbyAction& action) {
             row_y += row_step;
         }
 
-        // Footer summary -- single line showing the chosen combo.
         char summary[160];
         if (match_settings_.match_duration_sec <= 0) {
             std::snprintf(summary, sizeof(summary),
@@ -588,9 +615,10 @@ void LocalLobby::renderHostWaiting(int sw, int sh, LocalLobbyAction& action) {
                           match_settings_.max_players,
                           match_settings_.bot_count);
         }
-        int fw = MeasureText(summary, 13);
+        const int sum_fs = uiPx(sw, sh, 13);
+        int fw = MeasureText(summary, sum_fs);
         DrawText(summary, left_x + (col_w - fw) / 2,
-                 body_top + body_height - 26, 13,
+                 body_top + body_height - uiPx(sw, sh, 26), sum_fs,
                  Color{180, 195, 220, 210});
     }
 
@@ -598,17 +626,18 @@ void LocalLobby::renderHostWaiting(int sw, int sh, LocalLobbyAction& action) {
     renderPlayerListPanel(right_x, body_top, col_w, body_height);
 
     // ---- Action buttons ----
-    const int btn_w = 220;
-    const int btn_h = 58;
-    const int btn_gap = 18;
+    const int btn_w       = uiPx(sw, sh, 220);
+    const int btn_h       = uiPx(sw, sh,  58);
+    const int btn_gap     = uiPx(sw, sh,  18);
     const int btn_total_w = btn_w * 2 + btn_gap;
-    const int btn_y = body_top + body_height + 24;
-    const bool can_start = (players_.size() >= 1); // host + 0 peers minimum
+    const int btn_y       = body_top + body_height + uiPx(sw, sh, 24);
+    const int btn_fs      = uiPx(sw, sh, 24);
+    const bool can_start = (players_.size() >= 1);
 
     if (drawButton(
             Rectangle{(float)(sw / 2 - btn_total_w / 2), (float)btn_y,
                       (float)btn_w, (float)btn_h},
-            "START GAME", 24,
+            "START GAME", btn_fs,
             can_start ? Color{60, 140, 90, 255} : Color{55, 80, 70, 255},
             Color{240, 250, 245, 255},
             can_start)) {
@@ -617,7 +646,7 @@ void LocalLobby::renderHostWaiting(int sw, int sh, LocalLobbyAction& action) {
     if (drawButton(
             Rectangle{(float)(sw / 2 - btn_total_w / 2 + btn_w + btn_gap), (float)btn_y,
                       (float)btn_w, (float)btn_h},
-            "CANCEL", 24,
+            "CANCEL", btn_fs,
             Color{82, 52, 60, 255}, Color{240, 220, 220, 230})) {
         sub_state_ = LobbySubState::Picker;
         action     = LocalLobbyAction::LeaveHostingLobby;
@@ -627,9 +656,9 @@ void LocalLobby::renderHostWaiting(int sw, int sh, LocalLobbyAction& action) {
     // ---- Hint footer ----
     {
         const char* foot = "peers can join while you wait; START GAME launches everyone at once.";
-        int fs = 13;
+        int fs = uiPx(sw, sh, 13);
         int fw = MeasureText(foot, fs);
-        DrawText(foot, (sw - fw) / 2, sh - 26, fs,
+        DrawText(foot, (sw - fw) / 2, sh - uiPx(sw, sh, 26), fs,
                  Color{140, 150, 170, 190});
     }
 
@@ -644,7 +673,7 @@ void LocalLobby::renderJoinBrowsing(int sw, int sh, LocalLobbyAction& action) {
     drawLobbyEyebrow(sw, static_cast<int>(sh * 0.05f),
                      "SCANNING  THE  LAN  --  PICK  A  GAME",
                      Color{150, 190, 240, 255});
-    drawLobbyTitle(sw, sh, "JOIN A GAME", 48,
+    drawLobbyTitle(sw, sh, "JOIN A GAME", uiPx(sw, sh, 48),
                    static_cast<int>(sh * 0.10f),
                    subStateAccent(LobbySubState::JoinBrowsing),
                    anim_time_);
@@ -836,7 +865,7 @@ void LocalLobby::renderJoinWaiting(int sw, int sh, LocalLobbyAction& action) {
                      "CONNECTED  --  WAITING  FOR  START",
                      Color{170, 200, 240, 255});
     const int ty     = static_cast<int>(sh * 0.12f);
-    const int t_size = 44;
+    const int t_size = uiPx(sw, sh, 44);
     drawLobbyTitle(sw, sh, "WAITING FOR HOST", t_size, ty,
                    subStateAccent(LobbySubState::JoinWaiting),
                    anim_time_);

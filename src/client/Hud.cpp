@@ -11,11 +11,22 @@ namespace cr {
 
 namespace {
 
-// Apply the global HUD text scale to a font size. Used by every DrawText /
-// MeasureText call in this file. Keeping it inline + named short so the call
-// sites stay readable.
+// Current screen dimensions, set at the top of Hud::render() and read by
+// sc() below. File-scope statics so sc() can stay a plain free function
+// (53 call sites and counting -- making it a member would touch every
+// one of them; setting two ints at frame start is cheaper).
+int s_hud_screen_w = 1280;
+int s_hud_screen_h = 720;
+
+// Apply BOTH the global HUD text scale (user accessibility setting,
+// 0.85x-1.30x) AND the screen-size scale (uiScale based on current window
+// vs the 1280x720 reference) so HUD elements resize correctly when the
+// player goes fullscreen / shrinks the window. Composition is plain
+// multiplication -- if a user sets HUD scale to 1.20x on a 2x-fullscreen
+// window the final factor is 2.4x.
 inline int sc(int sz) {
-    return static_cast<int>(sz * currentHudTextScale() + 0.5f);
+    const float ui = uiScale(s_hud_screen_w, s_hud_screen_h);
+    return static_cast<int>(sz * currentHudTextScale() * ui + 0.5f);
 }
 
 } // namespace
@@ -76,6 +87,13 @@ void Hud::update(float frame_dt, double now_sec, float combo_window_sec) {
 SummaryAction Hud::render(int screen_w, int screen_h, const Cell* watched, Tick tick,
                           int fps, float zoom, float dt_mult, bool paused, bool touch,
                           GamePhase phase, const MatchSummary* summary) {
+    // Stash the current screen dimensions so the file-scope sc() helper can
+    // read them. All HUD draws below go through sc() for their sizing, so
+    // this single assignment is enough to make the entire HUD respond to
+    // window resize / fullscreen.
+    s_hud_screen_w = screen_w;
+    s_hud_screen_h = screen_h;
+
     // ----- Crit flash (briefer, brighter than near-miss vignettes) -----
     if (crit_flash_ > 0.0f) {
         unsigned char a = static_cast<unsigned char>(crit_flash_ * 110.0f);

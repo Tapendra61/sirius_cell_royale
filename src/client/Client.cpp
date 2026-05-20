@@ -1089,20 +1089,27 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         // Add one row if the watched player exists but is outside the top N.
         const bool    show_self = (watched_rank > kTopN);
 
-        // Panel layout, top-left corner. y0 leaves room above for the
-        // mutation banner's persistent corner badge ("[Heavy]" etc.), which
-        // Hud.cpp draws at (12, 12) with font size sc(14). Without this gap
-        // the badge text drew on top of the LEADERBOARD header in the same
-        // pixels and the active mutation became unreadable for the rest of
-        // the match. Scaled offset so a higher HUD text size doesn't put
-        // the leaderboard back on top of a bigger badge.
-        constexpr int x0      = 12;
-        const     int y0      = 12 + static_cast<int>(22.0f * currentHudTextScale() + 0.5f);
-        constexpr int width   = 218;
-        constexpr int row_h   = 16;
-        constexpr int header  = 22;
-        const int     visible_rows = n_top + (show_self ? 1 : 0);
-        const int     panel_h = header + visible_rows * row_h + 6;
+        // Panel layout, top-left corner. All dimensions scale by both the
+        // HUD text scale (user accessibility setting) AND uiScale (current
+        // window size vs 1280x720 reference) so the panel grows with a
+        // fullscreen window instead of huddling in the corner. Helper
+        // `s()` composes both factors into a single int multiplier on a
+        // base-resolution value.
+        const float ui_hud  = currentHudTextScale() * uiScale(screen_w, screen_h);
+        auto s = [ui_hud](int base) {
+            return static_cast<int>(base * ui_hud + 0.5f);
+        };
+
+        const int x0      = s(12);
+        const int y0      = s(12) + s(22); // gap above for mutation badge
+        const int width   = s(218);
+        const int row_h   = s(16);
+        const int header  = s(22);
+        const int row_fs  = s(13);
+        const int hdr_fs  = s(14);
+        const int dot_r   = std::max(2, s(4));
+        const int visible_rows = n_top + (show_self ? 1 : 0);
+        const int panel_h = header + visible_rows * row_h + s(6);
 
         // Backdrop + thin border for legibility against busy worlds.
         DrawRectangle(x0 - 2, y0 - 2, width + 4, panel_h + 4, Color{0, 0, 0, 190});
@@ -1110,40 +1117,32 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         DrawRectangleLines(x0, y0, width, panel_h, Color{120, 130, 160, 130});
 
         // Header.
-        DrawText("LEADERBOARD", x0 + 8, y0 + 5, 14, Color{220, 220, 240, 230});
+        DrawText("LEADERBOARD", x0 + s(8), y0 + s(5), hdr_fs, Color{220, 220, 240, 230});
 
         auto drawRow = [&](int row_y, int rank, const LeaderRow& r,
                             bool is_self_extra) {
             const Color pcol = colorForPlayer(r.player);
-            // Highlight the watched player's row with a faint backdrop +
-            // brighter text. Also highlight the "your rank" extra row.
             const bool highlight = (r.player == watched_player_) || is_self_extra;
             if (highlight) {
                 DrawRectangle(x0 + 2, row_y - 1, width - 4, row_h,
                               Color{255, 220, 100, 35});
             }
-            // Rank number, right-aligned in a 22-px column.
             char rank_buf[8];
             std::snprintf(rank_buf, sizeof(rank_buf), "%d.", rank);
-            int rank_w = MeasureText(rank_buf, 13);
-            DrawText(rank_buf, x0 + 26 - rank_w, row_y + 1, 13,
+            int rank_w = MeasureText(rank_buf, row_fs);
+            DrawText(rank_buf, x0 + s(26) - rank_w, row_y + 1, row_fs,
                      Color{200, 200, 220, 230});
-            // Player label: display name when known, falling back to
-            // <letter><id>. Truncate at 14 chars so a long custom name still
-            // leaves room for the mass column on the right.
             std::string label = playerLabel(r.player, r.tag, /*max_len=*/14);
-            // Cell-coloured dot before the name so the leaderboard maps
-            // visually to the cells on screen.
-            DrawCircle(x0 + 36, row_y + row_h / 2, 4.0f, pcol);
-            DrawText(label.c_str(), x0 + 46, row_y + 1, 13,
+            DrawCircle(x0 + s(36), row_y + row_h / 2,
+                       static_cast<float>(dot_r), pcol);
+            DrawText(label.c_str(), x0 + s(46), row_y + 1, row_fs,
                      highlight ? Color{255, 240, 180, 255}
                                 : Color{220, 225, 245, 230});
-            // Mass, right-aligned to the panel.
             char mass_buf[16];
             std::snprintf(mass_buf, sizeof(mass_buf), "%d",
                           static_cast<int>(r.total_mass));
-            int mass_w = MeasureText(mass_buf, 13);
-            DrawText(mass_buf, x0 + width - mass_w - 10, row_y + 1, 13,
+            int mass_w = MeasureText(mass_buf, row_fs);
+            DrawText(mass_buf, x0 + width - mass_w - s(10), row_y + 1, row_fs,
                      highlight ? Color{255, 240, 180, 255}
                                 : Color{200, 210, 230, 220});
         };
@@ -1152,10 +1151,8 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
             drawRow(y0 + header + i * row_h, i + 1, rows[i], false);
         }
         if (show_self) {
-            // Separator strip above the "your rank" row so it reads as its
-            // own group.
             int sep_y = y0 + header + n_top * row_h - 2;
-            DrawRectangle(x0 + 4, sep_y, width - 8, 1, Color{120, 130, 160, 120});
+            DrawRectangle(x0 + s(4), sep_y, width - s(8), 1, Color{120, 130, 160, 120});
             drawRow(y0 + header + n_top * row_h, watched_rank,
                     rows[static_cast<size_t>(watched_rank - 1)], true);
         }
@@ -1163,7 +1160,8 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
 
     // Crashing-comet HUD banner. Big alarm text centered horizontally, just below the
     // top of the screen. Fades in over the first 0.3s of the warning, holds, then
-    // fades out as comet_banner_remaining_ approaches zero.
+    // fades out as comet_banner_remaining_ approaches zero. Sizes scale by uiScale
+    // so the banner stays proportional on fullscreen / resized windows.
     if (comet_banner_remaining_ > 0.0f) {
         const float age   = kCometBannerSec - comet_banner_remaining_;
         const float fadeI = std::min(1.0f, age / 0.30f);                       // fade in
@@ -1171,20 +1169,18 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         const float a01   = std::min(fadeI, fadeO);
         const unsigned char a_text = static_cast<unsigned char>(a01 * 250.0f);
         const unsigned char a_bg   = static_cast<unsigned char>(a01 * 130.0f);
-        // Pulsing color: orange -> yellow ramp.
         const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(GetTime()) * 8.0f);
         const Color tint{255,
                          static_cast<unsigned char>(140 + pulse * 80.0f),
                          static_cast<unsigned char>( 40 + pulse * 30.0f),
                          a_text};
         const char* msg  = "!! COMET INCOMING !!";
-        const int   fs   = 44;
+        const int   fs   = uiPx(screen_w, screen_h, 44);
         const int   tw   = MeasureText(msg, fs);
         const int   x    = screen_w / 2 - tw / 2;
-        const int   y    = 110;
-        // Dark backdrop strip behind the text for readability against bright worlds.
-        DrawRectangle(0, y - 12, screen_w, fs + 24, Color{40, 10, 0, a_bg});
-        // Drop shadow + main text.
+        const int   y    = uiPx(screen_w, screen_h, 110);
+        const int   pad  = uiPx(screen_w, screen_h, 12);
+        DrawRectangle(0, y - pad, screen_w, fs + 2 * pad, Color{40, 10, 0, a_bg});
         DrawText(msg, x + 2, y + 2, fs, Color{0, 0, 0, a_text});
         DrawText(msg, x,     y,     fs, tint);
     }
@@ -1220,13 +1216,13 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         const float scale         = 0.55f + 0.45f * fade_in_eased + breathe;
 
         const char* msg     = "* * FOOD RUSH x3 * *";
-        const int   base_fs = 44;
+        const int   base_fs = uiPx(screen_w, screen_h, 44);
         const int   fs      = static_cast<int>(base_fs * scale + 0.5f);
         const int   tw      = MeasureText(msg, fs);
         const int   x       = screen_w / 2 - tw / 2;
-        const int   y       = 160;
-        const int   strip_h = base_fs + 30;
-        const int   strip_y = y - 14;
+        const int   y       = uiPx(screen_w, screen_h, 160);
+        const int   strip_h = base_fs + uiPx(screen_w, screen_h, 30);
+        const int   strip_y = y - uiPx(screen_w, screen_h, 14);
 
         // (a) Gradient backdrop -- four horizontal bands going dark -> warm
         // -> bright -> warm -> dark across the strip's vertical axis. Cheap
@@ -1254,17 +1250,18 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         // different times. Drawn BEFORE the text so the brightest glow
         // sits on the lettering.
         constexpr int kSparkleCount = 16;
+        const float halo_r = 4.0f * uiScale(screen_w, screen_h);
+        const float core_r = 1.6f * uiScale(screen_w, screen_h);
         for (int i = 0; i < kSparkleCount; ++i) {
             float frac    = (i + 0.5f) / kSparkleCount;
             float sx      = frac * screen_w;
-            float phase   = i * 0.83f;                          // de-syncs each dot
-            float row_t   = std::sin(i * 1.27f);                // -1..1, varies per dot
+            float phase   = i * 0.83f;
+            float row_t   = std::sin(i * 1.27f);
             float sy      = strip_y + strip_h * (0.5f + 0.35f * row_t);
             float blink   = 0.5f + 0.5f * std::sin(t_sec * 6.0f + phase);
             unsigned char sa = static_cast<unsigned char>(a01 * blink * 220.0f);
-            // Tiny outer halo + bright pinprick centre.
-            DrawCircle(sx, sy, 4.0f, Color{255, 220, 100, static_cast<unsigned char>(sa * 0.45f)});
-            DrawCircle(sx, sy, 1.6f, Color{255, 245, 200, sa});
+            DrawCircle(sx, sy, halo_r, Color{255, 220, 100, static_cast<unsigned char>(sa * 0.45f)});
+            DrawCircle(sx, sy, core_r, Color{255, 245, 200, sa});
         }
 
         // (d) Pulse the text colour between two warm gold tones.
@@ -1281,21 +1278,21 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         // when the additive accumulates. Final non-additive draw lays the
         // crisp main text on top.
         BeginBlendMode(BLEND_ADDITIVE);
+        const float glow_off_base = 1.6f * uiScale(screen_w, screen_h);
         for (int pass = 4; pass >= 1; --pass) {
-            float off = static_cast<float>(pass) * 1.6f;
+            float off = static_cast<float>(pass) * glow_off_base;
             unsigned char ga = static_cast<unsigned char>(a01 * (90.0f / pass));
             Color glow{255, 220, static_cast<unsigned char>(110 + pulse * 40.0f), ga};
-            // 4 offsets per pass = simple cross-shaped soft glow.
             DrawText(msg, x + static_cast<int>(off), y,                              fs, glow);
             DrawText(msg, x - static_cast<int>(off), y,                              fs, glow);
             DrawText(msg, x,                          y + static_cast<int>(off),     fs, glow);
             DrawText(msg, x,                          y - static_cast<int>(off),     fs, glow);
         }
         EndBlendMode();
-        // Drop shadow + main text.
-        DrawText(msg, x + 2, y + 2, fs,
+        const int sh_off = std::max(1, uiPx(screen_w, screen_h, 2));
+        DrawText(msg, x + sh_off, y + sh_off, fs,
                  Color{0, 0, 0, static_cast<unsigned char>(a01 * 230.0f)});
-        DrawText(msg, x,     y,     fs, tint);
+        DrawText(msg, x,          y,          fs, tint);
     }
 
     // ---- Match timer (top-center, when a match duration is set) ----
@@ -1317,11 +1314,14 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         const float pulse = warn
             ? 0.5f + 0.5f * std::sin(static_cast<float>(GetTime()) * 6.0f)
             : 0.0f;
-        const int fs = 32;
+        const int fs = uiPx(screen_w, screen_h, 32);
         const int tw = MeasureText(buf, fs);
         const int x  = (screen_w - tw) / 2;
-        const int y  = 14;
-        DrawRectangle(x - 14, y - 6, tw + 28, fs + 12, Color{0, 0, 0, 170});
+        const int y  = uiPx(screen_w, screen_h, 14);
+        const int padx = uiPx(screen_w, screen_h, 14);
+        const int pady = uiPx(screen_w, screen_h, 6);
+        DrawRectangle(x - padx, y - pady, tw + 2 * padx, fs + 2 * pady,
+                      Color{0, 0, 0, 170});
         const Color tint = warn
             ? Color{255, static_cast<unsigned char>(80  + pulse * 80),
                          static_cast<unsigned char>(80  + pulse * 40), 255}
@@ -1337,8 +1337,8 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
 
         // Centred card. Larger than the pause overlay because this is the
         // big "match is over" moment.
-        const int box_w = 480;
-        const int box_h = 240;
+        const int box_w = uiPx(screen_w, screen_h, 480);
+        const int box_h = uiPx(screen_w, screen_h, 240);
         const int box_x = (screen_w - box_w) / 2;
         const int box_y = (screen_h - box_h) / 2;
         DrawRectangleRounded(
@@ -1350,11 +1350,12 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
 
         // Header.
         const char* title = "MATCH OVER";
-        const int   t_fs  = 32;
+        const int   t_fs  = uiPx(screen_w, screen_h, 32);
         const int   t_w   = MeasureText(title, t_fs);
-        DrawText(title, box_x + (box_w - t_w) / 2 + 2, box_y + 22 + 2, t_fs,
+        const int   t_off = uiPx(screen_w, screen_h, 22);
+        DrawText(title, box_x + (box_w - t_w) / 2 + 2, box_y + t_off + 2, t_fs,
                  Color{0, 0, 0, 200});
-        DrawText(title, box_x + (box_w - t_w) / 2,     box_y + 22,     t_fs,
+        DrawText(title, box_x + (box_w - t_w) / 2,     box_y + t_off,     t_fs,
                  Color{255, 220, 130, 255});
 
         // Winner line.
@@ -1362,23 +1363,25 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         char         buf[64];
         std::snprintf(buf, sizeof(buf), "WINNER: %s",
                       match_end_winner_name_.c_str());
-        const int    w_fs = 28;
-        const int    w_w  = MeasureText(buf, w_fs);
+        const int    w_fs   = uiPx(screen_w, screen_h, 28);
+        const int    w_w    = MeasureText(buf, w_fs);
+        const int    w_yoff = uiPx(screen_w, screen_h, 80);
         const Color  w_col = self_won
                                 ? Color{120, 250, 160, 255}
                                 : Color{255, 255, 255, 250};
-        DrawText(buf, box_x + (box_w - w_w) / 2 + 2, box_y + 80 + 2, w_fs,
+        DrawText(buf, box_x + (box_w - w_w) / 2 + 2, box_y + w_yoff + 2, w_fs,
                  Color{0, 0, 0, 200});
-        DrawText(buf, box_x + (box_w - w_w) / 2,     box_y + 80,     w_fs,
+        DrawText(buf, box_x + (box_w - w_w) / 2,     box_y + w_yoff,     w_fs,
                  w_col);
 
         // Mass line.
         char mass_buf[48];
         std::snprintf(mass_buf, sizeof(mass_buf), "with %.0f mass",
                       match_end_winner_mass_);
-        const int m_fs = 18;
+        const int m_fs = uiPx(screen_w, screen_h, 18);
         const int m_w  = MeasureText(mass_buf, m_fs);
-        DrawText(mass_buf, box_x + (box_w - m_w) / 2, box_y + 122, m_fs,
+        DrawText(mass_buf, box_x + (box_w - m_w) / 2,
+                 box_y + uiPx(screen_w, screen_h, 122), m_fs,
                  Color{200, 210, 230, 230});
 
         // "Returning in X..." countdown.
@@ -1386,9 +1389,10 @@ void Client::render(int screen_w, int screen_h, float alpha, const Tuning& tunin
         if (back_in < 0) back_in = 0;
         char back_buf[48];
         std::snprintf(back_buf, sizeof(back_buf), "returning in %d...", back_in);
-        const int b_fs = 16;
+        const int b_fs = uiPx(screen_w, screen_h, 16);
         const int b_w  = MeasureText(back_buf, b_fs);
-        DrawText(back_buf, box_x + (box_w - b_w) / 2, box_y + box_h - 40, b_fs,
+        DrawText(back_buf, box_x + (box_w - b_w) / 2,
+                 box_y + box_h - uiPx(screen_w, screen_h, 40), b_fs,
                  Color{170, 180, 210, 220});
     }
 

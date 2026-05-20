@@ -162,26 +162,27 @@ MenuAction MainMenu::render(int sw, int sh, const SaveData& save) {
     // A warm radial glow sits behind the title -- breathing alpha (slow,
     // smooth) instead of breathing size, so it reads as a steady ambient
     // light rather than a low-FPS pulse. Layered concentric circles
-    // approximate a radial gradient.
+    // approximate a radial gradient. Radii scale by uiScale so the halo
+    // grows to match a fullscreen window instead of hugging the centre.
     {
+        const float ui       = uiScale(sw, sh);
         const float title_cx = sw * 0.5f;
         const float title_cy = sh * 0.22f;
         const float breath   = breathe(anim_time_, 5.5f);          // 0..1
         const float halo_a   = 35.0f + 25.0f * breath;
         const Color halo     = Color{255, 200, 110,
                                      static_cast<unsigned char>(halo_a)};
-        // Outer to inner. Each ring slightly brighter. Cheap radial gradient.
         DrawCircle(static_cast<int>(title_cx), static_cast<int>(title_cy),
-                   420.0f, Color{halo.r, halo.g, halo.b,
+                   420.0f * ui, Color{halo.r, halo.g, halo.b,
                                  static_cast<unsigned char>(halo.a * 0.35f)});
         DrawCircle(static_cast<int>(title_cx), static_cast<int>(title_cy),
-                   320.0f, Color{halo.r, halo.g, halo.b,
+                   320.0f * ui, Color{halo.r, halo.g, halo.b,
                                  static_cast<unsigned char>(halo.a * 0.55f)});
         DrawCircle(static_cast<int>(title_cx), static_cast<int>(title_cy),
-                   220.0f, Color{halo.r, halo.g, halo.b,
+                   220.0f * ui, Color{halo.r, halo.g, halo.b,
                                  static_cast<unsigned char>(halo.a * 0.85f)});
         DrawCircle(static_cast<int>(title_cx), static_cast<int>(title_cy),
-                   130.0f, halo);
+                   130.0f * ui, halo);
     }
 
     // ---------- Layer 4: motes (soft mid glows) ----------
@@ -211,63 +212,76 @@ MenuAction MainMenu::render(int sw, int sh, const SaveData& save) {
 
     // ---------- Layer 6: vignette ----------
     // Radial-ish vignette (top/bottom/sides gradients composited). Cheap
-    // approximation that nicely frames the central content.
-    DrawRectangleGradientV(0, 0, sw, 220,
-                           Color{0, 0, 0, 180}, Color{0, 0, 0, 0});
-    DrawRectangleGradientV(0, sh - 200, sw, 200,
-                           Color{0, 0, 0, 0}, Color{0, 0, 0, 200});
-    DrawRectangleGradientH(0, 0, 180, sh,
-                           Color{0, 0, 0, 130}, Color{0, 0, 0, 0});
-    DrawRectangleGradientH(sw - 180, 0, 180, sh,
-                           Color{0, 0, 0, 0}, Color{0, 0, 0, 130});
+    // approximation that nicely frames the central content. Vignette
+    // thickness scales by uiScale so it stays proportional on big windows.
+    {
+        const int vt = uiPx(sw, sh, 220);
+        const int vb = uiPx(sw, sh, 200);
+        const int vs = uiPx(sw, sh, 180);
+        DrawRectangleGradientV(0, 0, sw, vt,
+                               Color{0, 0, 0, 180}, Color{0, 0, 0, 0});
+        DrawRectangleGradientV(0, sh - vb, sw, vb,
+                               Color{0, 0, 0, 0}, Color{0, 0, 0, 200});
+        DrawRectangleGradientH(0, 0, vs, sh,
+                               Color{0, 0, 0, 130}, Color{0, 0, 0, 0});
+        DrawRectangleGradientH(sw - vs, 0, vs, sh,
+                               Color{0, 0, 0, 0}, Color{0, 0, 0, 130});
+    }
 
     // Subtle top edge accent line -- warm tint to thread through the halo.
-    DrawRectangleGradientH(0, 0, sw, 3,
-                           Color{255, 200, 110, 0}, Color{255, 200, 110, 80});
-    DrawRectangleGradientH(0, 0, sw, 3,
-                           Color{255, 200, 110, 80}, Color{255, 200, 110, 0});
+    {
+        const int edge = std::max(2, uiPx(sw, sh, 3));
+        DrawRectangleGradientH(0, 0, sw, edge,
+                               Color{255, 200, 110, 0}, Color{255, 200, 110, 80});
+        DrawRectangleGradientH(0, 0, sw, edge,
+                               Color{255, 200, 110, 80}, Color{255, 200, 110, 0});
+    }
 
     // ---------- Eyebrow tag above the title ----------
     {
         const char* eyebrow = "CELL  ROYALE";
-        // Spaced uppercase letters for a "branded" feel. Using a single
-        // measure + tracked rendering would be nicer but raylib's default
-        // font is monospaced enough for this to read clean.
-        int ey = static_cast<int>(sh * 0.10f);
-        int e_size = 13;
-        int ew = MeasureText(eyebrow, e_size);
-        // Flanking accent lines.
-        DrawRectangle((sw - ew) / 2 - 70, ey + e_size / 2, 60, 1,
+        int ey      = static_cast<int>(sh * 0.10f);
+        int e_size  = uiPx(sw, sh, 13);
+        int ew      = MeasureText(eyebrow, e_size);
+        int line_w  = uiPx(sw, sh, 60);
+        int line_g  = uiPx(sw, sh, 10);
+        int line_off= uiPx(sw, sh, 70);
+        DrawRectangle((sw - ew) / 2 - line_off, ey + e_size / 2, line_w, 1,
                       Color{220, 200, 150, 180});
-        DrawRectangle((sw + ew) / 2 + 10, ey + e_size / 2, 60, 1,
+        DrawRectangle((sw + ew) / 2 + line_g,   ey + e_size / 2, line_w, 1,
                       Color{220, 200, 150, 180});
         DrawText(eyebrow, (sw - ew) / 2, ey, e_size,
                  Color{220, 200, 150, 230});
     }
 
     // ---------- Title ----------
-    // FIXED font size -- no more per-frame size pulse (which jittered between
-    // integer pixel sizes and read as "low FPS"). The halo behind it (layer 3)
-    // does the breathing instead.
+    // FIXED font size (no per-frame jitter), but scaled by uiScale so
+    // fullscreen at 4K shows it 3x as big as windowed 1280x720.
     const char* title = "CELL ROYALE";
-    const int   t_size = 96;
+    const int   t_size = uiPx(sw, sh, 96);
     const int   tw     = MeasureText(title, t_size);
     const int   ty     = static_cast<int>(sh * 0.16f);
-    // Soft shadow stack for depth (two passes -- broader-darker, tighter-near).
-    DrawText(title, (sw - tw) / 2 + 7, ty + 9, t_size, Color{0, 0, 0, 120});
-    DrawText(title, (sw - tw) / 2 + 3, ty + 4, t_size, Color{0, 0, 0, 200});
-    DrawText(title, (sw - tw) / 2,     ty,     t_size, Color{255, 230, 170, 255});
+    const int   shad_a = std::max(1, uiPx(sw, sh, 7));
+    const int   shad_b = std::max(1, uiPx(sw, sh, 9));
+    const int   shad_c = std::max(1, uiPx(sw, sh, 3));
+    const int   shad_d = std::max(1, uiPx(sw, sh, 4));
+    DrawText(title, (sw - tw) / 2 + shad_a, ty + shad_b, t_size, Color{0, 0, 0, 120});
+    DrawText(title, (sw - tw) / 2 + shad_c, ty + shad_d, t_size, Color{0, 0, 0, 200});
+    DrawText(title, (sw - tw) / 2,          ty,          t_size, Color{255, 230, 170, 255});
 
     // Thin gold underline below the title that fades in/out subtly.
     {
         float p = breathe(anim_time_, 5.5f);
         unsigned char a = static_cast<unsigned char>(120 + p * 60);
-        DrawRectangleGradientH((sw - tw) / 2 + 20, ty + t_size + 4,
-                               tw - 40, 2,
+        const int ul_inset = uiPx(sw, sh, 20);
+        const int ul_y     = ty + t_size + uiPx(sw, sh, 4);
+        const int ul_h     = std::max(2, uiPx(sw, sh, 2));
+        DrawRectangleGradientH((sw - tw) / 2 + ul_inset, ul_y,
+                               tw - 2 * ul_inset, ul_h,
                                Color{255, 200, 110, 0},
                                Color{255, 200, 110, a});
-        DrawRectangleGradientH((sw - tw) / 2 + 20, ty + t_size + 4,
-                               tw - 40, 2,
+        DrawRectangleGradientH((sw - tw) / 2 + ul_inset, ul_y,
+                               tw - 2 * ul_inset, ul_h,
                                Color{255, 200, 110, a},
                                Color{255, 200, 110, 0});
     }
@@ -275,17 +289,18 @@ MenuAction MainMenu::render(int sw, int sh, const SaveData& save) {
     // ---------- Tagline ----------
     {
         const char* tagline = "eat   --   grow   --   survive";
-        int g_size = 18;
-        int gw = MeasureText(tagline, g_size);
-        DrawText(tagline, (sw - gw) / 2 + 1, ty + t_size + 24 + 1, g_size,
+        int g_size = uiPx(sw, sh, 18);
+        int gw     = MeasureText(tagline, g_size);
+        int gy     = ty + t_size + uiPx(sw, sh, 24);
+        DrawText(tagline, (sw - gw) / 2 + 1, gy + 1, g_size,
                  Color{0, 0, 0, 160});
-        DrawText(tagline, (sw - gw) / 2,     ty + t_size + 24,     g_size,
+        DrawText(tagline, (sw - gw) / 2,     gy,     g_size,
                  Color{195, 210, 230, 220});
     }
 
     // ---------- Buttons ----------
-    const int btn_w = 340;
-    const int btn_h = 76;
+    const int btn_w = uiPx(sw, sh, 340);
+    const int btn_h = uiPx(sw, sh,  76);
     const int btn_x = (sw - btn_w) / 2;
     int       btn_y = static_cast<int>(sh * 0.54f);
 
@@ -293,38 +308,40 @@ MenuAction MainMenu::render(int sw, int sh, const SaveData& save) {
 
     // Primary: VS AI (warm green)
     if (drawButton(Rectangle{(float)btn_x, (float)btn_y, (float)btn_w, (float)btn_h},
-                   "VS AI", 34,
+                   "VS AI", uiPx(sw, sh, 34),
                    Color{55, 145, 95, 255},
                    Color{255, 255, 255, 255})) {
         action = MenuAction::StartVsAI;
     }
-    btn_y += btn_h + 18;
+    btn_y += btn_h + uiPx(sw, sh, 18);
 
     // Secondary: Royale -- opens the Local / Global sub-menu.
     if (drawButtonWithSub(
             Rectangle{(float)btn_x, (float)btn_y, (float)btn_w, (float)btn_h},
-            "ROYALE", 30,
-            "multiplayer  --  local or global", 13,
+            "ROYALE", uiPx(sw, sh, 30),
+            "multiplayer  --  local or global", uiPx(sw, sh, 13),
             Color{75, 90, 160, 255},
             Color{225, 230, 250, 255})) {
         action = MenuAction::ShowRoyaleMenu;
     }
-    btn_y += btn_h + 22;
+    btn_y += btn_h + uiPx(sw, sh, 22);
 
     // Tertiary row: SETTINGS + TUTORIAL side-by-side.
     {
-        const int gap   = 12;
+        const int gap   = uiPx(sw, sh, 12);
         const int sub_w = (btn_w - gap) / 2;
+        const int sub_h = uiPx(sw, sh, 52);
+        const int sub_fs= uiPx(sw, sh, 22);
         if (drawButton(
-                Rectangle{(float)btn_x, (float)btn_y, (float)sub_w, 52.0f},
-                "SETTINGS", 22,
+                Rectangle{(float)btn_x, (float)btn_y, (float)sub_w, (float)sub_h},
+                "SETTINGS", sub_fs,
                 Color{42, 50, 72, 255}, Color{220, 225, 245, 230})) {
             action = MenuAction::ShowSettings;
         }
         if (drawButton(
                 Rectangle{(float)(btn_x + sub_w + gap), (float)btn_y,
-                          (float)sub_w, 52.0f},
-                "TUTORIAL", 22,
+                          (float)sub_w, (float)sub_h},
+                "TUTORIAL", sub_fs,
                 Color{42, 50, 72, 255}, Color{220, 225, 245, 230})) {
             action = MenuAction::ReplayIntro;
         }
@@ -339,15 +356,17 @@ MenuAction MainMenu::render(int sw, int sh, const SaveData& save) {
                       "Best mass %.0f    Best combo x%u    %u game%s",
                       save.best_mass, save.best_combo,
                       save.games_played, save.games_played == 1 ? "" : "s");
-        int l1w = MeasureText(line1, 18);
-        int l2w = MeasureText(line2, 13);
-        int panel_w = std::max(l1w, l2w) + 30;
-        int panel_h = save.games_played > 0 ? 64 : 38;
-        int panel_x = sw - panel_w - 22;
-        int panel_y = 22;
+        const int fs1     = uiPx(sw, sh, 18);
+        const int fs2     = uiPx(sw, sh, 13);
+        const int l1w     = MeasureText(line1, fs1);
+        const int l2w     = MeasureText(line2, fs2);
+        const int padx    = uiPx(sw, sh, 30);
+        const int panel_w = std::max(l1w, l2w) + padx;
+        const int panel_h = save.games_played > 0 ? uiPx(sw, sh, 64) : uiPx(sw, sh, 38);
+        const int margin  = uiPx(sw, sh, 22);
+        const int panel_x = sw - panel_w - margin;
+        const int panel_y = margin;
 
-        // Two-tone gradient backdrop so the panel doesn't feel like a flat
-        // sticker pasted over the bg.
         DrawRectangleGradientV(panel_x, panel_y, panel_w, panel_h,
                                Color{26, 32, 50, 220},
                                Color{14, 18, 30, 220});
@@ -355,12 +374,14 @@ MenuAction MainMenu::render(int sw, int sh, const SaveData& save) {
             Rectangle{(float)panel_x, (float)panel_y,
                       (float)panel_w, (float)panel_h},
             0.18f, 6, Color{255, 220, 130, 60});
-        // Small gold accent dot in the corner.
-        DrawCircle(panel_x + 10, panel_y + 12, 3.0f, Color{255, 200, 110, 230});
-        DrawText(line1, panel_x + 22, panel_y + 8, 18,
-                 Color{255, 225, 160, 240});
+        DrawCircle(panel_x + uiPx(sw, sh, 10), panel_y + uiPx(sw, sh, 12),
+                   std::max(2.0f, 3.0f * uiScale(sw, sh)),
+                   Color{255, 200, 110, 230});
+        DrawText(line1, panel_x + uiPx(sw, sh, 22), panel_y + uiPx(sw, sh, 8),
+                 fs1, Color{255, 225, 160, 240});
         if (save.games_played > 0) {
-            DrawText(line2, panel_x + 22, panel_y + 36, 13,
+            DrawText(line2, panel_x + uiPx(sw, sh, 22),
+                     panel_y + uiPx(sw, sh, 36), fs2,
                      Color{200, 210, 230, 200});
         }
     }
@@ -368,9 +389,9 @@ MenuAction MainMenu::render(int sw, int sh, const SaveData& save) {
     // ---------- Footer hint ----------
     {
         const char* foot = "press  ESC  to quit       --       ENTER / SPACE  for  VS AI";
-        int fs = 13;
+        int fs = uiPx(sw, sh, 13);
         int fw = MeasureText(foot, fs);
-        DrawText(foot, (sw - fw) / 2, sh - 32, fs,
+        DrawText(foot, (sw - fw) / 2, sh - uiPx(sw, sh, 32), fs,
                  Color{140, 150, 170, 180});
     }
 
