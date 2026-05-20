@@ -145,53 +145,72 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
 
     SettingsAction action = SettingsAction::None;
 
-    // ---- Build a Cursor template with screen-scaled layout values ----
-    // Every constant here was originally a constexpr int sized for the
-    // 1280 x 720 reference window. uiPx() scales each to the current
-    // screen so the entire form grows together when the player goes
-    // fullscreen or shrinks an 800 x 600 window.
+    // ---- Settings-page scale ----
+    // The form is naturally ~830 px tall in the 1280x720 design space, which
+    // means the BACK + RESET buttons fall below the visible 720-px bottom
+    // even at 1.0x window scale. Two fixes layered together:
+    //
+    //   (a) Tightened row layout below (proto values 50/22/10/etc. instead
+    //       of the original 68/28/18) so the form is ~620 px tall at
+    //       design-space, comfortably fitting in 720 with room for buttons.
+    //
+    //   (b) Additionally compute a settings-specific scale `sui` that's the
+    //       MIN of the regular uiScale AND the screen-height ratio against
+    //       a known-tall content estimate (700 px). Means: on a small
+    //       window where the regular uiScale would make the form taller
+    //       than the screen, we shrink the form instead so the buttons
+    //       stay visible. On a fullscreen 4K window the regular uiScale
+    //       wins (the form has room to grow).
+    const float reg_ui  = uiScale(sw, sh);
+    const float h_ui    = static_cast<float>(sh) / 700.0f; // 700 = est. form height at 1.0x
+    const float sui     = std::min(reg_ui, h_ui);
+    auto px = [sui](int base) {
+        return static_cast<int>(base * sui + 0.5f);
+    };
+
     Cursor proto;
-    proto.row_h        = uiPx(sw, sh, 68);
-    proto.header_h     = uiPx(sw, sh, 28);
-    proto.section_gap  = uiPx(sw, sh, 18);
-    proto.label_off    = uiPx(sw, sh, 22);
-    proto.slider_h     = uiPx(sw, sh, 14);
-    proto.toggle_h     = uiPx(sw, sh, 32);
-    proto.toggle_w     = uiPx(sw, sh, 110);
-    proto.choice_h    = uiPx(sw, sh, 36);
-    proto.font_header = uiPx(sw, sh, 18);
-    proto.font_label  = uiPx(sw, sh, 14);
+    proto.row_h        = px(50);
+    proto.header_h     = px(22);
+    proto.section_gap  = px(10);
+    proto.label_off    = px(18);
+    proto.slider_h     = px(14);
+    proto.toggle_h     = px(28);
+    proto.toggle_w     = px(110);
+    proto.choice_h     = px(32);
+    proto.font_header  = px(16);
+    proto.font_label   = px(13);
 
     // ---- Title ----
     const char* title = "SETTINGS";
-    const int t_size  = uiPx(sw, sh, 44);
+    const int t_size  = px(34);
     int tw            = MeasureText(title, t_size);
-    int ty            = uiPx(sw, sh, 22);
+    int ty            = px(14);
     DrawText(title, (sw - tw) / 2 + 3, ty + 3, t_size, Color{0, 0, 0, 180});
     DrawText(title, (sw - tw) / 2,     ty,     t_size, Color{255, 215, 130, 255});
 
     // ---- Two-column grid centered horizontally ----
-    const int col_w     = uiPx(sw, sh, 380);
-    const int gutter    = uiPx(sw, sh, 90);
+    // col_w scales with the same `sui` factor so the columns grow/shrink
+    // together with the rest of the form. On wide windows there's extra
+    // horizontal slack on either side of the form -- that's fine, settings
+    // shouldn't sprawl across an ultrawide monitor.
+    const int col_w     = px(360);
+    const int gutter    = px( 60);
     const int total_w   = col_w * 2 + gutter;
     const int columns_x = (sw - total_w) / 2;
-    const int columns_y = ty + t_size + uiPx(sw, sh, 24);
+    const int columns_y = ty + t_size + px(16);
 
     Cursor L = proto; L.x = columns_x;                  L.y = columns_y; L.col_w = col_w;
     Cursor R = proto; R.x = columns_x + col_w + gutter; R.y = columns_y; R.col_w = col_w;
 
     // ===== Left column =====
-    // Identity comes first -- the player should see their own name in the
-    // multiplayer killfeed / leaderboard / nameplate, and an empty default
-    // here is what triggers the generic `P<id>` fallback.
     sectionHeader(L, "IDENTITY");
     {
         const int label_fs  = L.font_label;
-        const int field_h   = uiPx(sw, sh, 32);
-        const int pad       = uiPx(sw, sh, 4);
+        const int field_h   = px(28);
+        const int pad       = px(4);
         const int field_w   = L.col_w;
         const int field_y   = L.y + label_fs + pad;
-        const int text_fs   = uiPx(sw, sh, 18);
+        const int text_fs   = px(16);
         DrawText("Player name (16 chars max)", L.x, L.y, label_fs,
                  Color{200, 215, 240, 220});
         Rectangle box{(float)L.x, (float)field_y, (float)field_w, (float)field_h};
@@ -212,8 +231,8 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
                                             : save.player_name.c_str();
         Color text_col = show_placeholder ? Color{140, 150, 170, 220}
                                           : Color{230, 240, 250, 240};
-        DrawText(text, (int)box.x + uiPx(sw, sh, 10),
-                       (int)box.y + uiPx(sw, sh,  8),
+        DrawText(text, (int)box.x + px(10),
+                       (int)box.y + px(6),
                        text_fs, text_col);
 
         if (name_field_focused_) {
@@ -229,7 +248,7 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
                 save.player_name.pop_back();
             }
         }
-        L.y = field_y + field_h + uiPx(sw, sh, 14);
+        L.y = field_y + field_h + px(10);
     }
 
     sectionGap(L);
@@ -260,13 +279,11 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
         setHudTextScale(save.hud_text_scale);
     }
     // Inline preview row: an "x5 COMBO" sample drawn at the current scale so the user
-    // can actually see the change without leaving settings. Scaled by uiPx so the
-    // preview itself respects the screen size, then multiplied by hud_text_scale
-    // for the accessibility-multiplier preview component.
+    // can actually see the change without leaving settings.
     {
-        const int base_size    = uiPx(sw, sh, 24);
+        const int base_size    = px(20);
         const int preview_size = static_cast<int>(base_size * save.hud_text_scale + 0.5f);
-        const int preview_h    = preview_size + uiPx(sw, sh, 12);
+        const int preview_h    = preview_size + px(8);
         const char* sample = "PREVIEW   x5 COMBO";
         int ptw = MeasureText(sample, preview_size);
         int tx  = L.x + (col_w - ptw) / 2;
@@ -274,7 +291,7 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
         DrawText(sample, tx + 2, pty + 2, preview_size, Color{0, 0, 0, 160});
         DrawText(sample, tx,     pty,     preview_size,
                  Color{255, 215, 130, 240});
-        L.y += preview_h + uiPx(sw, sh, 4);
+        L.y += preview_h + px(4);
     }
 
     // ===== Right column =====
@@ -324,22 +341,28 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
     }
 
     // ---- Bottom row: RESET DEFAULTS (left) + BACK (right) ----
-    // Anchored to the tallest column with a comfortable gap. Reset sits to
-    // the left of the BACK button so the player has to pass over BACK to
-    // reach it -- mild "are you sure" affordance without an actual modal.
-    const int content_bottom = std::max(L.y, R.y);
-    const int back_w  = uiPx(sw, sh, 240);
-    const int back_h  = uiPx(sw, sh,  56);
-    const int back_y  = content_bottom + uiPx(sw, sh, 28);
-    const int back_x  = (sw - back_w) / 2;
-
-    const int reset_w = uiPx(sw, sh, 200);
+    // Floor-anchored to the bottom of the screen. Natural position is "below
+    // content_bottom with a 22 px gap"; floor is "20 px above the screen
+    // bottom". We take min(natural, floor) so if the form is short the
+    // buttons sit naturally below it, and if the form is tall (or the
+    // window is short) the buttons stay pinned above the bottom edge
+    // instead of sliding off-screen.
+    const int back_w  = px(220);
+    const int back_h  = px(46);
+    const int reset_w = px(180);
     const int reset_h = back_h;
-    const int reset_y = back_y;
-    const int reset_x = back_x - reset_w - uiPx(sw, sh, 30);
 
-    const int back_fs  = uiPx(sw, sh, 26);
-    const int reset_fs = uiPx(sw, sh, 22);
+    const int content_bottom = std::max(L.y, R.y);
+    const int natural_y      = content_bottom + px(22);
+    const int floor_y        = sh - back_h - px(18);
+    const int back_y         = std::min(natural_y, floor_y);
+    const int reset_y        = back_y;
+
+    const int back_x  = (sw - back_w) / 2;
+    const int reset_x = back_x - reset_w - px(20);
+
+    const int back_fs  = px(22);
+    const int reset_fs = px(20);
 
     if (drawButton({(float)reset_x, (float)reset_y, (float)reset_w, (float)reset_h},
                    "RESET", reset_fs,
