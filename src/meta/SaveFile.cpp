@@ -123,6 +123,12 @@ std::vector<uint8_t> serializePayload(const SaveData& d) {
     buf.insert(buf.end(),
                d.player_name.data(),
                d.player_name.data() + name_len);
+
+    // ---- v6 additions: display flags (fullscreen + vsync) ----
+    // Packed into a single byte so a future "borderless windowed" mode can
+    // claim another bit without growing the payload.
+    uint8_t flags6 = (d.fullscreen ? 1u : 0u) | (d.vsync ? 2u : 0u);
+    appendPod(buf, flags6);
     return buf;
 }
 
@@ -195,12 +201,7 @@ bool deserializePayloadV4(const uint8_t* buf, size_t len, SaveData& out) {
     return true;
 }
 
-bool deserializePayloadV5(const uint8_t* buf, size_t len, SaveData& out) {
-    size_t off = 0;
-    if (!readV1Fields(buf, len, off, out)) return false;
-    if (!readV2Chunk(buf, len, off, out))  return false;
-    if (!readV3Chunk(buf, len, off, out))  return false;
-    if (!readV4Chunk(buf, len, off, out))  return false;
+bool readV5Chunk(const uint8_t* buf, size_t len, size_t& off, SaveData& out) {
     uint8_t name_len = 0;
     if (!readPod(buf, len, off, name_len)) return false;
     // Cap name_len defensively so a corrupted file can't make us read past the
@@ -209,6 +210,35 @@ bool deserializePayloadV5(const uint8_t* buf, size_t len, SaveData& out) {
     if (off + name_len > len) return false;
     out.player_name.assign(reinterpret_cast<const char*>(buf + off), name_len);
     off += name_len;
+    return true;
+}
+
+bool deserializePayloadV5(const uint8_t* buf, size_t len, SaveData& out) {
+    size_t off = 0;
+    if (!readV1Fields(buf, len, off, out)) return false;
+    if (!readV2Chunk(buf, len, off, out))  return false;
+    if (!readV3Chunk(buf, len, off, out))  return false;
+    if (!readV4Chunk(buf, len, off, out))  return false;
+    if (!readV5Chunk(buf, len, off, out))  return false;
+    return true;
+}
+
+bool readV6Chunk(const uint8_t* buf, size_t len, size_t& off, SaveData& out) {
+    uint8_t flags6 = 0;
+    if (!readPod(buf, len, off, flags6)) return false;
+    out.fullscreen = (flags6 & 1u) != 0;
+    out.vsync      = (flags6 & 2u) != 0;
+    return true;
+}
+
+bool deserializePayloadV6(const uint8_t* buf, size_t len, SaveData& out) {
+    size_t off = 0;
+    if (!readV1Fields(buf, len, off, out)) return false;
+    if (!readV2Chunk(buf, len, off, out))  return false;
+    if (!readV3Chunk(buf, len, off, out))  return false;
+    if (!readV4Chunk(buf, len, off, out))  return false;
+    if (!readV5Chunk(buf, len, off, out))  return false;
+    if (!readV6Chunk(buf, len, off, out))  return false;
     return true;
 }
 
@@ -257,6 +287,9 @@ bool tryLoadOne(const std::string& path, SaveData& out) {
     }
     if (version == 5) {
         return deserializePayloadV5(payload.data(), payload.size(), out);
+    }
+    if (version == 6) {
+        return deserializePayloadV6(payload.data(), payload.size(), out);
     }
     return false; // unsupported version (future-proof spot for migrations)
 }

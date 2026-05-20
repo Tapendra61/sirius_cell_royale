@@ -11,6 +11,34 @@ namespace cr {
 
 namespace {
 
+// Apply every setting (NOT progression!) field back to its SaveData default.
+// Progression -- total_xp, level, games_played, best_mass, best_combo,
+// daily_missions, last_mission_reset_day, first_run_complete -- and identity
+// (player_name) are left alone so the player doesn't accidentally wipe their
+// stats by clicking Reset. The defaults here mirror the inline defaults
+// declared in SaveFile.h's SaveData struct; if you change a default there,
+// change it here too.
+void resetSettingsToDefaults(SaveData& d) {
+    // Audio
+    d.master_volume       = 1.0f;
+    d.sfx_volume          = 0.85f;
+    d.music_volume        = 0.5f;
+    d.music_enabled       = true;
+    // Input
+    d.hold_to_move        = false;
+    d.invert_thumbs       = false;
+    // Accessibility / visual
+    d.screen_shake_scale  = 1.0f;
+    d.colorblind_mode     = 0;
+    d.high_contrast       = false;
+    d.hud_text_scale      = 1.0f;
+    // Performance
+    d.fps_cap             = 60;
+    // Display
+    d.fullscreen          = false;
+    d.vsync               = false;
+}
+
 const char* kColorblindOptions[] = {"Off", "Deuteranopia", "Protanopia", "Tritanopia"};
 constexpr int kColorblindCount   = 4;
 
@@ -106,6 +134,21 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
     // Background: match the rest of the UI.
     DrawRectangle(0, 0, sw, sh, Color{18, 22, 30, 255});
     DrawRectangle(0, 0, sw, sh, Color{0, 0, 0, 60});
+
+    SettingsAction action = SettingsAction::None;
+
+    // ---- Top-left BACK button (always visible) ----
+    // Mirror of the bottom BACK button. The bottom one anchors below all
+    // settings rows and can scroll off-screen on tall content / small
+    // windows; this one is hard-anchored at the top-left corner so the
+    // player always has a way out without scrolling.
+    {
+        const Rectangle r{16, 16, 90, 36};
+        if (drawButton(r, "< BACK", 18,
+                       Color{55, 145, 95, 255}, Color{255, 255, 255, 255})) {
+            action = SettingsAction::BackToMenu;
+        }
+    }
 
     // ---- Title ----
     const char* title    = "SETTINGS";
@@ -248,6 +291,33 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
     toggleRow(R, "Invert touch thumbs",   &save.invert_thumbs);
 
     sectionGap(R);
+    sectionHeader(R, "DISPLAY");
+    // Fullscreen toggle. raylib's ToggleFullscreen() switches between
+    // borderless-fullscreen-on-current-monitor and the original windowed
+    // size. We compare against the current state so a single check-flip
+    // works whether the user came from F11 or the settings checkbox.
+    {
+        bool wanted = save.fullscreen;
+        if (toggleRow(R, "Fullscreen", &wanted)) {
+            save.fullscreen = wanted;
+            const bool currently_fs = IsWindowFullscreen();
+            if (wanted != currently_fs) ToggleFullscreen();
+        }
+    }
+    // VSync. FLAG_VSYNC_HINT is a hint to GLFW so the actual behavior
+    // depends on the driver, but where honored it pins the frame rate to
+    // the monitor refresh and removes tearing. Off by default because
+    // most players prefer the lower input latency for twitchy gameplay.
+    {
+        bool wanted = save.vsync;
+        if (toggleRow(R, "VSync", &wanted)) {
+            save.vsync = wanted;
+            if (wanted) SetWindowState(FLAG_VSYNC_HINT);
+            else        ClearWindowState(FLAG_VSYNC_HINT);
+        }
+    }
+
+    sectionGap(R);
     sectionHeader(R, "PERFORMANCE");
     int fps_idx = fpsCapIndex(save.fps_cap);
     if (choiceRow(R, "FPS cap",
@@ -257,14 +327,45 @@ SettingsAction SettingsScreen::render(int sw, int sh, SaveData& save) {
         else                    SetTargetFPS(static_cast<int>(save.fps_cap));
     }
 
-    // ---- Back button: anchored to the tallest column, with a comfortable gap. ----
+    // ---- Bottom row: RESET DEFAULTS (left) + BACK (right) ----
+    // Anchored to the tallest column with a comfortable gap. Reset sits to
+    // the left of the BACK button so the player has to pass over BACK to
+    // reach it -- mild "are you sure" affordance without an actual modal.
     const int content_bottom = std::max(L.y, R.y);
     const int back_w = 240;
     const int back_h = 56;
     const int back_y = content_bottom + 28;
     const int back_x = (sw - back_w) / 2;
 
-    SettingsAction action = SettingsAction::None;
+    const int reset_w = 200;
+    const int reset_h = 56;
+    const int reset_y = back_y;
+    const int reset_x = back_x - reset_w - 30;  // 30 px gap to the left of BACK
+
+    if (drawButton({(float)reset_x, (float)reset_y, (float)reset_w, (float)reset_h},
+                   "RESET", 22,
+                   Color{140, 80, 65, 255}, Color{255, 240, 230, 255})) {
+        // Pre-reset values we need to KEEP so live-apply works correctly
+        // after the reset (and so the SaveData reference passed in still
+        // reflects the apply).
+        resetSettingsToDefaults(save);
+        // Live-apply each system that watches its setting -- otherwise the
+        // user would have to leave Settings + come back for the reset to
+        // take visible effect.
+        if (IsAudioDeviceReady()) SetMasterVolume(save.master_volume);
+        setPaletteMode(static_cast<PaletteMode>(save.colorblind_mode));
+        setHighContrast(save.high_contrast);
+        setHudTextScale(save.hud_text_scale);
+        if (save.fps_cap == 0) SetTargetFPS(0);
+        else                    SetTargetFPS(static_cast<int>(save.fps_cap));
+        // Display reset: drop back out of fullscreen if we were in it; clear
+        // the VSync hint. ToggleFullscreen is the only public API for the
+        // window-mode change on raylib 5.5; check against current state so
+        // we don't double-flip.
+        if (IsWindowFullscreen()) ToggleFullscreen();
+        ClearWindowState(FLAG_VSYNC_HINT);
+    }
+
     if (drawButton({(float)back_x, (float)back_y, (float)back_w, (float)back_h},
                    "BACK", 26,
                    Color{55, 145, 95, 255}, Color{255, 255, 255, 255})) {

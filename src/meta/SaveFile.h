@@ -48,6 +48,19 @@ struct SaveData {
     // Plain ASCII string trimmed to 16 chars; empty string falls back to the
     // generic `P<id>` label used by killfeed / leaderboard / nameplates.
     std::string player_name;
+
+    // ---- v6 additions: display settings ----
+    // Window mode. raylib's `ToggleFullscreen()` switches between borderless
+    // fullscreen on the current monitor and the original windowed size; we
+    // mirror that toggle here and apply on startup + on settings change so
+    // the player's choice persists across runs.
+    bool fullscreen = false;
+    // VSync hint. raylib's FLAG_VSYNC_HINT is a hint to GLFW; whether it
+    // actually clamps to the display refresh depends on the driver, but
+    // when honored it eliminates tearing at the cost of a tiny input-lag
+    // penalty. Off by default because most players prefer the lower
+    // latency for a twitchy game; opt-in for the tearing-sensitive.
+    bool vsync = false;
 };
 
 // On-disk format (little-endian, packed):
@@ -66,7 +79,7 @@ struct SaveData {
 bool saveToFile(const SaveData& data, const std::string& path);
 bool loadFromFile(SaveData& data, const std::string& path);
 
-constexpr uint32_t kSaveCurrentVersion = 5;
+constexpr uint32_t kSaveCurrentVersion = 6;
 
 // Maximum on-disk player-name length. Names longer than this are truncated when
 // written. Kept short so it fits in tight HUD elements (killfeed, nameplate).

@@ -1489,6 +1489,18 @@ int runWindow(uint64_t initial_seed) {
         SetTargetFPS(static_cast<int>(save.fps_cap));
     }
 
+    // Apply persisted display flags. Fullscreen toggles via raylib's
+    // ToggleFullscreen() (the only public API in raylib 5.5 for entering
+    // borderless-fullscreen-on-current-monitor); guard against double-flip
+    // by checking the current state. VSync is a hint to GLFW -- set the
+    // window-state flag and let the driver decide whether to honor it.
+    if (save.fullscreen && !IsWindowFullscreen()) {
+        ToggleFullscreen();
+    }
+    if (save.vsync) {
+        SetWindowState(FLAG_VSYNC_HINT);
+    }
+
     // Daily missions: roll a fresh set if we've crossed midnight (or this is a brand
     // new save with no missions yet). Completed flags clear with the new roll.
     const uint32_t today = cr::currentDay();
@@ -1577,6 +1589,16 @@ int runWindow(uint64_t initial_seed) {
     };
 
     while (phase != AppPhase::Quit && !WindowShouldClose()) {
+        // Global F11 fullscreen toggle. Standard convention -- the player can
+        // flip without diving into Settings. Mirrors the state back to the
+        // SaveData so the choice persists across runs alongside the Settings
+        // checkbox. Polled here (outside the per-phase branches) so it works
+        // from menus / lobby / match / settings interchangeably.
+        if (IsKeyPressed(KEY_F11)) {
+            ToggleFullscreen();
+            save.fullscreen = IsWindowFullscreen();
+        }
+
         if (phase == AppPhase::Intro) {
             float dt = GetFrameTime();
             bool  intro_done = intro->update(dt);

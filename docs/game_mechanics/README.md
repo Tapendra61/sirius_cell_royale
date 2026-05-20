@@ -36,6 +36,7 @@ and connect to `127.0.0.1:7456`. Multiplayer modes don't auto-pause on focus los
 | Hold-to-move mode | Console command `set_hold_to_move 0|1` | When on, your cell only moves while the left mouse button is held. Off by default. |
 | Dev console | `` ` `` (backtick / tilde) | Opens a text input for commands. See §10. Hidden in release builds (CR_ENABLE_DEV_TOOLS=OFF). |
 | Skip Death Cam | Any gameplay key | The 1.5s killer-focus cam can be skipped early. |
+| Toggle fullscreen | `F11` | Global hotkey. Switches between windowed + borderless-fullscreen on the current monitor. Mirrors the state into the save so the choice persists. |
 | Quit | `Esc` (in menus) | Returns to the previous screen or quits from the main menu. |
 
 ### Touch (mobile / touch-forced builds)
@@ -909,6 +910,29 @@ Passing flags to the executable:
 - **High contrast outlines**: Cell edges get a thicker white stroke against
   busy backgrounds.
 - **HUD text scale**: 0.85× – 1.30×, settings preview included.
+- **Always-visible BACK button**: Settings screen has TWO ways out -- a small
+  `< BACK` button anchored at the top-left corner (hard-positioned, always
+  visible regardless of how tall the content grows) and the larger BACK
+  button at the bottom of the form. Esc also exits.
+
+## 15. Display settings
+
+All toggle/select widgets live in the SETTINGS screen and persist to disk
+(save v6+). Settings can be live-applied without restarting the game.
+
+- **Fullscreen** (toggle) — switches between windowed (the launched 1280 ×
+  720 default) and borderless-fullscreen on the current monitor. Mirrored
+  by the **F11** global hotkey so the player can flip without diving into
+  Settings.
+- **VSync** (toggle) — hints to GLFW that the GPU should sync to the monitor
+  refresh. Eliminates tearing where honored; off by default to keep input
+  latency low for twitchy gameplay.
+- **FPS cap** (choice) — 60 / 120 / 144 / Uncapped. Independent of VSync.
+- **Reset to defaults** — bottom-left of the Settings screen, next to BACK.
+  Resets every SETTING (audio volumes, palette, screen shake, HUD scale,
+  fullscreen / vsync / fps cap, hold-to-move, etc.) back to its defaults.
+  Does **not** touch progression (XP, level, games played, best mass,
+  best combo, daily missions, first-run flag) or identity (player name).
 
 ---
 
